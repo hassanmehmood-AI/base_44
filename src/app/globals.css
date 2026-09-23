@@ -1,0 +1,393 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   BASE TOKENS — shared across all color themes and design systems.
+   Neutral surfaces/text stay constant; only brand + sidebar hues shift
+   per data-theme, and shape/elevation/motion shift per data-design.
+   ========================================================================== */
+:root {
+  --background: #f6f7f9;
+  --foreground: #17201c;
+
+  --surface: #ffffff;
+  --surface-muted: #f6f7f9;
+  --border: #e6e8ec;
+  --border-soft: #eef0f2;
+
+  --text-primary: #17201c;
+  --text-secondary: #667085;
+  --text-tertiary: #98a2b3;
+
+  --danger: #d92d20;
+  --danger-50: #fef3f2;
+  --danger-100: #fecdca;
+  --danger-700: #b42318;
+  --warning: #f79009;
+  --warning-50: #fffaeb;
+  --warning-100: #fedf89;
+  --warning-700: #b54708;
+  --info: #2e90fa;
+  --info-50: #eff8ff;
+  --info-100: #b2ddff;
+  --info-700: #175cd3;
+  --success: #12b76a;
+  --success-50: #ecfdf3;
+
+  /* Public alias names per design-system spec */
+  --primary: var(--brand);
+  --primary-hover: var(--brand-dark);
+
+  /* ---- color-theme defaults (blue) — overridden by [data-theme="..."] ---- */
+  --brand: #2563eb;
+  --brand-dark: #1d4ed8;
+  --brand-light: #3b82f6;
+  --brand-50: #eff6ff;
+  --brand-100: #dbeafe;
+  --brand-700: #1e40af;
+
+  --sidebar: #eaf2ff;
+  --sidebar-hover: #d7e6fd;
+  --sidebar-active: #3b82f6;
+  --sidebar-border: #cfe0fa;
+  --sidebar-text: #4a5b7a;
+  --sidebar-text-dim: #8598bd;
+  --sidebar-heading: #0f2547;
+
+  --brand-glow: rgba(37, 99, 235, 0.28);
+  --aurora-bg-1: rgba(37, 99, 235, 0.1);
+  --aurora-bg-2: rgba(96, 165, 250, 0.1);
+
+  /* ---- design-system defaults (bento) — overridden by [data-design="..."] ---- */
+  --radius-card: 20px;
+  --radius-button: 14px;
+  --radius-input: 14px;
+  --radius-modal: 20px;
+
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 12px 24px -8px rgba(16, 24, 40, 0.08);
+  --shadow-floating: 0 20px 40px -12px rgba(16, 24, 40, 0.18);
+  --shadow-button: 0 1px 2px rgba(16, 24, 40, 0.06);
+
+  --card-bg: color-mix(in srgb, var(--surface) 78%, transparent);
+  --card-blur: 16px;
+  --card-border-width: 1px;
+  --card-border-color: var(--border-soft);
+
+  --heading-weight: 600;
+  --heading-tracking: -0.01em;
+}
+
+/* ==========================================================================
+   COLOR THEMES
+   ========================================================================== */
+:root[data-theme="blue"] {
+  --brand: #2563eb;
+  --brand-dark: #1d4ed8;
+  --brand-light: #3b82f6;
+  --brand-50: #eff6ff;
+  --brand-100: #dbeafe;
+  --brand-700: #1e40af;
+
+  --sidebar: #eaf2ff;
+  --sidebar-hover: #d7e6fd;
+  --sidebar-active: #3b82f6;
+  --sidebar-border: #cfe0fa;
+  --sidebar-text: #4a5b7a;
+  --sidebar-text-dim: #8598bd;
+  --sidebar-heading: #0f2547;
+
+  --brand-glow: rgba(37, 99, 235, 0.28);
+  --aurora-bg-1: rgba(37, 99, 235, 0.1);
+  --aurora-bg-2: rgba(96, 165, 250, 0.1);
+}
+
+:root[data-theme="gray"] {
+  --brand: #475569;
+  --brand-dark: #334155;
+  --brand-light: #64748b;
+  --brand-50: #f8fafc;
+  --brand-100: #e2e8f0;
+  --brand-700: #1e293b;
+
+  --sidebar: #0f1113;
+  --sidebar-hover: #1c1f23;
+  --sidebar-active: #30353c;
+  --sidebar-border: #232629;
+  --sidebar-text: #b4b8be;
+  --sidebar-text-dim: #6b7178;
+  --sidebar-heading: #ffffff;
+
+  --brand-glow: rgba(71, 85, 105, 0.26);
+  --aurora-bg-1: rgba(71, 85, 105, 0.09);
+  --aurora-bg-2: rgba(148, 163, 184, 0.11);
+}
+
+:root[data-theme="orange"] {
+  --brand: #c2410c;
+  --brand-dark: #9a3412;
+  --brand-light: #ea580c;
+  --brand-50: #fff7ed;
+  --brand-100: #ffedd5;
+  --brand-700: #7c2d12;
+
+  --sidebar: #1c1410;
+  --sidebar-hover: #2a2019;
+  --sidebar-active: #c2410c;
+  --sidebar-border: #2e2118;
+  --sidebar-text: #d9c4b5;
+  --sidebar-text-dim: #8a7566;
+  --sidebar-heading: #ffffff;
+
+  --brand-glow: rgba(194, 65, 12, 0.28);
+  --aurora-bg-1: rgba(194, 65, 12, 0.1);
+  --aurora-bg-2: rgba(245, 158, 11, 0.1);
+}
+
+/* ==========================================================================
+   DESIGN SYSTEMS
+   ========================================================================== */
+
+/* ---- 1. Bento UI + Glassmorphism ---- */
+:root[data-design="bento"] {
+  --radius-card: 20px;
+  --radius-button: 14px;
+  --radius-input: 14px;
+  --radius-modal: 20px;
+
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 12px 24px -8px rgba(16, 24, 40, 0.08);
+  --shadow-floating: 0 20px 40px -12px rgba(16, 24, 40, 0.18);
+  --shadow-button: 0 1px 2px rgba(16, 24, 40, 0.06);
+
+  --card-bg: color-mix(in srgb, var(--surface) 78%, transparent);
+  --card-blur: 16px;
+  --card-border-width: 1px;
+  --card-border-color: var(--border-soft);
+
+  --heading-weight: 600;
+  --heading-tracking: -0.01em;
+}
+
+/* ---- 2. Neo-Brutalism ---- */
+:root[data-design="brutalist"] {
+  --radius-card: 8px;
+  --radius-button: 6px;
+  --radius-input: 6px;
+  --radius-modal: 8px;
+
+  --shadow-card: none;
+  --shadow-floating: none;
+  --shadow-button: 4px 4px 0 0 var(--text-primary);
+
+  --card-bg: var(--surface);
+  --card-blur: 0px;
+  --card-border-width: 2px;
+  --card-border-color: var(--text-primary);
+
+  --heading-weight: 800;
+  --heading-tracking: -0.01em;
+}
+
+/* ---- 3. Aurora + Neo Frutiger Aero ---- */
+:root[data-design="aurora"] {
+  --radius-card: 24px;
+  --radius-button: 16px;
+  --radius-input: 16px;
+  --radius-modal: 24px;
+
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 16px 40px -12px var(--brand-glow);
+  --shadow-floating: 0 24px 60px -16px var(--brand-glow);
+  --shadow-button: 0 8px 20px -6px var(--brand-glow);
+
+  --card-bg: var(--surface);
+  --card-blur: 0px;
+  --card-border-width: 1px;
+  --card-border-color: var(--border);
+
+  --heading-weight: 650;
+  --heading-tracking: -0.015em;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-text: var(--sidebar-text);
+  --color-sidebar-text-dim: var(--sidebar-text-dim);
+  --color-sidebar-heading: var(--sidebar-heading);
+  --color-brand: var(--brand);
+  --color-brand-dark: var(--brand-dark);
+  --color-brand-light: var(--brand-light);
+  --color-brand-50: var(--brand-50);
+  --color-brand-100: var(--brand-100);
+  --color-brand-700: var(--brand-700);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-border: var(--border);
+  --color-border-soft: var(--border-soft);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-danger: var(--danger);
+  --color-danger-50: var(--danger-50);
+  --color-danger-100: var(--danger-100);
+  --color-danger-700: var(--danger-700);
+  --color-warning: var(--warning);
+  --color-warning-50: var(--warning-50);
+  --color-warning-100: var(--warning-100);
+  --color-warning-700: var(--warning-700);
+  --color-info: var(--info);
+  --color-info-50: var(--info-50);
+  --color-info-100: var(--info-100);
+  --color-info-700: var(--info-700);
+  --color-success: var(--success);
+  --color-success-50: var(--success-50);
+  --font-sans: var(--font-sans);
+}
+
+body {
+  background: var(--background);
+  color: var(--text-primary);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #c8cdd2 transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #c8cdd2;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  opacity: 0.6;
+}
+
+/* Smooth, non-jarring transitions when swapping theme/design at runtime */
+.ds-card,
+.ds-button,
+.ds-input,
+.ds-sidebar,
+.ds-nav-item,
+.ds-shell {
+  transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease,
+    border-radius 200ms ease, color 200ms ease;
+}
+
+/* ==========================================================================
+   DASHBOARD SHELL — atmospheric background per design system
+   ========================================================================== */
+.ds-shell {
+  background-color: var(--background);
+}
+
+:root[data-design="bento"] .ds-shell {
+  background-image: radial-gradient(900px circle at 8% -8%, var(--brand-50), transparent 45%),
+    radial-gradient(700px circle at 105% 0%, var(--border-soft), transparent 40%);
+}
+
+:root[data-design="brutalist"] .ds-shell {
+  background-image: radial-gradient(var(--border) 1.5px, transparent 1.5px);
+  background-size: 20px 20px;
+}
+
+:root[data-design="aurora"] .ds-shell {
+  background-image: radial-gradient(1100px circle at 12% -10%, var(--aurora-bg-1), transparent 55%),
+    radial-gradient(900px circle at 108% 6%, var(--aurora-bg-2), transparent 50%);
+  background-size: 140% 140%, 140% 140%;
+  animation: aurora-drift 26s ease-in-out infinite;
+}
+
+@keyframes aurora-drift {
+  0%,
+  100% {
+    background-position: 0% 0%, 100% 0%;
+  }
+  50% {
+    background-position: 10% 6%, 90% 8%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-design="aurora"] .ds-shell {
+    animation: none;
+  }
+}
+
+/* ==========================================================================
+   PER-DESIGN COMPONENT OVERRIDES (hook classes only — no component logic)
+   ========================================================================== */
+
+/* -- Cards -- */
+:root[data-design="brutalist"] .ds-card {
+  border-width: 2px;
+}
+
+/* -- Buttons -- */
+:root[data-design="brutalist"] .ds-button {
+  border: 2px solid var(--text-primary);
+  font-weight: 700;
+}
+:root[data-design="brutalist"] .ds-button:active {
+  transform: translate(3px, 3px);
+  box-shadow: none;
+}
+
+/* -- Inputs -- */
+:root[data-design="brutalist"] .ds-input {
+  border: 2px solid var(--text-primary);
+}
+
+/* -- Page titles -- */
+.ds-page-title {
+  font-weight: var(--heading-weight);
+  letter-spacing: var(--heading-tracking);
+}
+:root[data-design="brutalist"] .ds-page-title {
+  text-transform: uppercase;
+}
+:root[data-design="aurora"] .ds-page-title {
+  background: linear-gradient(90deg, var(--text-primary), var(--brand));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* -- Card titles -- */
+.ds-card-title {
+  font-weight: 600;
+}
+:root[data-design="brutalist"] .ds-card-title {
+  font-weight: var(--heading-weight);
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+}
+:root[data-design="aurora"] .ds-card-title {
+  font-weight: 650;
+}
+
+/* -- Sidebar -- */
+:root[data-design="brutalist"] .ds-sidebar {
+  border-right-width: 2px;
+}
+:root[data-design="aurora"] .ds-nav-item-active {
+  box-shadow: 0 0 0 1px var(--brand-glow), 0 4px 14px -2px var(--brand-glow);
+}
+
+/* -- Metrics (aurora glow) -- */
+:root[data-design="aurora"] .ds-metric-value {
+  text-shadow: 0 0 24px var(--brand-glow);
+}
