@@ -14,7 +14,7 @@ export function DesignSystemSwitcher() {
   const { designSystem, setDesignSystem } = useTheme();
 
   return (
-    <div className="fixed bottom-5 left-5 z-50 flex items-center gap-1 rounded-2xl border border-border bg-surface/95 p-1.5 shadow-[0_8px_24px_-6px_rgba(16,24,40,0.18)] backdrop-blur-md">
+    <div className="fixed bottom-5 left-5 z-50 hidden items-center gap-1 rounded-2xl border border-border bg-surface/95 p-1.5 shadow-[0_8px_24px_-6px_rgba(16,24,40,0.18)] backdrop-blur-md lg:flex">
       {options.map((o) => {
         const Icon = o.icon;
         const active = designSystem === o.id;

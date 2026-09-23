@@ -14,7 +14,7 @@ export function ColorThemeSwitcher() {
   const { colorTheme, setColorTheme } = useTheme();
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-2xl border border-border bg-surface/95 px-3 py-2 shadow-[0_8px_24px_-6px_rgba(16,24,40,0.18)] backdrop-blur-md">
+    <div className="fixed bottom-5 right-5 z-50 hidden items-center gap-2 rounded-2xl border border-border bg-surface/95 px-3 py-2 shadow-[0_8px_24px_-6px_rgba(16,24,40,0.18)] backdrop-blur-md lg:flex">
       <Palette className="h-3.5 w-3.5 text-text-tertiary" />
       <div className="flex items-center gap-1.5">
         {options.map((o) => (
