@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { UploadCloud, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
@@ -10,6 +10,7 @@ import { SearchInput, Select } from "@/components/ui/Input";
 import { StatCard } from "@/components/StatCard";
 import { StageBadge } from "@/components/StageBadge";
 import { useLanguage } from "@/context/LanguageContext";
+import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { campaignStats, databases, campaignRows, campaignFilters } from "@/lib/mock-data";
 
 const stageKeyByLabel: Record<string, string> = {
@@ -20,8 +21,18 @@ const stageKeyByLabel: Record<string, string> = {
 
 export default function CampanasPage() {
   const { t } = useLanguage();
+  const { activeCompany } = useCompany();
   const [canalChecked, setCanalChecked] = useState<Set<string>>(new Set());
   const [agenteChecked, setAgenteChecked] = useState<Set<string>>(new Set());
+
+  const filteredDatabases = useMemo(
+    () => databases.filter((db) => activeCompany === ALL_COMPANIES || db.company === activeCompany),
+    [activeCompany]
+  );
+  const filteredCampaignRows = useMemo(
+    () => campaignRows.filter((row) => activeCompany === ALL_COMPANIES || row.company === activeCompany),
+    [activeCompany]
+  );
 
   function toggle(set: Set<string>, setter: (s: Set<string>) => void, value: string) {
     const next = new Set(set);
@@ -43,6 +54,7 @@ export default function CampanasPage() {
       />
 
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
+        {/* Headline stats are aggregate totals — mock data has no per-company breakdown, so these don't filter with activeCompany */}
         <StatCard
           label={t("Total contacts", "Contactos totales")}
           value={campaignStats.contactosTotales.toLocaleString("en-US")}
@@ -71,7 +83,7 @@ export default function CampanasPage() {
         <Card className="flex flex-col gap-4 p-5">
           <CardHeader>
             <CardTitle>{t("Databases", "Bases de datos")}</CardTitle>
-            <Badge tone="green">{databases.length} {t("active", "activas")}</Badge>
+            <Badge tone="green">{filteredDatabases.length} {t("active", "activas")}</Badge>
           </CardHeader>
 
           <button className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border py-8 text-center transition-colors hover:border-brand hover:bg-brand-50/40">
@@ -85,7 +97,7 @@ export default function CampanasPage() {
           </button>
 
           <div className="flex flex-col gap-3">
-            {databases.map((db) => (
+            {filteredDatabases.map((db) => (
               <div key={db.id} className="rounded-xl border border-border p-3.5">
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-[14px] font-semibold text-text-primary">{db.name}</p>
@@ -130,7 +142,7 @@ export default function CampanasPage() {
                 </tr>
               </thead>
               <tbody>
-                {campaignRows.map((row) => (
+                {filteredCampaignRows.map((row) => (
                   <tr key={row.id} className="border-t border-border text-[13.5px] transition-colors hover:bg-surface-muted/70">
                     <td className="py-3.5 pr-4 font-medium text-text-primary">{row.cliente}</td>
                     <td className="py-3.5 pr-4 text-text-secondary">{row.agente}</td>

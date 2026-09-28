@@ -9,6 +9,7 @@ import { Select, Textarea } from "@/components/ui/Input";
 import { Avatar } from "@/components/ui/Avatar";
 import { PageHeader } from "@/components/PageHeader";
 import { useLanguage } from "@/context/LanguageContext";
+import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { tickets } from "@/lib/mock-data";
 import { cn } from "@/lib/cn";
 
@@ -26,12 +27,15 @@ const statusTone: Record<string, "green" | "amber" | "gray"> = {
 
 export default function SoportePage() {
   const { t } = useLanguage();
+  const { companies, activeCompany, setActiveCompany } = useCompany();
   const [tab, setTab] = useState<"all" | "mine">("all");
   const [selectedId, setSelectedId] = useState(tickets[0].id);
   const [reply, setReply] = useState("");
 
-  const selected = tickets.find((t) => t.id === selectedId) ?? tickets[0];
-  const list = tab === "all" ? tickets : tickets.filter((t) => t.createdBy === "You");
+  const selected = tickets.find((tk) => tk.id === selectedId) ?? tickets[0];
+  const companyScoped =
+    activeCompany === ALL_COMPANIES ? tickets : tickets.filter((tk) => tk.company === activeCompany);
+  const list = tab === "all" ? companyScoped : companyScoped.filter((tk) => tk.createdBy === "You");
 
   return (
     <div className="flex flex-col gap-6">
@@ -48,10 +52,16 @@ export default function SoportePage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[340px_1fr]">
         <div className="flex flex-col gap-4">
           <div className="w-[220px]">
-            <Select defaultValue="All companies">
-              <option>{t("All companies", "Todas las empresas")}</option>
-              <option>Contact-On</option>
-              <option>Leyva</option>
+            <Select
+              value={activeCompany}
+              onChange={(e) => setActiveCompany(e.target.value)}
+            >
+              <option value={ALL_COMPANIES}>{t("All companies", "Todas las empresas")}</option>
+              {companies.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
             </Select>
           </div>
 

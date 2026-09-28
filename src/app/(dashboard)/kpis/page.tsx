@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { Download } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -8,10 +9,17 @@ import { SearchInput, Select } from "@/components/ui/Input";
 import { StatCard } from "@/components/StatCard";
 import { LeadsChart } from "@/components/charts/LeadsChart";
 import { useLanguage } from "@/context/LanguageContext";
+import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { kpiStats, agentPerformance } from "@/lib/mock-data";
 
 export default function KpisPage() {
   const { t } = useLanguage();
+  const { companies, activeCompany, setActiveCompany } = useCompany();
+
+  const filteredAgents = useMemo(
+    () => agentPerformance.filter((a) => activeCompany === ALL_COMPANIES || a.company === activeCompany),
+    [activeCompany]
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -22,10 +30,13 @@ export default function KpisPage() {
 
       <div className="flex flex-wrap items-end gap-3">
         <FilterField label={t("COMPANY", "EMPRESA")}>
-          <Select defaultValue={t("All companies", "Todas las empresas")}>
-            <option>{t("All companies", "Todas las empresas")}</option>
-            <option>Contact-On</option>
-            <option>Leyva</option>
+          <Select value={activeCompany} onChange={(e) => setActiveCompany(e.target.value)}>
+            <option value={ALL_COMPANIES}>{t("All companies", "Todas las empresas")}</option>
+            {companies.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
           </Select>
         </FilterField>
         <FilterField label={t("DEPARTMENT", "DEPARTAMENTO")}>
@@ -56,6 +67,7 @@ export default function KpisPage() {
         </Button>
       </div>
 
+      {/* Headline stats and the leads/conversions chart are aggregate totals — mock data has no per-company breakdown, so these don't filter with activeCompany */}
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label={t("Leads worked", "Leads trabajados")} value={kpiStats.leadsTrabajados.value} delta={kpiStats.leadsTrabajados.delta} />
         <StatCard label={t("Opportunities generated", "Oportunidades generadas")} value={kpiStats.oportunidades.value} delta={kpiStats.oportunidades.delta} />
@@ -85,7 +97,7 @@ export default function KpisPage() {
               </tr>
             </thead>
             <tbody>
-              {agentPerformance.map((a) => (
+              {filteredAgents.map((a) => (
                 <tr key={a.agente} className="border-t border-border text-[13.5px] transition-colors hover:bg-surface-muted/70">
                   <td className="py-3.5 pr-4 font-medium text-text-primary">{a.agente}</td>
                   <td className="py-3.5 pr-4 text-text-secondary">{a.asignados}</td>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Bold, Italic, Link2, Paperclip, Send } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -8,13 +8,20 @@ import { Badge } from "@/components/ui/Badge";
 import { SearchInput, Select, Textarea } from "@/components/ui/Input";
 import { PageHeader } from "@/components/PageHeader";
 import { useLanguage } from "@/context/LanguageContext";
+import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { emailThreads, emailResources } from "@/lib/mock-data";
 import { cn } from "@/lib/cn";
 
 export default function CorreoPage() {
   const { t } = useLanguage();
+  const { companies, activeCompany, setActiveCompany } = useCompany();
   const [selectedId, setSelectedId] = useState(emailThreads[0].id);
   const selected = emailThreads.find((t) => t.id === selectedId) ?? emailThreads[0];
+
+  const filteredThreads = useMemo(
+    () => emailThreads.filter((th) => activeCompany === ALL_COMPANIES || th.tenantCompany === activeCompany),
+    [activeCompany]
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -32,10 +39,13 @@ export default function CorreoPage() {
       />
 
       <div className="w-[220px]">
-        <Select defaultValue="All companies">
-          <option>{t("All companies", "Todas las empresas")}</option>
-          <option>Contact-On</option>
-          <option>Leyva</option>
+        <Select value={activeCompany} onChange={(e) => setActiveCompany(e.target.value)}>
+          <option value={ALL_COMPANIES}>{t("All companies", "Todas las empresas")}</option>
+          {companies.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
         </Select>
       </div>
 
@@ -43,9 +53,9 @@ export default function CorreoPage() {
         <Card className="flex flex-col gap-1 p-5">
           <div className="mb-2 flex items-center justify-between">
             <CardTitle>{t("Conversations", "Conversaciones")}</CardTitle>
-            <Badge tone="green">{emailThreads.length} {t("new", "nuevas")}</Badge>
+            <Badge tone="green">{filteredThreads.length} {t("new", "nuevas")}</Badge>
           </div>
-          {emailThreads.map((t) => (
+          {filteredThreads.map((t) => (
             <button
               key={t.id}
               onClick={() => setSelectedId(t.id)}

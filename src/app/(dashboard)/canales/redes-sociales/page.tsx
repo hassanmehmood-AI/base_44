@@ -9,18 +9,24 @@ import { SearchInput, Select, Textarea } from "@/components/ui/Input";
 import { Avatar } from "@/components/ui/Avatar";
 import { PageHeader } from "@/components/PageHeader";
 import { useLanguage } from "@/context/LanguageContext";
+import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { socialInbox } from "@/lib/mock-data";
 import { cn } from "@/lib/cn";
 
 export default function RedesSocialesPage() {
   const { t } = useLanguage();
+  const { companies, activeCompany, setActiveCompany } = useCompany();
   const [platform, setPlatform] = useState("All");
   const [selectedId, setSelectedId] = useState(socialInbox[0].id);
 
   const platformTabs = [t("All", "Todas"), "IG", "FB", "MSG"];
   const selected = socialInbox.find((s) => s.id === selectedId) ?? socialInbox[0];
 
-  const filtered = socialInbox.filter((s) => platform === t("All", "Todas") || platform === "All" || s.platform === platform);
+  const filtered = socialInbox.filter((s) => {
+    const matchesPlatform = platform === t("All", "Todas") || platform === "All" || s.platform === platform;
+    const matchesCompany = activeCompany === ALL_COMPANIES || s.company === activeCompany;
+    return matchesPlatform && matchesCompany;
+  });
 
   return (
     <div className="flex flex-col gap-6">
@@ -38,10 +44,13 @@ export default function RedesSocialesPage() {
       />
 
       <div className="w-[220px]">
-        <Select defaultValue="All companies">
-          <option>{t("All companies", "Todas las empresas")}</option>
-          <option>Contact-On</option>
-          <option>Leyva</option>
+        <Select value={activeCompany} onChange={(e) => setActiveCompany(e.target.value)}>
+          <option value={ALL_COMPANIES}>{t("All companies", "Todas las empresas")}</option>
+          {companies.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
         </Select>
       </div>
 
@@ -49,7 +58,7 @@ export default function RedesSocialesPage() {
         <Card className="flex flex-col gap-3 p-5">
           <div className="flex items-center justify-between">
             <CardTitle>{t("Social inbox", "Bandeja social")}</CardTitle>
-            <Badge tone="green">{socialInbox.length} {t("new", "nuevos")}</Badge>
+            <Badge tone="green">{filtered.length} {t("new", "nuevos")}</Badge>
           </div>
 
           <div className="flex gap-1.5">

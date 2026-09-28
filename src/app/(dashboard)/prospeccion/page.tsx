@@ -11,10 +11,12 @@ import { Avatar } from "@/components/ui/Avatar";
 import { StageBadge } from "@/components/StageBadge";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useLanguage } from "@/context/LanguageContext";
-import { campaigns, companies, prospects } from "@/lib/mock-data";
+import { useCompany } from "@/context/CompanyContext";
+import { campaigns, prospects } from "@/lib/mock-data";
 
 export default function ProspeccionPage() {
   const { t } = useLanguage();
+  const { companies } = useCompany();
   const [campaignName, setCampaignName] = useState("");
   const [company, setCompany] = useState("");
   const [query, setQuery] = useState("");

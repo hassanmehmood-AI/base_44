@@ -192,18 +192,18 @@ export const campaignStats = {
 };
 
 export const databases = [
-  { id: "d1", name: "Alicante", records: 812, progress: 68 },
-  { id: "d2", name: "Marroquinerías - Norte", records: 541, progress: 42 },
-  { id: "d3", name: "Prospección Agosto", records: 1120, progress: 19 },
-  { id: "d4", name: "Clientes inactivos", records: 220, progress: 83 },
+  { id: "d1", name: "Alicante", records: 812, progress: 68, company: "Contact-On" },
+  { id: "d2", name: "Marroquinerías - Norte", records: 541, progress: 42, company: "Leyva" },
+  { id: "d3", name: "Prospección Agosto", records: 1120, progress: 19, company: "Rockstar" },
+  { id: "d4", name: "Clientes inactivos", records: 220, progress: 83, company: "Vulcan" },
 ];
 
 export const campaignRows = [
-  { id: "r1", cliente: "Calzados Moreno", agente: "Milagros", canal: "WhatsApp", estado: "Interested", ultimo: "Today 10:24" },
-  { id: "r2", cliente: "Clínica Levante", agente: "Solange", canal: "Call", estado: "To contact", ultimo: "Yesterday" },
-  { id: "r3", cliente: "Regalos Martínez", agente: "Solange", canal: "WhatsApp", estado: "To contact", ultimo: "Aug 01" },
-  { id: "r4", cliente: "Complementos Luna", agente: "Melina", canal: "WhatsApp", estado: "Order placed", ultimo: "Yesterday" },
-  { id: "r5", cliente: "Bar El Puerto", agente: "Milagros", canal: "Call", estado: "Interested", ultimo: "Aug 02" },
+  { id: "r1", cliente: "Calzados Moreno", agente: "Milagros", canal: "WhatsApp", estado: "Interested", ultimo: "Today 10:24", company: "Rockstar" },
+  { id: "r2", cliente: "Clínica Levante", agente: "Solange", canal: "Call", estado: "To contact", ultimo: "Yesterday", company: "Leyva" },
+  { id: "r3", cliente: "Regalos Martínez", agente: "Solange", canal: "WhatsApp", estado: "To contact", ultimo: "Aug 01", company: "Vulcan" },
+  { id: "r4", cliente: "Complementos Luna", agente: "Melina", canal: "WhatsApp", estado: "Order placed", ultimo: "Yesterday", company: "Meca" },
+  { id: "r5", cliente: "Bar El Puerto", agente: "Milagros", canal: "Call", estado: "Interested", ultimo: "Aug 02", company: "Rockstar" },
 ];
 
 export const campaignFilters = {
@@ -220,8 +220,8 @@ export const campaignFilters = {
 };
 
 export const assignedClients = [
-  { id: "a1", name: "Clínica Levante", active: true },
-  { id: "a2", name: "Gestoría Costa Blanca", active: true },
+  { id: "a1", name: "Clínica Levante", active: true, company: "Leyva" },
+  { id: "a2", name: "Gestoría Costa Blanca", active: true, company: "Meca" },
 ];
 
 export const channelSummary = {
@@ -257,6 +257,7 @@ export const emailThreads = [
   {
     id: "e1",
     company: "Calzados Moreno",
+    tenantCompany: "Rockstar",
     subject: "Access to professional catalog",
     preview: "Access to professional catalog",
     from: "Calzados Moreno",
@@ -266,6 +267,7 @@ export const emailThreads = [
   {
     id: "e2",
     company: "Piel & Estilo",
+    tenantCompany: "Leyva",
     subject: "Web access request",
     preview: "Web access request",
     from: "Piel & Estilo",
@@ -275,6 +277,7 @@ export const emailThreads = [
   {
     id: "e3",
     company: "Regalos Martínez",
+    tenantCompany: "Vulcan",
     subject: "Quote for 50 units",
     preview: "Quote for 50 units",
     from: "Regalos Martínez",
@@ -284,6 +287,7 @@ export const emailThreads = [
   {
     id: "e4",
     company: "Complementos Luna",
+    tenantCompany: "Meca",
     subject: "Order confirmation",
     preview: "Order confirmation",
     from: "Complementos Luna",
@@ -300,22 +304,22 @@ export const emailResources = [
 ];
 
 export const callQueue = [
-  { id: "call1", name: "Mehrish", phone: "+923336139035" },
-  { id: "call2", name: "Calzados Moreno", phone: "+34 965 194 800" },
-  { id: "call3", name: "Bar El Puerto", phone: "+34 965 552 234" },
-  { id: "call4", name: "Gestoría Costa Blanca", phone: "+34 965 442 118" },
-  { id: "call5", name: "Piel & Estilo", phone: "+34 965 331 190" },
-  { id: "call6", name: "Regalos Martínez", phone: "+34 965 220 118" },
-  { id: "call7", name: "Complementos Luna", phone: "+34 965 887 213" },
-  { id: "call8", name: "Club Dardos Alicante", phone: "+34 965 220 339" },
-  { id: "call9", name: "Calzados Moreno", phone: "+34 965 194 801" },
-  { id: "call10", name: "Clínica Levante", phone: "+34 965 774 402" },
+  { id: "call1", name: "Mehrish", phone: "+923336139035", company: "Contact-On" },
+  { id: "call2", name: "Calzados Moreno", phone: "+34 965 194 800", company: "Rockstar" },
+  { id: "call3", name: "Bar El Puerto", phone: "+34 965 552 234", company: "Rockstar" },
+  { id: "call4", name: "Gestoría Costa Blanca", phone: "+34 965 442 118", company: "Meca" },
+  { id: "call5", name: "Piel & Estilo", phone: "+34 965 331 190", company: "Leyva" },
+  { id: "call6", name: "Regalos Martínez", phone: "+34 965 220 118", company: "Vulcan" },
+  { id: "call7", name: "Complementos Luna", phone: "+34 965 887 213", company: "Meca" },
+  { id: "call8", name: "Club Dardos Alicante", phone: "+34 965 220 339", company: "Linmania" },
+  { id: "call9", name: "Calzados Moreno", phone: "+34 965 194 801", company: "Rockstar" },
+  { id: "call10", name: "Clínica Levante", phone: "+34 965 774 402", company: "Leyva" },
 ];
 
 export const socialInbox = [
-  { id: "s1", handle: "@marta_complementos", platform: "IG", preview: "¿Tenéis este modelo en color negro?" },
-  { id: "s2", handle: "Calzados Martín", platform: "FB", preview: "¿Cuál es el horario de la tienda?" },
-  { id: "s3", handle: "Boutique Elvira", platform: "MSG", preview: "Queríamos confirmar el pedido." },
+  { id: "s1", handle: "@marta_complementos", platform: "IG", preview: "¿Tenéis este modelo en color negro?", company: "Contact-On" },
+  { id: "s2", handle: "Calzados Martín", platform: "FB", preview: "¿Cuál es el horario de la tienda?", company: "Rockstar" },
+  { id: "s3", handle: "Boutique Elvira", platform: "MSG", preview: "Queríamos confirmar el pedido.", company: "Leyva" },
 ];
 
 export const kpiStats = {
@@ -335,11 +339,11 @@ export const kpiMonthly = [
 ];
 
 export const agentPerformance = [
-  { agente: "David Leyva", asignados: 320, contactados: 210, oportunidades: 52, ventas: 12, tasa: "23,1%" },
-  { agente: "Victor Castillero", asignados: 280, contactados: 195, oportunidades: 44, ventas: 9, tasa: "20,5%" },
-  { agente: "Milagros", asignados: 240, contactados: 160, oportunidades: 38, ventas: 11, tasa: "28,9%" },
-  { agente: "Ana Victoria", asignados: 210, contactados: 140, oportunidades: 31, ventas: 7, tasa: "22,6%" },
-  { agente: "Gabriel", asignados: 190, contactados: 120, oportunidades: 20, ventas: 3, tasa: "15,0%" },
+  { agente: "David Leyva", asignados: 320, contactados: 210, oportunidades: 52, ventas: 12, tasa: "23,1%", company: "Contact-On" },
+  { agente: "Victor Castillero", asignados: 280, contactados: 195, oportunidades: 44, ventas: 9, tasa: "20,5%", company: "Meca" },
+  { agente: "Milagros", asignados: 240, contactados: 160, oportunidades: 38, ventas: 11, tasa: "28,9%", company: "Rockstar" },
+  { agente: "Ana Victoria", asignados: 210, contactados: 140, oportunidades: 31, ventas: 7, tasa: "22,6%", company: "Leyva" },
+  { agente: "Gabriel", asignados: 190, contactados: 120, oportunidades: 20, ventas: 3, tasa: "15,0%", company: "Contact-On" },
 ];
 
 export const users = [

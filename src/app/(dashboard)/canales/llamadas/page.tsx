@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Phone, PhoneIncoming, PhoneCall } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -9,13 +9,20 @@ import { SearchInput, Select, Textarea } from "@/components/ui/Input";
 import { Avatar } from "@/components/ui/Avatar";
 import { PageHeader } from "@/components/PageHeader";
 import { useLanguage } from "@/context/LanguageContext";
+import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { callQueue } from "@/lib/mock-data";
 import { cn } from "@/lib/cn";
 
 export default function LlamadasPage() {
   const { t } = useLanguage();
+  const { companies, activeCompany, setActiveCompany } = useCompany();
   const [selectedId, setSelectedId] = useState(callQueue[0].id);
   const selected = callQueue.find((c) => c.id === selectedId) ?? callQueue[0];
+
+  const filteredQueue = useMemo(
+    () => callQueue.filter((c) => activeCompany === ALL_COMPANIES || c.company === activeCompany),
+    [activeCompany]
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -34,10 +41,13 @@ export default function LlamadasPage() {
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="w-[200px]">
-          <Select defaultValue="All companies">
-            <option>{t("All companies", "Todas las empresas")}</option>
-            <option>Contact-On</option>
-            <option>Leyva</option>
+          <Select value={activeCompany} onChange={(e) => setActiveCompany(e.target.value)}>
+            <option value={ALL_COMPANIES}>{t("All companies", "Todas las empresas")}</option>
+            {companies.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
           </Select>
         </div>
         <Button variant="outline">
@@ -49,10 +59,10 @@ export default function LlamadasPage() {
         <Card className="flex flex-col gap-1 p-5">
           <div className="mb-2 flex items-center justify-between">
             <CardTitle>{t("Clients to call", "Clientes por llamar")}</CardTitle>
-            <Badge tone="green">{callQueue.length} {t("in queue", "en cola")}</Badge>
+            <Badge tone="green">{filteredQueue.length} {t("in queue", "en cola")}</Badge>
           </div>
           <div className="flex flex-col gap-1 max-h-[560px] overflow-y-auto">
-            {callQueue.map((c) => (
+            {filteredQueue.map((c) => (
               <button
                 key={c.id}
                 onClick={() => setSelectedId(c.id)}

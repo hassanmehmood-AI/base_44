@@ -1,18 +1,25 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Plus, MessageCircle, Mail, Phone, ArrowRight } from "lucide-react";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Input";
 import { PageHeader } from "@/components/PageHeader";
 import { useLanguage } from "@/context/LanguageContext";
+import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { assignedClients, channelSummary } from "@/lib/mock-data";
 import { cn } from "@/lib/cn";
 
 export default function CampanasActivasPage() {
   const { t } = useLanguage();
+  const { companies, activeCompany, setActiveCompany } = useCompany();
   const [selectedClient, setSelectedClient] = useState(assignedClients[0].id);
+
+  const filteredClients = useMemo(
+    () => assignedClients.filter((c) => activeCompany === ALL_COMPANIES || c.company === activeCompany),
+    [activeCompany]
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -22,10 +29,13 @@ export default function CampanasActivasPage() {
         actions={
           <>
             <div className="w-[260px]">
-              <Select defaultValue="Contact-On">
-                <option value="Contact-On">{t("Campaigns and contacts of: Contact-On", "Campañas y contactos de: Contact-On")}</option>
-                <option value="Leyva">{t("Campaigns and contacts of: Leyva", "Campañas y contactos de: Leyva")}</option>
-                <option value="Rockstar">{t("Campaigns and contacts of: Rockstar", "Campañas y contactos de: Rockstar")}</option>
+              <Select value={activeCompany} onChange={(e) => setActiveCompany(e.target.value)}>
+                <option value={ALL_COMPANIES}>{t("Campaigns and contacts of: All companies", "Campañas y contactos de: Todas las empresas")}</option>
+                {companies.map((c) => (
+                  <option key={c} value={c}>
+                    {t("Campaigns and contacts of:", "Campañas y contactos de:")} {c}
+                  </option>
+                ))}
               </Select>
             </div>
             <div className="w-[160px]">
@@ -46,7 +56,7 @@ export default function CampanasActivasPage() {
         <Card className="p-5">
           <CardTitle>{t("My assigned clients", "Mis clientes asignados")}</CardTitle>
           <div className="mt-4 flex flex-col gap-2">
-            {assignedClients.map((c) => (
+            {filteredClients.map((c) => (
               <button
                 key={c.id}
                 onClick={() => setSelectedClient(c.id)}
@@ -64,6 +74,7 @@ export default function CampanasActivasPage() {
           </div>
         </Card>
 
+        {/* Channel summary cards are aggregate counts — mock data has no per-company breakdown, so these don't filter with activeCompany */}
         <ChannelCard
           icon={MessageCircle}
           iconTone="text-brand bg-brand-50"

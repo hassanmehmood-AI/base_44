@@ -23,6 +23,7 @@ import { SearchInput, Select, Textarea } from "@/components/ui/Input";
 import { Avatar } from "@/components/ui/Avatar";
 import { StageBadge } from "@/components/StageBadge";
 import { useLanguage } from "@/context/LanguageContext";
+import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { contacts, contactHistory } from "@/lib/mock-data";
 import { STAGE_TONE, Stage } from "@/lib/pipeline";
 import { cn } from "@/lib/cn";
@@ -44,12 +45,11 @@ const channelIcon: Record<string, React.ElementType> = {
 
 export default function CrmPage() {
   const { t } = useLanguage();
-  const [activeTag, setActiveTag] = useState("Linmania");
+  const { companies, activeCompany, setActiveCompany } = useCompany();
   const [selectedId, setSelectedId] = useState(contacts[0].id);
   const [historyTab, setHistoryTab] = useState("All");
   const [search, setSearch] = useState("");
 
-  const filterTags = [t("All", "Todos"), "Linmania", "Rockstar", "Contact-On", "Leyva", "Vulcan", "Meca"];
   const historyTabs = [
     t("All", "Todos"),
     "WhatsApp",
@@ -64,11 +64,11 @@ export default function CrmPage() {
   const filteredContacts = useMemo(
     () =>
       contacts.filter((c) => {
-        const matchesTag = activeTag === t("All", "Todos") || c.tag === activeTag;
+        const matchesCompany = activeCompany === ALL_COMPANIES || c.tag === activeCompany;
         const matchesSearch = c.name.toLowerCase().includes(search.toLowerCase());
-        return matchesTag && matchesSearch;
+        return matchesCompany && matchesSearch;
       }),
-    [activeTag, search, t]
+    [activeCompany, search]
   );
 
   return (
@@ -97,18 +97,29 @@ export default function CrmPage() {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            {filterTags.map((tag) => (
+            <button
+              onClick={() => setActiveCompany(ALL_COMPANIES)}
+              className={cn(
+                "rounded-full px-3 py-1.5 text-[12.5px] font-medium transition-colors",
+                activeCompany === ALL_COMPANIES
+                  ? "bg-text-primary text-white"
+                  : "bg-surface-muted text-text-secondary hover:bg-gray-200"
+              )}
+            >
+              {t("All", "Todos")}
+            </button>
+            {companies.map((c) => (
               <button
-                key={tag}
-                onClick={() => setActiveTag(tag)}
+                key={c}
+                onClick={() => setActiveCompany(c)}
                 className={cn(
                   "rounded-full px-3 py-1.5 text-[12.5px] font-medium transition-colors",
-                  activeTag === tag
+                  activeCompany === c
                     ? "bg-text-primary text-white"
                     : "bg-surface-muted text-text-secondary hover:bg-gray-200"
                 )}
               >
-                {tag}
+                {c}
               </button>
             ))}
           </div>

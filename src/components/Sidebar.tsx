@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Sprout,
   Database,
@@ -19,10 +19,15 @@ import {
   Headset,
   ChevronDown,
   ArrowLeftRight,
+  LogOut,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Avatar } from "@/components/ui/Avatar";
+import { CompanySwitcherMenu, useCompanyLabel } from "@/components/CompanySwitcher";
+import { signOutAction } from "@/app/(dashboard)/actions";
+import { ROLE_LABEL, ROLE_LABEL_ES } from "@/lib/roles";
+import type { RoleKey } from "@/server/constants";
 
 import { useLanguage } from "@/context/LanguageContext";
 
@@ -77,16 +82,22 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 export function Sidebar({
+  user,
   mobileOpen = false,
   onClose,
 }: {
+  user: { name: string; roleKey: RoleKey };
   mobileOpen?: boolean;
   onClose?: () => void;
 }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  const roleLabel = (language === "es" ? ROLE_LABEL_ES : ROLE_LABEL)[user.roleKey];
   const pathname = usePathname();
   const channelsActive = pathname.startsWith("/canales");
   const [channelsOpen, setChannelsOpen] = useState(true);
+  const [companyMenuOpen, setCompanyMenuOpen] = useState(false);
+  const switchCompanyRef = useRef<HTMLButtonElement>(null);
+  const companyLabel = useCompanyLabel();
 
   const channelLinks = [
     { href: "/canales/whatsapp", label: t("WhatsApp", "WhatsApp"), icon: MessageCircle },
@@ -182,21 +193,44 @@ export function Sidebar({
       </nav>
 
       <div className="flex items-center gap-3 border-t border-sidebar-border px-4 py-2">
-        <Avatar name="David Leyva" size={28} />
+        <Avatar name={user.name} size={28} />
         <div className={cn("min-w-0 flex-1", REVEAL)}>
-          <p className="truncate text-[13.5px] font-semibold text-sidebar-heading">David Leyva</p>
-          <p className="truncate text-[12px] text-sidebar-text-dim">{t("Superuser", "Superusuario")}</p>
+          <p className="truncate text-[13.5px] font-semibold text-sidebar-heading">{user.name}</p>
+          <p className="truncate text-[12px] text-sidebar-text-dim">
+            {roleLabel} · {companyLabel}
+          </p>
         </div>
         <button
+          ref={switchCompanyRef}
+          onClick={() => setCompanyMenuOpen((v) => !v)}
           className={cn(
             "shrink-0 text-sidebar-text-dim hover:text-sidebar-heading",
             REVEAL
           )}
-          aria-label="Switch account"
+          aria-haspopup="listbox"
+          aria-expanded={companyMenuOpen}
+          aria-label={t("Switch company", "Cambiar de empresa")}
+          title={t("Switch company", "Cambiar de empresa")}
         >
           <ArrowLeftRight className="h-4 w-4" />
         </button>
+        <form action={signOutAction}>
+          <button
+            type="submit"
+            className={cn("shrink-0 text-sidebar-text-dim hover:text-danger", REVEAL)}
+            aria-label={t("Sign out", "Cerrar sesión")}
+            title={t("Sign out", "Cerrar sesión")}
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
+        </form>
       </div>
+
+      <CompanySwitcherMenu
+        open={companyMenuOpen}
+        onClose={() => setCompanyMenuOpen(false)}
+        anchorRef={switchCompanyRef}
+      />
     </aside>
   );
 }
