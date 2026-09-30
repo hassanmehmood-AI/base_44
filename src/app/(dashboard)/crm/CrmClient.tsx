@@ -216,7 +216,7 @@ export function CrmClient({
         />
       )}
 
-      <div className={cn("grid grid-cols-1 gap-6 lg:grid-cols-[280px_1fr_300px]", view === "board" && "hidden")}>
+      <div className={cn("grid grid-cols-1 gap-6 lg:grid-cols-[280px_minmax(0,1fr)_300px]", view === "board" && "hidden")}>
         {/* Contacts list */}
         <Card className="flex flex-col gap-4 p-5">
           <div className="flex items-center justify-between">
@@ -252,11 +252,13 @@ export function CrmClient({
             ))}
           </div>
 
-          <SearchInput
-            placeholder={t("Search client, phone", "Buscar cliente, teléfono")}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <div>
+            <SearchInput
+              placeholder={t("Search client, phone", "Buscar cliente, teléfono")}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
 
           <div className="flex flex-col gap-1.5 -mx-1">
             {filteredContacts.map((c) => (

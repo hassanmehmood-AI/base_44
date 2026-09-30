@@ -159,7 +159,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <nav className="flex-1 min-h-[502px] overflow-hidden px-3 pb-2">
+      <nav className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-2">
         <SectionLabel>{t("WORKSPACE", "ESPACIO DE TRABAJO")}</SectionLabel>
         <div className="flex flex-col gap-1">
           {workspaceLinks.map((l) => (

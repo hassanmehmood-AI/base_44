@@ -23,8 +23,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col bg-white text-[15px]">
-        <Script src="/theme-init.js" strategy="beforeInteractive" />
         {children}
+        <Script src="/theme-init.js" strategy="beforeInteractive" />
       </body>
     </html>
   );

@@ -17,7 +17,7 @@ export function TopBar() {
   const companyLabel = useCompanyLabel();
 
   return (
-    <header className="hidden shrink-0 items-center justify-end border-b border-border bg-surface px-6 py-3 lg:flex">
+    <header className="hidden shrink-0 items-center justify-end bg-transparent px-6 py-3 lg:flex">
       <button
         ref={triggerRef}
         type="button"

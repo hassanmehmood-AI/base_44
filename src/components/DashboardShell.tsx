@@ -88,7 +88,7 @@ export function DashboardShell({
               )}
 
               <div className="flex min-w-0 flex-1 flex-col lg:pl-[96px] lg:transition-[padding-left] lg:duration-[850ms] lg:ease-[cubic-bezier(0.16,1,0.3,1)] lg:peer-hover:pl-[284px]">
-                <header className="flex items-center gap-3 border-b border-border bg-surface px-4 py-3 lg:hidden">
+                <header className="flex items-center gap-3 bg-transparent px-4 py-3 lg:hidden">
                   <button
                     onClick={() => setMobileOpen(true)}
                     aria-label="Open menu"
