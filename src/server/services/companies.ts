@@ -19,3 +19,19 @@ export async function getAllowedCompanyNamesForCurrentUser(): Promise<string[]> 
   const allowed = await companiesRepo.findByIds(session.user.companyIds);
   return allowed.filter((c) => c.isActive).map((c) => c.name);
 }
+
+/** Same authorization as above, but returning {id, name} — needed anywhere
+ * that has to store a real companyId (e.g. creating a contact), not just
+ * display/filter by name. */
+export async function getAllowedCompaniesForCurrentUser() {
+  const session = await requireSession();
+
+  if (session.user.roleKey === "SUPERUSER") {
+    const all = await companiesRepo.findAllActive();
+    return all.map((c) => ({ id: c.id, name: c.name }));
+  }
+
+  if (session.user.companyIds.length === 0) return [];
+  const allowed = await companiesRepo.findByIds(session.user.companyIds);
+  return allowed.filter((c) => c.isActive).map((c) => ({ id: c.id, name: c.name }));
+}

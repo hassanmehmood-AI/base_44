@@ -15,6 +15,10 @@ export default auth((req) => {
 });
 
 export const config = {
-  // everything except static assets, image optimization, and the auth API routes themselves
-  matcher: ["/((?!api/auth|_next/static|_next/image|favicon.ico).*)"],
+  // everything except static assets (by extension, so anything under /public is
+  // covered, not just the ones we happen to name here), image optimization, and
+  // the auth API routes themselves
+  matcher: [
+    "/((?!api/auth|_next/static|_next/image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|js|css|txt|xml|json|woff|woff2)$).*)",
+  ],
 };
