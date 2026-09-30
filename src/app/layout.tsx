@@ -19,7 +19,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${inter.variable} h-full antialiased`}
       data-theme="blue"
-      data-design="bento"
+      data-design="aurora"
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col bg-white text-[15px]">

@@ -107,7 +107,7 @@ export default function CampanasPage() {
                 </div>
                 <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-muted">
                   <div
-                    className="h-full rounded-full bg-brand"
+                    className="h-full rounded-full bg-accent-lime"
                     style={{ width: `${db.progress}%` }}
                   />
                 </div>

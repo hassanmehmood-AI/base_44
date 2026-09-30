@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { getAllowedCompanyNamesForCurrentUser } from "@/server/services/companies";
+import { getImpersonatableUsersAction } from "@/app/(dashboard)/actions";
 import { DashboardShell } from "@/components/DashboardShell";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -10,10 +11,22 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const session = await auth();
   if (!session?.user) redirect("/login");
 
-  const companies = await getAllowedCompanyNamesForCurrentUser();
+  const [companies, { users: impersonatableUsers }] = await Promise.all([
+    getAllowedCompanyNamesForCurrentUser(),
+    getImpersonatableUsersAction(),
+  ]);
 
   return (
-    <DashboardShell user={{ name: session.user.name, roleKey: session.user.roleKey }} companies={companies}>
+    <DashboardShell
+      user={{
+        name: session.user.name,
+        roleKey: session.user.roleKey,
+        impersonatorId: session.user.impersonatorId,
+        impersonatorName: session.user.impersonatorName,
+      }}
+      companies={companies}
+      impersonatableUsers={impersonatableUsers}
+    >
       {children}
     </DashboardShell>
   );

@@ -60,6 +60,11 @@ export async function create(data: NewContact): Promise<Contact> {
   return row;
 }
 
+export async function createMany(rows: NewContact[]): Promise<Contact[]> {
+  if (rows.length === 0) return [];
+  return getDb().insert(contacts).values(rows).returning();
+}
+
 export async function update(id: string, data: ContactUpdate): Promise<Contact> {
   const [row] = await getDb()
     .update(contacts)

@@ -18,6 +18,8 @@ import {
   CheckCircle2,
   List,
   Kanban,
+  Download,
+  AlertCircle,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -32,6 +34,7 @@ import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { STAGE_TONE, STAGE_LABEL, STAGE_LABEL_ES, Stage } from "@/lib/pipeline";
 import { formatRelativeTime, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
+import { parseCsv } from "@/lib/csv";
 import type { ContactWithJoins } from "@/server/repositories/contacts";
 import type { PipelineStage } from "@/server/repositories/pipelineStages";
 import type { ActivityWithAuthor } from "@/server/repositories/activities";
@@ -48,6 +51,7 @@ import {
   getContactTasksAction,
   createTaskAction,
   completeTaskAction,
+  importContactsAction,
 } from "./actions";
 
 const toneDot: Record<string, string> = {
@@ -106,6 +110,7 @@ export function CrmClient({
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [view, setView] = useState<"list" | "board">("list");
   const [, startTransition] = useTransition();
 
@@ -173,7 +178,7 @@ export function CrmClient({
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" /> {t("New contact", "Nuevo contacto")}
         </Button>
-        <Button variant="outline" disabled title={t("Coming soon", "Próximamente")}>
+        <Button variant="outline" onClick={() => setImportOpen(true)}>
           <Upload className="h-4 w-4" /> {t("Import Excel/CSV", "Importar Excel/CSV")}
         </Button>
 
@@ -497,6 +502,23 @@ export function CrmClient({
           />
         </Modal>
       )}
+
+      <Modal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        title={t("Import contacts", "Importar contactos")}
+        className="max-w-2xl"
+      >
+        <ImportContactsPanel
+          companies={companies}
+          defaultCompanyId={companies.find((c) => c.name === activeCompany)?.id}
+          pipelineStageId={stages[0]?.id}
+          onImported={() => {
+            setImportOpen(false);
+            router.refresh();
+          }}
+        />
+      </Modal>
     </div>
   );
 }
@@ -996,5 +1018,298 @@ function ContactForm({
         {saving ? t("Saving...", "Guardando...") : submitLabel}
       </Button>
     </form>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// CSV contact import — parsed and previewed in the browser (see @/lib/csv),
+// then bulk-created via one server action call once the user confirms.
+// -----------------------------------------------------------------------------
+
+const IMPORT_TEMPLATE_CSV =
+  "Name,Business Name,Phone,Email,Source\nJane Doe,Acme Inc,+1 555 0100,jane@acme.com,Referral\n";
+
+const MAX_IMPORT_ROWS = 500;
+
+type ImportRow = {
+  name: string;
+  businessName: string;
+  phone: string;
+  email: string;
+  leadSource: string;
+  valid: boolean;
+  reason?: string;
+};
+
+function findColumn(header: string[], candidates: string[]): number {
+  const normalized = header.map((h) => h.trim().toLowerCase());
+  for (const candidate of candidates) {
+    const idx = normalized.indexOf(candidate);
+    if (idx !== -1) return idx;
+  }
+  return -1;
+}
+
+function parseContactRows(text: string, t: (en: string, es: string) => string): { rows: ImportRow[]; error?: string } {
+  const table = parseCsv(text).filter((r) => r.some((cell) => cell.trim() !== ""));
+  if (table.length === 0) return { rows: [], error: t("The file is empty.", "El archivo está vacío.") };
+
+  const [header, ...dataRows] = table;
+  const nameIdx = findColumn(header, ["name", "nombre"]);
+  if (nameIdx === -1) {
+    return {
+      rows: [],
+      error: t('No "Name" column found in the file header.', 'No se encontró la columna "Name" en el encabezado.'),
+    };
+  }
+  const businessIdx = findColumn(header, ["business name", "nombre de empresa", "business", "empresa"]);
+  const phoneIdx = findColumn(header, ["phone", "teléfono", "telefono"]);
+  const emailIdx = findColumn(header, ["email", "correo"]);
+  const sourceIdx = findColumn(header, ["source", "lead source", "origen"]);
+
+  const rows: ImportRow[] = dataRows.map((r) => {
+    const name = (r[nameIdx] ?? "").trim();
+    return {
+      name,
+      businessName: businessIdx !== -1 ? (r[businessIdx] ?? "").trim() : "",
+      phone: phoneIdx !== -1 ? (r[phoneIdx] ?? "").trim() : "",
+      email: emailIdx !== -1 ? (r[emailIdx] ?? "").trim() : "",
+      leadSource: sourceIdx !== -1 ? (r[sourceIdx] ?? "").trim() : "",
+      valid: name.length > 0,
+      reason: name.length > 0 ? undefined : t("Missing name", "Falta el nombre"),
+    };
+  });
+
+  return { rows };
+}
+
+function ImportContactsPanel({
+  companies,
+  defaultCompanyId,
+  pipelineStageId,
+  onImported,
+}: {
+  companies: CompanyOption[];
+  defaultCompanyId?: string;
+  pipelineStageId?: string;
+  onImported: () => void;
+}) {
+  const { t } = useLanguage();
+  const [companyId, setCompanyId] = useState(defaultCompanyId ?? "");
+  const [fileName, setFileName] = useState("");
+  const [rows, setRows] = useState<ImportRow[] | null>(null);
+  const [fileError, setFileError] = useState<string | undefined>();
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [result, setResult] = useState<number | null>(null);
+
+  const validRows = rows?.filter((r) => r.valid) ?? [];
+  const invalidCount = (rows?.length ?? 0) - validRows.length;
+  const truncated = validRows.length > MAX_IMPORT_ROWS;
+
+  function handleDownloadTemplate() {
+    const blob = new Blob([IMPORT_TEMPLATE_CSV], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "contacts-template.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setFileName(file.name);
+    setRows(null);
+    setFileError(undefined);
+    setError(undefined);
+    setResult(null);
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = typeof reader.result === "string" ? reader.result : "";
+      const { rows: parsed, error: parseError } = parseContactRows(text, t);
+      if (parseError) {
+        setFileError(parseError);
+        return;
+      }
+      setRows(parsed);
+    };
+    reader.onerror = () => setFileError(t("Could not read that file.", "No se pudo leer el archivo."));
+    reader.readAsText(file);
+  }
+
+  async function handleImport() {
+    if (!companyId) {
+      setError(t("Choose a company first.", "Elige una empresa primero."));
+      return;
+    }
+    if (!pipelineStageId) {
+      setError(t("No pipeline stage configured.", "No hay una etapa de pipeline configurada."));
+      return;
+    }
+    setImporting(true);
+    setError(undefined);
+    const rowsToSend = validRows.slice(0, MAX_IMPORT_ROWS).map((r) => ({
+      name: r.name,
+      businessName: r.businessName,
+      phone: r.phone,
+      email: r.email,
+      leadSource: r.leadSource,
+    }));
+    const res = await importContactsAction(companyId, pipelineStageId, rowsToSend);
+    setImporting(false);
+    if (res.error) {
+      setError(res.error);
+      return;
+    }
+    setResult(res.created ?? 0);
+  }
+
+  function handleReset() {
+    setFileName("");
+    setRows(null);
+    setFileError(undefined);
+    setError(undefined);
+    setResult(null);
+  }
+
+  if (result !== null) {
+    return (
+      <div className="flex flex-col items-center gap-4 py-6 text-center">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success/10 text-success">
+          <CheckCircle2 className="h-6 w-6" />
+        </div>
+        <p className="text-[15px] font-semibold text-text-primary">
+          {t(
+            `${result} contact${result === 1 ? "" : "s"} imported.`,
+            `${result} contacto${result === 1 ? "" : "s"} importado${result === 1 ? "" : "s"}.`
+          )}
+        </p>
+        <Button onClick={onImported}>{t("Done", "Listo")}</Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field label={t("COMPANY", "EMPRESA")}>
+          <Select value={companyId} onChange={(e) => setCompanyId(e.target.value)}>
+            <option value="">{t("Choose a company", "Elige una empresa")}</option>
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <div className="flex items-end">
+          <button
+            type="button"
+            onClick={handleDownloadTemplate}
+            className="flex items-center gap-1.5 text-[13px] font-medium text-brand-700 hover:underline"
+          >
+            <Download className="h-3.5 w-3.5" /> {t("Download CSV template", "Descargar plantilla CSV")}
+          </button>
+        </div>
+      </div>
+
+      <p className="text-[12.5px] text-text-tertiary">
+        {t(
+          "Expected columns: Name (required), Business Name, Phone, Email, Source.",
+          "Columnas esperadas: Name (obligatorio), Business Name, Phone, Email, Source."
+        )}
+      </p>
+
+      {!rows && (
+        <label className="flex cursor-pointer flex-col items-center gap-2 rounded-xl border border-dashed border-border px-6 py-8 text-center hover:bg-surface-muted">
+          <Upload className="h-6 w-6 text-text-tertiary" />
+          <span className="text-[13.5px] font-medium text-text-primary">
+            {fileName || t("Click to choose a CSV file", "Haz clic para elegir un archivo CSV")}
+          </span>
+          <input type="file" accept=".csv,text/csv" onChange={handleFile} className="hidden" />
+        </label>
+      )}
+
+      {fileError && (
+        <p className="flex items-center gap-1.5 text-[13px] text-danger">
+          <AlertCircle className="h-4 w-4 shrink-0" /> {fileError}
+        </p>
+      )}
+
+      {rows && (
+        <>
+          <div className="flex items-center justify-between">
+            <p className="text-[13px] text-text-secondary">
+              {t(
+                `${validRows.length} valid, ${invalidCount} invalid row(s) in ${fileName}.`,
+                `${validRows.length} válidas, ${invalidCount} inválida(s) en ${fileName}.`
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={handleReset}
+              className="text-[12.5px] font-medium text-text-tertiary hover:text-text-primary"
+            >
+              {t("Choose a different file", "Elegir otro archivo")}
+            </button>
+          </div>
+
+          {truncated && (
+            <p className="text-[12.5px] text-warning-700">
+              {t(
+                `Only the first ${MAX_IMPORT_ROWS} valid rows will be imported.`,
+                `Solo se importarán las primeras ${MAX_IMPORT_ROWS} filas válidas.`
+              )}
+            </p>
+          )}
+
+          <div className="max-h-64 overflow-y-auto rounded-xl border border-border">
+            <table className="w-full text-left text-[12.5px]">
+              <thead className="sticky top-0 bg-surface-muted text-text-tertiary">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">{t("Name", "Nombre")}</th>
+                  <th className="px-3 py-2 font-semibold">{t("Business", "Empresa")}</th>
+                  <th className="px-3 py-2 font-semibold">{t("Phone", "Teléfono")}</th>
+                  <th className="px-3 py-2 font-semibold">{t("Email", "Email")}</th>
+                  <th className="px-3 py-2 font-semibold">{t("Status", "Estado")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i} className={cn("border-t border-border", !r.valid && "bg-danger-50")}>
+                    <td className="truncate px-3 py-2">{r.name || "—"}</td>
+                    <td className="truncate px-3 py-2">{r.businessName || "—"}</td>
+                    <td className="truncate px-3 py-2">{r.phone || "—"}</td>
+                    <td className="truncate px-3 py-2">{r.email || "—"}</td>
+                    <td className="px-3 py-2">
+                      {r.valid ? (
+                        <span className="text-success">{t("Valid", "Válida")}</span>
+                      ) : (
+                        <span className="text-danger">{r.reason}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {error && <p className="text-[13px] text-danger">{error}</p>}
+
+      <Button className="w-full" disabled={!rows || validRows.length === 0 || importing} onClick={handleImport}>
+        {importing
+          ? t("Importing...", "Importando...")
+          : t(
+              `Import ${Math.min(validRows.length, MAX_IMPORT_ROWS)} contacts`,
+              `Importar ${Math.min(validRows.length, MAX_IMPORT_ROWS)} contactos`
+            )}
+      </Button>
+    </div>
   );
 }

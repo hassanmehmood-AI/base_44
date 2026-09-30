@@ -9,7 +9,7 @@ const COLOR_KEY = "crm-color-theme";
 const DESIGN_KEY = "crm-design-system";
 
 const DEFAULT_COLOR: ColorTheme = "blue";
-const DEFAULT_DESIGN: DesignSystem = "bento";
+const DEFAULT_DESIGN: DesignSystem = "aurora";
 
 interface ThemeContextValue {
   colorTheme: ColorTheme;

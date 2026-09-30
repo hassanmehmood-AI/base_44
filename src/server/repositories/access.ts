@@ -17,3 +17,19 @@ export async function findModulesForUser(userId: string): Promise<string[]> {
     .where(eq(userModuleAccess.userId, userId));
   return rows.map((r) => r.module);
 }
+
+export async function grantCompanyAccess(userId: string, companyIds: string[]) {
+  if (companyIds.length === 0) return;
+  await getDb()
+    .insert(userCompanyAccess)
+    .values(companyIds.map((companyId) => ({ userId, companyId })))
+    .onConflictDoNothing();
+}
+
+export async function grantModuleAccess(userId: string, modules: string[]) {
+  if (modules.length === 0) return;
+  await getDb()
+    .insert(userModuleAccess)
+    .values(modules.map((module) => ({ userId, module })))
+    .onConflictDoNothing();
+}

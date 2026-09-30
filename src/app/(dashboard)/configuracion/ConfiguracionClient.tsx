@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, CheckCircle2, Trash2, RotateCcw, ArrowUp, ArrowDown, Power } from "lucide-react";
+import { Plus, CheckCircle2, Trash2, RotateCcw, ArrowUp, ArrowDown, Power, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
-import { SearchInput, Select } from "@/components/ui/Input";
+import { SearchInput, Select, Input } from "@/components/ui/Input";
 import { Avatar } from "@/components/ui/Avatar";
+import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/PageHeader";
 import { useLanguage } from "@/context/LanguageContext";
 import { STAGE_LABEL, STAGE_LABEL_ES, Stage } from "@/lib/pipeline";
@@ -18,15 +19,52 @@ import {
 } from "@/lib/mock-data";
 import { cn } from "@/lib/cn";
 import type { PipelineStage } from "@/server/repositories/pipelineStages";
-import { toggleStageActiveAction, moveStageAction } from "./actions";
+import type { Company } from "@/server/repositories/companies";
+import { ROLE_KEYS, MODULE_KEYS, type RoleKey, type ModuleKey } from "@/server/constants";
+import { ROLE_LABEL, ROLE_LABEL_ES } from "@/lib/roles";
+import { toggleStageActiveAction, moveStageAction, createCompanyAction, createUserAction } from "./actions";
 
-export function ConfiguracionClient({ stages, canManageStages }: { stages: PipelineStage[]; canManageStages: boolean }) {
+const MODULE_LABEL: Record<ModuleKey, string> = {
+  PROSPECTING: "Prospecting",
+  CRM: "CRM",
+  CHANNELS: "Channels",
+  KPIS: "KPI's",
+  USER_ROLE_MANAGEMENT: "User & role management",
+  MANAGE_CAMPAIGNS: "Manage Campaigns",
+  ACTIVE_CAMPAIGNS: "Active Campaigns",
+  TECHNICAL_SUPPORT: "Technical Support",
+};
+
+const MODULE_LABEL_ES: Record<ModuleKey, string> = {
+  PROSPECTING: "Prospección",
+  CRM: "CRM",
+  CHANNELS: "Canales",
+  KPIS: "KPI's",
+  USER_ROLE_MANAGEMENT: "Gestión de usuarios y roles",
+  MANAGE_CAMPAIGNS: "Gestionar campañas",
+  ACTIVE_CAMPAIGNS: "Campañas activas",
+  TECHNICAL_SUPPORT: "Soporte técnico",
+};
+
+export function ConfiguracionClient({
+  stages,
+  canManageStages,
+  companies: realCompanies,
+  canManageAdmin,
+}: {
+  stages: PipelineStage[];
+  canManageStages: boolean;
+  companies: Company[];
+  canManageAdmin: boolean;
+}) {
   const { t } = useLanguage();
-  const [tab, setTab] = useState<"users" | "roles" | "pipeline">("users");
+  const [tab, setTab] = useState<"users" | "roles" | "companies" | "pipeline">("users");
   const [selectedId, setSelectedId] = useState(users[0].id);
   const [companies, setCompanies] = useState(new Set(allowedCompanies));
   const [modules, setModules] = useState(new Set(allowedModules));
   const [departments, setDepartments] = useState(new Set(kpiDepartments));
+  const [addCompanyOpen, setAddCompanyOpen] = useState(false);
+  const [addUserOpen, setAddUserOpen] = useState(false);
 
   const roles = [
     { name: t("Superuser", "Superusuario"), desc: t("Full access to all modules and companies.", "Acceso total a todos los módulos y empresas.") },
@@ -72,6 +110,15 @@ export function ConfiguracionClient({ stages, canManageStages }: { stages: Pipel
                 {t("Roles", "Roles")}
               </button>
               <button
+                onClick={() => setTab("companies")}
+                className={cn(
+                  "rounded-md px-4 py-1.5 text-[13.5px] font-medium transition-colors",
+                  tab === "companies" ? "bg-white text-text-primary" : "text-white/70 hover:text-white"
+                )}
+              >
+                {t("Companies", "Empresas")}
+              </button>
+              <button
                 onClick={() => setTab("pipeline")}
                 className={cn(
                   "rounded-md px-4 py-1.5 text-[13.5px] font-medium transition-colors",
@@ -81,13 +128,20 @@ export function ConfiguracionClient({ stages, canManageStages }: { stages: Pipel
                 {t("Pipeline", "Pipeline")}
               </button>
             </div>
-            {tab !== "pipeline" && (
+            {tab === "users" && (
               <>
                 <SearchInput placeholder={t("Search user...", "Buscar usuario...")} className="max-w-xs" />
-                <Button>
-                  <Plus className="h-4 w-4" /> {t("Invite user", "Invitar usuario")}
-                </Button>
+                {canManageAdmin && (
+                  <Button onClick={() => setAddUserOpen(true)}>
+                    <Plus className="h-4 w-4" /> {t("Add user", "Agregar usuario")}
+                  </Button>
+                )}
               </>
+            )}
+            {tab === "companies" && canManageAdmin && (
+              <Button onClick={() => setAddCompanyOpen(true)}>
+                <Plus className="h-4 w-4" /> {t("Add company", "Agregar empresa")}
+              </Button>
             )}
           </>
         }
@@ -235,8 +289,258 @@ export function ConfiguracionClient({ stages, canManageStages }: { stages: Pipel
         </div>
       )}
 
+      {tab === "companies" && (
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+          {realCompanies.map((c) => (
+            <Card key={c.id} className="flex items-center gap-3 p-5">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
+                <Building2 className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-[14.5px] font-semibold text-text-primary">{c.name}</p>
+                <p className="truncate text-[12px] text-text-tertiary">{c.slug}</p>
+              </div>
+            </Card>
+          ))}
+          {realCompanies.length === 0 && (
+            <p className="text-[13.5px] text-text-secondary">{t("No companies yet.", "Todavía no hay empresas.")}</p>
+          )}
+        </div>
+      )}
+
       {tab === "pipeline" && <PipelineStagesPanel stages={stages} canManage={canManageStages} />}
+
+      <AddCompanyModal open={addCompanyOpen} onClose={() => setAddCompanyOpen(false)} />
+      <AddUserModal open={addUserOpen} onClose={() => setAddUserOpen(false)} companies={realCompanies} />
     </div>
+  );
+}
+
+function AddCompanyModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { t } = useLanguage();
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | undefined>();
+  const [pending, setPending] = useState(false);
+
+  function handleClose() {
+    setName("");
+    setError(undefined);
+    onClose();
+  }
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setPending(true);
+    setError(undefined);
+    const result = await createCompanyAction(name);
+    setPending(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    handleClose();
+  }
+
+  return (
+    <Modal open={open} onClose={handleClose} title={t("Add company", "Agregar empresa")}>
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <div>
+          <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+            {t("COMPANY NAME", "NOMBRE DE LA EMPRESA")}
+          </label>
+          <Input value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+        </div>
+        {error && <p className="text-[13px] text-danger">{error}</p>}
+        <div className="flex justify-end gap-3">
+          <Button type="button" variant="outline" onClick={handleClose}>
+            {t("Cancel", "Cancelar")}
+          </Button>
+          <Button type="submit" disabled={pending}>
+            {pending ? t("Adding...", "Agregando...") : t("Add company", "Agregar empresa")}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function AddUserModal({ open, onClose, companies }: { open: boolean; onClose: () => void; companies: Company[] }) {
+  const { t, language } = useLanguage();
+  const roleLabels = language === "es" ? ROLE_LABEL_ES : ROLE_LABEL;
+  const moduleLabels = language === "es" ? MODULE_LABEL_ES : MODULE_LABEL;
+
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [roleKey, setRoleKey] = useState<RoleKey>("CALL_CENTER_AGENT");
+  const [companyIds, setCompanyIds] = useState<Set<string>>(new Set());
+  const [moduleKeys, setModuleKeys] = useState<Set<ModuleKey>>(new Set());
+  const [error, setError] = useState<string | undefined>();
+  const [pending, setPending] = useState(false);
+
+  function handleClose() {
+    setFullName("");
+    setEmail("");
+    setPassword("");
+    setRoleKey("CALL_CENTER_AGENT");
+    setCompanyIds(new Set());
+    setModuleKeys(new Set());
+    setError(undefined);
+    onClose();
+  }
+
+  function toggleCompany(id: string) {
+    setCompanyIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleModule(m: ModuleKey) {
+    setModuleKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(m)) next.delete(m);
+      else next.add(m);
+      return next;
+    });
+  }
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setPending(true);
+    setError(undefined);
+    const result = await createUserAction({
+      fullName,
+      email,
+      password,
+      roleKey,
+      companyIds: Array.from(companyIds),
+      modules: Array.from(moduleKeys),
+    });
+    setPending(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    handleClose();
+  }
+
+  const isSuperuserRole = roleKey === "SUPERUSER";
+
+  return (
+    <Modal open={open} onClose={handleClose} title={t("Add user", "Agregar usuario")} className="max-w-xl">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+              {t("FULL NAME", "NOMBRE COMPLETO")}
+            </label>
+            <Input value={fullName} onChange={(e) => setFullName(e.target.value)} required autoFocus />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+              {t("EMAIL", "CORREO")}
+            </label>
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+              {t("PASSWORD", "CONTRASEÑA")}
+            </label>
+            <Input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              minLength={8}
+              required
+              autoComplete="new-password"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+              {t("ROLE", "ROL")}
+            </label>
+            <Select value={roleKey} onChange={(e) => setRoleKey(e.target.value as RoleKey)}>
+              {ROLE_KEYS.map((r) => (
+                <option key={r} value={r}>
+                  {roleLabels[r]}
+                </option>
+              ))}
+            </Select>
+          </div>
+        </div>
+
+        {isSuperuserRole ? (
+          <p className="rounded-lg bg-surface-muted px-3.5 py-2.5 text-[13px] text-text-secondary">
+            {t(
+              "Superusers implicitly have access to every company and module.",
+              "Los superusuarios tienen acceso implícito a todas las empresas y módulos."
+            )}
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <p className="mb-2 text-[11px] font-semibold tracking-wide text-text-tertiary">
+                {t("COMPANY ACCESS", "ACCESO A EMPRESAS")}
+              </p>
+              <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto">
+                {companies.map((c) => (
+                  <PermissionCheckbox
+                    key={c.id}
+                    label={c.name}
+                    checked={companyIds.has(c.id)}
+                    onClick={() => toggleCompany(c.id)}
+                  />
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="mb-2 text-[11px] font-semibold tracking-wide text-text-tertiary">
+                {t("MODULE ACCESS", "ACCESO A MÓDULOS")}
+              </p>
+              <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto">
+                {MODULE_KEYS.map((m) => (
+                  <PermissionCheckbox
+                    key={m}
+                    label={moduleLabels[m]}
+                    checked={moduleKeys.has(m)}
+                    onClick={() => toggleModule(m)}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {error && <p className="text-[13px] text-danger">{error}</p>}
+        <div className="flex justify-end gap-3">
+          <Button type="button" variant="outline" onClick={handleClose}>
+            {t("Cancel", "Cancelar")}
+          </Button>
+          <Button type="submit" disabled={pending}>
+            {pending ? t("Adding...", "Agregando...") : t("Add user", "Agregar usuario")}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function PermissionCheckbox({ label, checked, onClick }: { label: string; checked: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors",
+        checked ? "bg-brand-50 text-brand-700" : "text-text-secondary hover:bg-surface-muted"
+      )}
+    >
+      <CheckCircle2 className={cn("h-3.5 w-3.5 shrink-0", checked ? "text-brand" : "text-gray-300")} />
+      <span className="truncate">{label}</span>
+    </button>
   );
 }
 

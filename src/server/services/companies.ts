@@ -1,5 +1,23 @@
 import * as companiesRepo from "@/server/repositories/companies";
-import { requireSession } from "@/server/services/authorization";
+import { requireSession, UnauthorizedError } from "@/server/services/authorization";
+
+const slugify = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+
+/** Only Superusers add companies — every other role's access is scoped BY
+ * company (user_company_access), so letting a non-Superuser create one would
+ * have no coherent owner. */
+export async function createCompany(name: string) {
+  const session = await requireSession();
+  if (session.user.roleKey !== "SUPERUSER") throw new UnauthorizedError("Only Superusers can add companies.");
+
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("Company name is required.");
+  const slug = slugify(trimmed);
+  if (!slug) throw new Error("Company name must contain at least one letter or number.");
+  if (await companiesRepo.existsByName(trimmed)) throw new Error("A company with that name already exists.");
+
+  return companiesRepo.create({ name: trimmed, slug });
+}
 
 /** Companies the signed-in user is allowed to see — SUPERUSER gets every
  * active company, everyone else gets exactly their user_company_access grants.

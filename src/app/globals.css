@@ -30,32 +30,44 @@
   --info-50: #eff8ff;
   --info-100: #b2ddff;
   --info-700: #175cd3;
-  --success: #12b76a;
-  --success-50: #ecfdf3;
+  /* Success is the given brand dark-green, not a generic teal — the raw lime
+     swatches (b5e550/abc32f) fail text contrast (~1.5-2:1 on white), so they're
+     reserved for decorative-only accents (--accent-lime*) below, never text. */
+  --success: #607c3c;
+  --success-50: #eef3df;
 
   /* Public alias names per design-system spec */
   --primary: var(--brand);
   --primary-hover: var(--brand-dark);
 
-  /* ---- color-theme defaults (blue) — overridden by [data-theme="..."] ---- */
-  --brand: #2563eb;
-  --brand-dark: #1d4ed8;
-  --brand-light: #3b82f6;
-  --brand-50: #eff6ff;
-  --brand-100: #dbeafe;
-  --brand-700: #1e40af;
+  /* ---- color-theme defaults (brand palette) — overridden by [data-theme="..."] ----
+     Source palette: #ececa3 / #b5e550 / #abc32f / #809c13 / #607c3c.
+     brand-dark/brand-700/brand-50 and the sidebar-* set are derived shades
+     (darkened/lightened) needed for WCAG AA text contrast — the palette itself
+     only supplies 5 fixed points, not every step a token system needs. */
+  --brand: #607c3c;
+  --brand-dark: #4f6631;
+  --brand-light: #809c13;
+  --brand-50: #f6f6d1;
+  --brand-100: #ececa3;
+  --brand-700: #43572a;
 
-  --sidebar: #eaf2ff;
-  --sidebar-hover: #d7e6fd;
-  --sidebar-active: #3b82f6;
-  --sidebar-border: #cfe0fa;
-  --sidebar-text: #4a5b7a;
-  --sidebar-text-dim: #8598bd;
-  --sidebar-heading: #0f2547;
+  /* Pure decorative accent — chart bars, progress fills, glows. Never place
+     text directly on these; they don't meet text-contrast minimums. */
+  --accent-lime: #b5e550;
+  --accent-lime-dark: #abc32f;
 
-  --brand-glow: rgba(37, 99, 235, 0.28);
-  --aurora-bg-1: rgba(37, 99, 235, 0.1);
-  --aurora-bg-2: rgba(96, 165, 250, 0.1);
+  --sidebar: #f8f8df;
+  --sidebar-hover: #eeeed6;
+  --sidebar-active: #5b7639;
+  --sidebar-border: #d4d493;
+  --sidebar-text: #4b612f;
+  --sidebar-text-dim: #7f9153;
+  --sidebar-heading: #384823;
+
+  --brand-glow: rgba(96, 124, 60, 0.28);
+  --aurora-bg-1: rgba(96, 124, 60, 0.1);
+  --aurora-bg-2: rgba(128, 156, 19, 0.1);
 
   /* ---- design-system defaults (bento) — overridden by [data-design="..."] ---- */
   --radius-card: 20px;
@@ -79,25 +91,28 @@
 /* ==========================================================================
    COLOR THEMES
    ========================================================================== */
+/* Key is still "blue" (matches the ColorTheme type / localStorage value) but
+   renders the brand palette — the color switcher UI was removed, so this is
+   the only color theme in effect; renaming the key wasn't worth the touch points. */
 :root[data-theme="blue"] {
-  --brand: #2563eb;
-  --brand-dark: #1d4ed8;
-  --brand-light: #3b82f6;
-  --brand-50: #eff6ff;
-  --brand-100: #dbeafe;
-  --brand-700: #1e40af;
+  --brand: #607c3c;
+  --brand-dark: #4f6631;
+  --brand-light: #809c13;
+  --brand-50: #f6f6d1;
+  --brand-100: #ececa3;
+  --brand-700: #43572a;
 
-  --sidebar: #eaf2ff;
-  --sidebar-hover: #d7e6fd;
-  --sidebar-active: #3b82f6;
-  --sidebar-border: #cfe0fa;
-  --sidebar-text: #4a5b7a;
-  --sidebar-text-dim: #8598bd;
-  --sidebar-heading: #0f2547;
+  --sidebar: #f8f8df;
+  --sidebar-hover: #eeeed6;
+  --sidebar-active: #5b7639;
+  --sidebar-border: #d4d493;
+  --sidebar-text: #4b612f;
+  --sidebar-text-dim: #7f9153;
+  --sidebar-heading: #384823;
 
-  --brand-glow: rgba(37, 99, 235, 0.28);
-  --aurora-bg-1: rgba(37, 99, 235, 0.1);
-  --aurora-bg-2: rgba(96, 165, 250, 0.1);
+  --brand-glow: rgba(96, 124, 60, 0.28);
+  --aurora-bg-1: rgba(96, 124, 60, 0.1);
+  --aurora-bg-2: rgba(128, 156, 19, 0.1);
 }
 
 :root[data-theme="gray"] {
@@ -222,6 +237,8 @@
   --color-brand-50: var(--brand-50);
   --color-brand-100: var(--brand-100);
   --color-brand-700: var(--brand-700);
+  --color-accent-lime: var(--accent-lime);
+  --color-accent-lime-dark: var(--accent-lime-dark);
   --color-surface: var(--surface);
   --color-surface-muted: var(--surface-muted);
   --color-border: var(--border);

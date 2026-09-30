@@ -183,6 +183,29 @@ export async function moveContactStageAction(
   return { ok: true, activity };
 }
 
+export async function importContactsAction(
+  companyId: string,
+  pipelineStageId: string,
+  rows: Array<{ name: string; businessName?: string; phone?: string; email?: string; leadSource?: string }>
+): Promise<ActionResult & { created?: number }> {
+  if (!companyId) return { error: "Company is required." };
+  if (!pipelineStageId) return { error: "No pipeline stage configured." };
+  if (rows.length === 0) return { error: "No valid rows to import." };
+
+  let created: number;
+  try {
+    const result = await contactsService.importContacts(companyId, pipelineStageId, rows);
+    created = result.created;
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "You don't have access to that company." };
+    if (e instanceof Error) return { error: e.message };
+    throw e;
+  }
+
+  revalidatePath("/crm");
+  return { ok: true, created };
+}
+
 export async function addNoteAction(contactId: string, notes: string): Promise<ActionResult & { activity?: ActivityWithAuthor }> {
   const trimmed = notes.trim();
   if (!trimmed) return { error: "Note can't be empty." };

@@ -40,6 +40,43 @@ export async function createContact(input: {
   return contactsRepo.create(input);
 }
 
+const MAX_IMPORT_ROWS = 500;
+
+/** CSV/Excel import (CRM "Import Excel/CSV"): the client already parsed and
+ * previewed the file, so this only re-validates (never trust client input)
+ * and bulk-inserts. Every row lands in the same company/stage — one row's
+ * bad data doesn't block the rest, since invalid rows are filtered out
+ * before this is called (see CrmClient's import preview step). */
+export async function importContacts(
+  companyId: string,
+  pipelineStageId: string,
+  rows: Array<{
+    name: string;
+    businessName?: string | null;
+    phone?: string | null;
+    email?: string | null;
+    leadSource?: string | null;
+  }>
+) {
+  await assertCompanyAccess(companyId);
+  if (rows.length === 0) return { created: 0 };
+  if (rows.length > MAX_IMPORT_ROWS) throw new Error(`Can't import more than ${MAX_IMPORT_ROWS} contacts at once.`);
+
+  const validRows = rows.filter((r) => r.name.trim().length > 0);
+  const created = await contactsRepo.createMany(
+    validRows.map((r) => ({
+      companyId,
+      pipelineStageId,
+      name: r.name.trim(),
+      businessName: r.businessName?.trim() || null,
+      phone: r.phone?.trim() || null,
+      email: r.email?.trim() || null,
+      leadSource: r.leadSource?.trim() || null,
+    }))
+  );
+  return { created: created.length };
+}
+
 export async function updateContactCore(
   id: string,
   input: {

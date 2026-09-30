@@ -18,14 +18,18 @@ import {
   Settings,
   Headset,
   ChevronDown,
-  ArrowLeftRight,
+  Users,
+  Undo2,
   LogOut,
   X,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useTransition } from "react";
 import { cn } from "@/lib/cn";
 import { Avatar } from "@/components/ui/Avatar";
-import { CompanySwitcherMenu, useCompanyLabel } from "@/components/CompanySwitcher";
-import { signOutAction } from "@/app/(dashboard)/actions";
+import { useCompanyLabel } from "@/components/CompanySwitcher";
+import { UserSwitcherMenu, type ImpersonatableUser } from "@/components/UserSwitcher";
+import { signOutAction, stopImpersonationAction } from "@/app/(dashboard)/actions";
 import { ROLE_LABEL, ROLE_LABEL_ES } from "@/lib/roles";
 import type { RoleKey } from "@/server/constants";
 
@@ -83,21 +87,34 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 export function Sidebar({
   user,
+  impersonatableUsers = [],
   mobileOpen = false,
   onClose,
 }: {
-  user: { name: string; roleKey: RoleKey };
+  user: { name: string; roleKey: RoleKey; impersonatorId?: string; impersonatorName?: string };
+  impersonatableUsers?: ImpersonatableUser[];
   mobileOpen?: boolean;
   onClose?: () => void;
 }) {
   const { t, language } = useLanguage();
+  const router = useRouter();
   const roleLabel = (language === "es" ? ROLE_LABEL_ES : ROLE_LABEL)[user.roleKey];
   const pathname = usePathname();
   const channelsActive = pathname.startsWith("/canales");
   const [channelsOpen, setChannelsOpen] = useState(true);
-  const [companyMenuOpen, setCompanyMenuOpen] = useState(false);
-  const switchCompanyRef = useRef<HTMLButtonElement>(null);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [returnPending, startReturnTransition] = useTransition();
+  const switchUserRef = useRef<HTMLButtonElement>(null);
   const companyLabel = useCompanyLabel();
+  const isImpersonating = Boolean(user.impersonatorId);
+  const canSwitchUser = user.roleKey === "SUPERUSER" && !isImpersonating && impersonatableUsers.length > 0;
+
+  function handleReturn() {
+    startReturnTransition(async () => {
+      await stopImpersonationAction();
+      router.refresh();
+    });
+  }
 
   const channelLinks = [
     { href: "/canales/whatsapp", label: t("WhatsApp", "WhatsApp"), icon: MessageCircle },
@@ -200,20 +217,31 @@ export function Sidebar({
             {roleLabel} · {companyLabel}
           </p>
         </div>
-        <button
-          ref={switchCompanyRef}
-          onClick={() => setCompanyMenuOpen((v) => !v)}
-          className={cn(
-            "shrink-0 text-sidebar-text-dim hover:text-sidebar-heading",
-            REVEAL
-          )}
-          aria-haspopup="listbox"
-          aria-expanded={companyMenuOpen}
-          aria-label={t("Switch company", "Cambiar de empresa")}
-          title={t("Switch company", "Cambiar de empresa")}
-        >
-          <ArrowLeftRight className="h-4 w-4" />
-        </button>
+        {isImpersonating ? (
+          <button
+            onClick={handleReturn}
+            disabled={returnPending}
+            className={cn("shrink-0 text-sidebar-text-dim hover:text-sidebar-heading disabled:opacity-60", REVEAL)}
+            aria-label={t("Return to my account", "Volver a mi cuenta")}
+            title={t("Return to my account", "Volver a mi cuenta")}
+          >
+            <Undo2 className="h-4 w-4" />
+          </button>
+        ) : (
+          canSwitchUser && (
+            <button
+              ref={switchUserRef}
+              onClick={() => setUserMenuOpen((v) => !v)}
+              className={cn("shrink-0 text-sidebar-text-dim hover:text-sidebar-heading", REVEAL)}
+              aria-haspopup="listbox"
+              aria-expanded={userMenuOpen}
+              aria-label={t("Switch user", "Cambiar de usuario")}
+              title={t("Switch user", "Cambiar de usuario")}
+            >
+              <Users className="h-4 w-4" />
+            </button>
+          )
+        )}
         <form action={signOutAction}>
           <button
             type="submit"
@@ -226,11 +254,14 @@ export function Sidebar({
         </form>
       </div>
 
-      <CompanySwitcherMenu
-        open={companyMenuOpen}
-        onClose={() => setCompanyMenuOpen(false)}
-        anchorRef={switchCompanyRef}
-      />
+      {canSwitchUser && (
+        <UserSwitcherMenu
+          open={userMenuOpen}
+          onClose={() => setUserMenuOpen(false)}
+          anchorRef={switchUserRef}
+          users={impersonatableUsers}
+        />
+      )}
     </aside>
   );
 }
