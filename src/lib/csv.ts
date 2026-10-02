@@ -49,3 +49,27 @@ export function parseCsv(text: string): string[][] {
 
   return rows.filter((r) => !(r.length === 1 && r[0].trim() === ""));
 }
+
+function escapeCsvField(value: string): string {
+  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
+  return value;
+}
+
+/** Serializes rows of string cells into RFC-4180-ish CSV text — the inverse
+ * of parseCsv(). Rows may have differing lengths (used for section headers
+ * / blank-line separators in multi-section exports). */
+export function toCsv(rows: (string | number)[][]): string {
+  return rows.map((row) => row.map((cell) => escapeCsvField(String(cell))).join(",")).join("\r\n");
+}
+
+/** Triggers a browser download of `content` as a file — same Blob pattern
+ * used for the CRM contacts import template. */
+export function downloadTextFile(content: string, filename: string, mimeType = "text/csv;charset=utf-8;") {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}

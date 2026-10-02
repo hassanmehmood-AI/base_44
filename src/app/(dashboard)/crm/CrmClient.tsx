@@ -34,7 +34,9 @@ import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { STAGE_TONE, STAGE_LABEL, STAGE_LABEL_ES, Stage } from "@/lib/pipeline";
 import { formatRelativeTime, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import { parseCsv } from "@/lib/csv";
+import { downloadTextFile } from "@/lib/csv";
+
+import { parseContactImportRows, CONTACTS_IMPORT_TEMPLATE_CSV, MAX_CONTACTS_IMPORT_ROWS, type ContactImportRow } from "@/lib/contactsImport";
 import type { ContactWithJoins } from "@/server/repositories/contacts";
 import type { PipelineStage } from "@/server/repositories/pipelineStages";
 import type { ActivityWithAuthor } from "@/server/repositories/activities";
@@ -1024,66 +1026,12 @@ function ContactForm({
 }
 
 // -----------------------------------------------------------------------------
-// CSV contact import — parsed and previewed in the browser (see @/lib/csv),
-// then bulk-created via one server action call once the user confirms.
+// CSV contact import — parsed and previewed in the browser (see
+// @/lib/contactsImport, shared with the Campaigns member import), then
+// bulk-created via one server action call once the user confirms.
 // -----------------------------------------------------------------------------
 
-const IMPORT_TEMPLATE_CSV =
-  "Name,Business Name,Phone,Email,Source\nJane Doe,Acme Inc,+1 555 0100,jane@acme.com,Referral\n";
-
-const MAX_IMPORT_ROWS = 500;
-
-type ImportRow = {
-  name: string;
-  businessName: string;
-  phone: string;
-  email: string;
-  leadSource: string;
-  valid: boolean;
-  reason?: string;
-};
-
-function findColumn(header: string[], candidates: string[]): number {
-  const normalized = header.map((h) => h.trim().toLowerCase());
-  for (const candidate of candidates) {
-    const idx = normalized.indexOf(candidate);
-    if (idx !== -1) return idx;
-  }
-  return -1;
-}
-
-function parseContactRows(text: string, t: (en: string, es: string) => string): { rows: ImportRow[]; error?: string } {
-  const table = parseCsv(text).filter((r) => r.some((cell) => cell.trim() !== ""));
-  if (table.length === 0) return { rows: [], error: t("The file is empty.", "El archivo está vacío.") };
-
-  const [header, ...dataRows] = table;
-  const nameIdx = findColumn(header, ["name", "nombre"]);
-  if (nameIdx === -1) {
-    return {
-      rows: [],
-      error: t('No "Name" column found in the file header.', 'No se encontró la columna "Name" en el encabezado.'),
-    };
-  }
-  const businessIdx = findColumn(header, ["business name", "nombre de empresa", "business", "empresa"]);
-  const phoneIdx = findColumn(header, ["phone", "teléfono", "telefono"]);
-  const emailIdx = findColumn(header, ["email", "correo"]);
-  const sourceIdx = findColumn(header, ["source", "lead source", "origen"]);
-
-  const rows: ImportRow[] = dataRows.map((r) => {
-    const name = (r[nameIdx] ?? "").trim();
-    return {
-      name,
-      businessName: businessIdx !== -1 ? (r[businessIdx] ?? "").trim() : "",
-      phone: phoneIdx !== -1 ? (r[phoneIdx] ?? "").trim() : "",
-      email: emailIdx !== -1 ? (r[emailIdx] ?? "").trim() : "",
-      leadSource: sourceIdx !== -1 ? (r[sourceIdx] ?? "").trim() : "",
-      valid: name.length > 0,
-      reason: name.length > 0 ? undefined : t("Missing name", "Falta el nombre"),
-    };
-  });
-
-  return { rows };
-}
+type ImportRow = ContactImportRow;
 
 function ImportContactsPanel({
   companies,
@@ -1107,16 +1055,10 @@ function ImportContactsPanel({
 
   const validRows = rows?.filter((r) => r.valid) ?? [];
   const invalidCount = (rows?.length ?? 0) - validRows.length;
-  const truncated = validRows.length > MAX_IMPORT_ROWS;
+  const truncated = validRows.length > MAX_CONTACTS_IMPORT_ROWS;
 
   function handleDownloadTemplate() {
-    const blob = new Blob([IMPORT_TEMPLATE_CSV], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "contacts-template.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadTextFile(CONTACTS_IMPORT_TEMPLATE_CSV, "contacts-template.csv");
   }
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1132,7 +1074,7 @@ function ImportContactsPanel({
     const reader = new FileReader();
     reader.onload = () => {
       const text = typeof reader.result === "string" ? reader.result : "";
-      const { rows: parsed, error: parseError } = parseContactRows(text, t);
+      const { rows: parsed, error: parseError } = parseContactImportRows(text, t);
       if (parseError) {
         setFileError(parseError);
         return;
@@ -1154,7 +1096,7 @@ function ImportContactsPanel({
     }
     setImporting(true);
     setError(undefined);
-    const rowsToSend = validRows.slice(0, MAX_IMPORT_ROWS).map((r) => ({
+    const rowsToSend = validRows.slice(0, MAX_CONTACTS_IMPORT_ROWS).map((r) => ({
       name: r.name,
       businessName: r.businessName,
       phone: r.phone,
@@ -1263,8 +1205,8 @@ function ImportContactsPanel({
           {truncated && (
             <p className="text-[12.5px] text-warning-700">
               {t(
-                `Only the first ${MAX_IMPORT_ROWS} valid rows will be imported.`,
-                `Solo se importarán las primeras ${MAX_IMPORT_ROWS} filas válidas.`
+                `Only the first ${MAX_CONTACTS_IMPORT_ROWS} valid rows will be imported.`,
+                `Solo se importarán las primeras ${MAX_CONTACTS_IMPORT_ROWS} filas válidas.`
               )}
             </p>
           )}
@@ -1308,8 +1250,8 @@ function ImportContactsPanel({
         {importing
           ? t("Importing...", "Importando...")
           : t(
-              `Import ${Math.min(validRows.length, MAX_IMPORT_ROWS)} contacts`,
-              `Importar ${Math.min(validRows.length, MAX_IMPORT_ROWS)} contactos`
+              `Import ${Math.min(validRows.length, MAX_CONTACTS_IMPORT_ROWS)} contacts`,
+              `Importar ${Math.min(validRows.length, MAX_CONTACTS_IMPORT_ROWS)} contactos`
             )}
       </Button>
     </div>

@@ -59,7 +59,7 @@ export async function importContacts(
   }>
 ) {
   await assertCompanyAccess(companyId);
-  if (rows.length === 0) return { created: 0 };
+  if (rows.length === 0) return { created: 0, contactIds: [] };
   if (rows.length > MAX_IMPORT_ROWS) throw new Error(`Can't import more than ${MAX_IMPORT_ROWS} contacts at once.`);
 
   const validRows = rows.filter((r) => r.name.trim().length > 0);
@@ -74,7 +74,7 @@ export async function importContacts(
       leadSource: r.leadSource?.trim() || null,
     }))
   );
-  return { created: created.length };
+  return { created: created.length, contactIds: created.map((c) => c.id) };
 }
 
 export async function updateContactCore(

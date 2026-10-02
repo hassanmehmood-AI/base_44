@@ -16,9 +16,11 @@ export default auth((req) => {
 
 export const config = {
   // everything except static assets (by extension, so anything under /public is
-  // covered, not just the ones we happen to name here), image optimization, and
-  // the auth API routes themselves
+  // covered, not just the ones we happen to name here), image optimization, the
+  // auth API routes themselves, and inbound provider webhooks (api/webhooks/*
+  // — e.g. Meta — which authenticate via their own signature, not a user
+  // session; a logged-out redirect would otherwise break them)
   matcher: [
-    "/((?!api/auth|_next/static|_next/image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|js|css|txt|xml|json|woff|woff2)$).*)",
+    "/((?!api/auth|api/webhooks|_next/static|_next/image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|js|css|txt|xml|json|woff|woff2)$).*)",
   ],
 };

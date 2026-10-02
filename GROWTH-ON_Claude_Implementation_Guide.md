@@ -165,6 +165,8 @@ The recommended order is:
 15. complete Support functionality
 16. only then consider a more autonomous AI agent
 
+> **Superseded by §13 "Development Approach Update (2026-10-01)" below.** Steps 10–11 (Prospecting, AI Lead Scoring) are deferred until all other non-AI CRM work is complete. See §22 for the current execution order.
+
 ---
 
 # 4. Claude vs Manual Responsibilities
@@ -576,7 +578,302 @@ Results
 
 ---
 
-# 13. Phase 8 — Prospecting
+# 13. Development Approach Update (2026-10-01)
+
+**This section overrides any conflicting ordering in §3 and the original §22 execution order below it.**
+
+Decision, as directed by the product owner:
+
+- No AI lead generation, AI prospecting, or external lead-data provider/API (Google Places, Apollo, Clearbit, scraping, or any other provider) until explicitly reopened.
+- No AI lead scoring or AI CRM analysis until explicitly reopened.
+- Leads/contacts continue to be added **manually** through the existing CRM functionality for the duration of this period. This must keep working without interruption or removal.
+- Do not redesign the existing database/service/repository architecture to "prepare" for AI. The schema already reserves tables for the later phase (`prospect_leads`, `campaign_members`, `ai_analysis`) — leave them in place, unused, until reopened.
+- Priority is making the **entire CRM fully functional and stable first**: Contacts, Activities, Pipeline, Tasks, Campaigns, Users, Companies, Permissions, Support, KPIs, and the Email/Calls/Social channels.
+- Only after the core CRM is stable does work resume on Prospecting and AI (§19, final phase), at which point the lead-data provider and AI provider are chosen explicitly with the product owner.
+- Any AI-related product decision (data provider, AI provider, scoring formula, qualification rules, etc.) requires explicit product-owner sign-off before implementation — Claude must stop and ask rather than guess.
+
+New development order (detailed per-phase breakdown in §14–§19, full table in §22):
+
+```text
+1–10 (unchanged, already implemented — see §5–§12 above)        — done
+        │
+        ▼
+11. Finish Support Module                                       — done
+        │
+        ▼
+12. Finish KPIs with Real Data                                   — done
+        │
+        ▼
+13. Finish Channels — Email, Calls (Zadarma), Social, WhatsApp    — done (see §16 for scope)
+        │
+        ▼
+14. Finish remaining Campaigns UI (non-AI parts only — see §17)  — done (Option B)
+        │
+        ▼
+15. Testing + Production Hardening
+        │
+        ▼
+16. FINAL PHASE — Prospecting + AI Lead Scoring + AI CRM Analysis (§19)
+```
+
+---
+
+# 14. Phase 11 — Support Module — ✅ DONE (2026-10-01)
+
+Built: `src/server/repositories/tickets.ts` + `ticketMessages.ts`, `src/server/services/tickets.ts`, `soporte/actions.ts`, `SoporteClient.tsx`. Real ticket creation, status updates, assignee, and threaded replies — verified end-to-end against the live database.
+
+No external dependency — this is pure CRUD against tables that already exist in the schema (`tickets`, `ticket_messages`). Good candidate to build right after Campaigns.
+
+Recommended flow:
+
+```text
+Create Ticket
+↓
+Select Company + Priority
+↓
+Enter Subject + Description
+↓
+Create Sequential Ticket Number
+↓
+Display Ticket in Queue
+↓
+Append Replies to Thread
+↓
+Update Status
+```
+
+Suggested statuses:
+
+```text
+OPEN
+IN_PROCESS
+RESOLVED
+CLOSED
+```
+
+`src/app/(dashboard)/soporte/page.tsx` currently reads `tickets` from mock data — needs a `src/server/repositories/tickets.ts` + `src/server/services/tickets.ts` pair, following the same pattern as `contacts`/`tasks`/`campaigns`.
+
+---
+
+# 15. Phase 12 — KPIs with Real Data — ✅ DONE (2026-10-01)
+
+Built: `src/server/services/kpis.ts` aggregating real Contacts/Activities data; `KpisClient.tsx` with real headline stats, both conversion rates (leads→customers and opportunities→customers, per product-owner decision), a real 6-month trend chart, a real per-agent performance table, and working CSV export. Formulas locked in with the product owner first (see decisions below) rather than guessed.
+
+Replace static KPI values with real database aggregations once the modules feeding them (Contacts, Activities, Pipeline, Tasks, Campaigns, Support, Calls) have real data to aggregate. Best done after those modules, not before.
+
+Examples:
+
+## Commercial
+
+- leads worked
+- opportunities
+- customers/sales
+- conversion rate
+- monthly lead-to-customer trend
+- agent performance
+
+## Contact Center
+
+- calls made
+- answered/contacted calls
+- average talk time
+- pending follow-ups
+- agent call effectiveness
+
+## Customer Support
+
+- open tickets
+- managed tickets
+- response time
+- resolution rate
+- priority breakdown
+
+## Tasks
+
+- assigned tasks
+- completed tasks
+- overdue tasks
+- completion rate
+
+Do not invent KPI formulas.
+
+The product owner must define ambiguous formulas before implementation.
+
+Example question that requires manual confirmation:
+
+```text
+Conversion Rate = Customers / Leads ?
+```
+
+or
+
+```text
+Conversion Rate = Orders + Customers / Leads ?
+```
+
+`src/app/(dashboard)/kpis/page.tsx` currently reads `kpiStats, agentPerformance` from mock data.
+
+---
+
+# 16. Phase 13 — Channels: Email, Calls (Zadarma), Social, WhatsApp — ✅ Calls/Email/Social DONE (2026-10-02), WhatsApp still hidden
+
+These are **not AI features**, but they do require external provider accounts/credentials — similar manual-setup burden to the deferred lead-data provider, just not deferred because the product owner wants this functionality now. Sequence this after Support/KPIs since it is the heaviest lift (external integrations) among the remaining non-AI work.
+
+**Status:** all three channels below are built, type-checked, lint-clean, and verified end-to-end against the live database (including two real bugs caught and fixed: a stale-client-state bug after linking a social conversation to a contact, and the auth middleware blocking the Meta webhook route). None has been exercised against a *live* provider account yet — every outbound call fails cleanly with a "not configured" message until real credentials (Zadarma/Resend/Meta) are added to the environment. That's the explicit scope the product owner approved: scaffold the architecture now, wire in real credentials later.
+
+Schema already has `conversations`, `messages`, and `calls` tables ready; `company_social_accounts` was added (migration `0003`) to map a connected Meta Page to a company. Repositories/services now exist for all of them.
+
+## Calls (Zadarma) — ✅ DONE
+
+Built: `src/server/integrations/zadarma.ts` (signed callback-request wrapper per Zadarma's documented REST API — not yet verified against a live account), `src/server/repositories/calls.ts`, `src/server/services/calls.ts`, `canales/llamadas` rebuilt on real contact/call/activity data. Logging a call result reuses the existing `moveContactStage` rather than duplicating that transaction.
+
+Implement Zadarma only after Contacts, Activities, and Follow-Ups are stable (they already are).
+
+Target flow:
+
+```text
+Contact
+↓
+Click Phone Number
+↓
+Start Secure Zadarma Call
+↓
+Embedded WebRTC Dialer
+↓
+Call Completes
+↓
+Save Call Result
+↓
+CallActivity / Activity Timeline
+↓
+Optional Follow-Up Task
+```
+
+Claude may implement:
+
+- Zadarma API wrapper
+- WebRTC UI integration
+- click-to-call
+- call history synchronization
+- webhook handling
+- recording metadata
+- CRM timeline integration
+
+Manual setup will be required for:
+
+- Zadarma account
+- API credentials
+- SIP extensions
+- webhook configuration
+
+Secrets must remain server-side.
+
+## Email — ✅ DONE (outbound only)
+
+Built: `src/server/integrations/email.ts` (Resend — chosen as a reasonable default since the project deploys on Railway, not Vercel, so the Vercel Marketplace provider flow didn't apply; isolated in one file so it's swappable), `src/server/services/email.ts`, `canales/correo` rebuilt on real contacts/conversations/messages. Outbound send/reply only — there's no inbound-receiving mechanism (webhook or IMAP) scaffolded for email, unlike Social where Meta's webhook model made inbound the natural starting point.
+
+Claude may implement:
+
+- provider wrapper
+- send/reply functionality
+- thread persistence
+- templates
+- contact matching
+- activity timeline entries
+
+Manual work may include:
+
+- provider account
+- SMTP/API key
+- sending-domain verification
+- DNS records
+
+## Meta / Social — ✅ DONE
+
+Built: `src/server/integrations/meta.ts` (webhook challenge verification + `X-Hub-Signature-256` check + Graph API send, per Meta's documented API — not yet verified against a live app), `src/app/api/webhooks/meta/route.ts` (real GET/POST handlers), `src/server/services/social.ts` (including the "contact association" step — linking an inbound conversation to a CRM contact), `canales/redes-sociales` rebuilt on real data. The full inbound pipeline (page→company resolution, thread dedup) was verified by invoking the ingestion service directly, since no live Meta app exists yet to send a real webhook call.
+
+Claude may implement:
+
+- webhook handlers
+- conversation storage
+- message UI
+- reply API
+- contact association
+
+Manual setup may include:
+
+- Meta Developer App
+- Facebook Page / Instagram connection
+- permissions
+- access tokens
+- webhook verification
+
+## WhatsApp — not started, stays hidden
+
+Keep hidden in navigation (per §2.3) until explicitly enabled by the product owner, even once the underlying `conversations`/`messages` plumbing is shared with Email/Social. `src/app/(dashboard)/canales/whatsapp/page.tsx` still reads from mock data — intentionally untouched.
+
+`correo`, `llamadas`, and `redes-sociales` no longer read from mock data.
+
+---
+
+# 17. Remaining Campaigns Work (non-AI only) — ✅ DONE (2026-10-02), Option B
+
+Product owner chose **Option B**: a simpler non-AI version, deferring `prospect_leads`/`campaign_members` wiring to §19.
+
+Campaigns list/create/status-update already worked against the real database. Built on top of that:
+
+- **Schema**: new `campaign_contacts` table (migration `0004`) — a plain campaign↔contact join, deliberately separate from `campaign_members` (which still requires a `prospect_lead_id` and stays reserved for §19's AI pipeline, untouched).
+- **Import members**: reuses the exact CSV parsing/preview flow from the CRM contacts import — extracted into a shared `src/lib/contactsImport.ts` (both `CrmClient.tsx` and `CampanasClient.tsx` now import from there, no duplicated logic) — imported contacts land in the pipeline's entry stage and are linked to the selected campaign via `campaign_contacts`.
+- **Campaign members table**: replaces the old mock "Client Prospecting" table — lists real contacts linked to the selected campaign (name, assigned agent, channels used, pipeline stage, last contact).
+- **Filters**: Channel and Agent checkboxes are populated from *real* data — channel options come from each member's actually-logged `activities.channel` values (not an invented per-row field), agent options from `assignedUserName`. Status filter lists the real stage keys present among current members.
+- **Stat cards**: real aggregates (total contacts, contacted, customers, opportunities) per allowed company — `src/server/services/campaigns.ts`'s `getCampaignPageStats()` — filtered client-side by the top-right company selector, same convention as every other migrated page (Kpis/Soporte/Llamadas/Correo/RedesSociales).
+- Selecting a campaign (click its row in the existing Campaigns list) drives which campaign the import/members/filters panels operate on.
+
+Verified end-to-end against the live database: created a campaign, imported a 3-row CSV (2 valid + 1 correctly skipped for a missing name), confirmed the new contacts and `campaign_contacts` rows in the database directly, confirmed the stat cards/members table/filters all updated with real data and no console errors.
+
+---
+
+# 18. Phase 14 — Testing + Production Hardening
+
+Claude should add automated tests where they provide real value.
+
+Recommended coverage:
+
+- authentication
+- company authorization
+- role permissions
+- contacts CRUD
+- activity creation
+- pipeline updates
+- task/follow-up creation
+- duplicate lead handling
+- campaign membership
+- ticket/support workflows
+- channel message persistence
+- protected integration endpoints
+
+Manual end-to-end acceptance testing is still required.
+
+Example real workflow:
+
+```text
+Login as Agent
+→ select allowed company
+→ create/select lead
+→ update stage
+→ log interaction
+→ create follow-up
+→ verify timeline
+→ verify manager KPI reflects activity
+```
+
+---
+
+# 19. FINAL PHASE — Prospecting and AI (deferred)
+
+**Do not start this section.** Per §13, this phase is deferred until the product owner explicitly reopens it, which will happen only after §14–§18 are complete and the core CRM is stable and production-ready. Kept here so the architecture is not forgotten or re-designed from scratch later.
+
+## 19.1 Prospecting Data Provider
 
 The prospecting page should eventually stop using mock lead results.
 
@@ -634,9 +931,9 @@ Before creating CRM contacts, check duplicates using stable identifiers such as:
 
 Do not rely only on company name matching.
 
----
+Which lead-data provider to use (Google Places, Apollo, Clearbit, or another) is a product-owner decision made at the time this phase reopens — not before.
 
-# 14. AI Prospecting Architecture
+## 19.2 AI Prospecting Architecture
 
 Do not treat the AI model as the source of truth for real companies.
 
@@ -678,13 +975,9 @@ Example structured result:
 
 Validate all model output before saving it.
 
----
+## 19.3 AI CRM Analysis
 
-# 15. AI CRM Analysis
-
-After the CRM and timeline are real, add contact-level AI analysis.
-
-The model may analyze:
+After the CRM and timeline are real (they already are), contact-level AI analysis may be added. The model may analyze:
 
 - contact profile
 - recent activities
@@ -703,7 +996,7 @@ Priority: High
 Recommended Action: Send proposal and follow up in 2 days
 ```
 
-## Important Safety/Product Rule
+### Important Safety/Product Rule
 
 AI should not directly modify core CRM state by default.
 
@@ -725,13 +1018,11 @@ Append AI_CLASSIFICATION activity
 
 This should remain human-confirmed unless a later requirement explicitly authorizes automation.
 
----
-
-# 16. Claude as Developer vs Claude as Product AI
+## 19.4 Claude as Developer vs Claude as Product AI
 
 Do not confuse these two roles.
 
-## Claude/Claude Code as Developer
+### Claude/Claude Code as Developer
 
 Used during development to:
 
@@ -742,7 +1033,7 @@ Used during development to:
 - add integrations
 - test/debug the application
 
-## Claude API as CRM Feature
+### Claude API as CRM Feature
 
 Potentially used inside the production CRM to:
 
@@ -756,287 +1047,7 @@ These are separate responsibilities.
 
 Using Claude Code to build the CRM does **not** automatically mean the production CRM must use Anthropic's API. The production AI provider should remain configurable where practical.
 
----
-
-# 17. Phase 9 — Zadarma Calls
-
-Implement Zadarma only after Contacts, Activities, and Follow-Ups are stable.
-
-Target flow:
-
-```text
-Contact
-↓
-Click Phone Number
-↓
-Start Secure Zadarma Call
-↓
-Embedded WebRTC Dialer
-↓
-Call Completes
-↓
-Save Call Result
-↓
-CallActivity / Activity Timeline
-↓
-Optional Follow-Up Task
-```
-
-Claude may implement:
-
-- Zadarma API wrapper
-- WebRTC UI integration
-- click-to-call
-- call history synchronization
-- webhook handling
-- recording metadata
-- CRM timeline integration
-
-Manual setup will be required for:
-
-- Zadarma account
-- API credentials
-- SIP extensions
-- webhook configuration
-
-Secrets must remain server-side.
-
----
-
-# 18. Email and Social Integrations
-
-
-## Email
-
-Claude may implement:
-
-- provider wrapper
-- send/reply functionality
-- thread persistence
-- templates
-- contact matching
-- activity timeline entries
-
-Manual work may include:
-
-- provider account
-- SMTP/API key
-- sending-domain verification
-- DNS records
-
-## Meta / Social
-
-Claude may implement:
-
-- webhook handlers
-- conversation storage
-- message UI
-- reply API
-- contact association
-
-Manual setup may include:
-
-- Meta Developer App
-- Facebook Page / Instagram connection
-- permissions
-- access tokens
-- webhook verification
-
----
-
-# 19. KPIs
-
-Replace static KPI values with real database aggregations.
-
-Examples:
-
-## Commercial
-
-- leads worked
-- opportunities
-- customers/sales
-- conversion rate
-- monthly lead-to-customer trend
-- agent performance
-
-## Contact Center
-
-- calls made
-- answered/contacted calls
-- average talk time
-- pending follow-ups
-- agent call effectiveness
-
-## Customer Support
-
-- open tickets
-- managed tickets
-- response time
-- resolution rate
-- priority breakdown
-
-## Tasks
-
-- assigned tasks
-- completed tasks
-- overdue tasks
-- completion rate
-
-Do not invent KPI formulas.
-
-The product owner must define ambiguous formulas before implementation.
-
-Example question that requires manual confirmation:
-
-```text
-Conversion Rate = Customers / Leads ?
-```
-
-or
-
-```text
-Conversion Rate = Orders + Customers / Leads ?
-```
-
----
-
-# 20. Support Module
-
-Implement real support ticket persistence.
-
-Recommended flow:
-
-```text
-Create Ticket
-↓
-Select Company + Priority
-↓
-Enter Subject + Description
-↓
-Create Sequential Ticket Number
-↓
-Display Ticket in Queue
-↓
-Append Replies to Thread
-↓
-Update Status
-```
-
-Suggested statuses:
-
-```text
-OPEN
-IN_PROCESS
-RESOLVED
-CLOSED
-```
-
----
-
-# 21. Testing Requirements
-
-Claude should add automated tests where they provide real value.
-
-Recommended coverage:
-
-- authentication
-- company authorization
-- role permissions
-- contacts CRUD
-- activity creation
-- pipeline updates
-- task/follow-up creation
-- duplicate lead handling
-- campaign membership
-- AI output validation
-- protected integration endpoints
-
-Manual end-to-end acceptance testing is still required.
-
-Example real workflow:
-
-```text
-Login as Agent
-→ select allowed company
-→ create/select lead
-→ update stage
-→ log interaction
-→ create follow-up
-→ verify timeline
-→ verify manager KPI reflects activity
-```
-
----
-
-# 22. Recommended Execution Order
-
-Use this order unless the product owner explicitly changes priorities:
-
-```text
-CURRENT STATE
-Frontend + Mock Data
-        │
-        ▼
-1. Audit Existing Implementation
-        │
-        ▼
-2. Finish App Shell / Top Company Selector
-        │
-        ▼
-3. Database Schema
-        │
-        ▼
-4. Authentication
-        │
-        ▼
-5. Roles + Multi-Company Permissions
-        │
-        ▼
-6. Contacts CRUD
-        │
-        ▼
-7. Activity Timeline
-        │
-        ▼
-8. Pipeline
-        │
-        ▼
-9. Tasks + Follow-Ups
-        │
-        ▼
-10. Campaigns
-        │
-        ▼
-11. Prospecting Data Provider
-        │
-        ▼
-12. AI Lead Scoring
-        │
-        ▼
-13. Contact AI Analysis
-        │
-        ▼
-14. Zadarma Calls
-        │
-        ▼
-15. Email / Social
-        │
-        ▼
-16. KPI Real Data
-        │
-        ▼
-17. Support
-        │
-        ▼
-18. Security / Tests / Production Hardening
-        │
-        ▼
-19. Advanced AI Agent — only if still required
-```
-
----
-
-# 23. What Not to Build Yet
+## 19.5 What Not to Build Yet
 
 Do not start with a complex autonomous AI agent.
 
@@ -1068,50 +1079,102 @@ Find leads
 → suggest assignment
 ```
 
-But this should be built only after the CRM's database, security, audit history, and business workflows are stable.
+But this should be built only after the CRM's database, security, audit history, and business workflows are stable — and only when explicitly reopened per §13.
 
 ---
 
-# 24. Immediate Next Task for Claude
+# 20. What Not to Build Yet (general)
 
-Start with the following task:
+Beyond §19.5, in general: do not invent fake AI data, fake external leads, or placeholder integrations presented as real. If a module cannot be completed without a manual decision (credentials, provider choice, formula), say so and stop rather than guessing.
 
-> Audit the current GROWTH-ON repository and the in-progress multi-company implementation. Do not rebuild or redesign the application. Identify the remaining mock-data dependencies, current CompanyContext usage, and any partial company filtering already implemented in CRM and Support. Then design the real database + authentication + tenant-aware CRM foundation. Preserve the existing UI and component system. Before making large structural changes, provide a concise implementation plan and identify any business decisions that require product-owner input.
+---
 
-After the audit, the first real implementation milestone should be:
+# 21. Immediate Next Task for Claude
+
+Per §13, the task is to complete the non-AI CRM modules in order:
 
 ```text
-Company
-+
-User
-+
-Role/Access
-+
-Contact
-+
-Activity
-+
-Pipeline
+11. Support Module (§14)                                    — done
+12. KPIs Real Data (§15)                                     — done
+13. Channels — Email / Calls / Social / WhatsApp (§16)        — done (Calls/Email/Social; WhatsApp still hidden)
+14. Remaining Campaigns UI (§17)                              — done (Option B)
+15. Testing + Production Hardening (§18)
 ```
 
-with real persistence and server-side authorization.
+Next up is **§18** (Testing + Production Hardening) — the only remaining item before the core CRM meets the Definition of Success in §23.
+
+Do not begin §19 (Prospecting/AI) until the product owner explicitly reopens it.
 
 ---
 
-# 25. Definition of Success for the Foundation
+# 22. Recommended Execution Order
 
-The foundation is considered ready for later AI/integrations when all of the following are true:
+Use this order unless the product owner explicitly changes priorities. This supersedes the original top-to-bottom order in §3.
 
-- users authenticate securely
-- users only access permitted companies
-- active company selection filters real backend data
-- contacts are stored in the real database
-- CRM history is append-only through Activities
-- pipeline stages are stored and referenced cleanly
-- tasks/follow-ups persist
-- campaigns persist
-- mock data is no longer the source of truth for core CRM operations
-- permissions are enforced server-side
-- critical workflows have tests
+```text
+CURRENT STATE
+Frontend + Real Backend through Campaigns (Phases 1–10 complete)
+        │
+        ▼
+1. Audit Existing Implementation                    — done
+2. Finish App Shell / Top Company Selector            — done
+3. Database Schema                                    — done
+4. Authentication                                     — done
+5. Roles + Multi-Company Permissions                  — done
+6. Contacts CRUD                                       — done
+7. Activity Timeline                                   — done
+8. Pipeline                                            — done
+9. Tasks + Follow-Ups                                  — done
+10. Campaigns (core CRUD)                              — done
+        │
+        ▼
+11. Support Module (§14)                                      — done
+        │
+        ▼
+12. KPIs Real Data (§15)                                      — done
+        │
+        ▼
+13. Channels — Email / Calls (Zadarma) / Social / WhatsApp (§16) — done (WhatsApp still hidden)
+        │
+        ▼
+14. Remaining Campaigns UI (§17)                               — done (Option B)
+        │
+        ▼
+15. Testing / Security / Production Hardening (§18)
+        │
+        ▼
+16. FINAL — Prospecting Data Provider (§19.1)
+        │
+        ▼
+17. FINAL — AI Lead Scoring (§19.2)
+        │
+        ▼
+18. FINAL — AI CRM Analysis (§19.3)
+        │
+        ▼
+19. Advanced AI Agent — only if still required (§19.5)
+```
 
-Only after this foundation is stable should advanced AI prospecting and autonomous automation become a priority.
+---
+
+# 23. Definition of Success for the Core CRM (non-AI)
+
+The core CRM is considered ready for the final Prospecting/AI phase when all of the following are true:
+
+- users authenticate securely — done
+- users only access permitted companies — done
+- active company selection filters real backend data — done
+- contacts are stored in the real database — done
+- CRM history is append-only through Activities — done
+- pipeline stages are stored and referenced cleanly — done
+- tasks/follow-ups persist — done
+- campaigns persist (core CRUD) — done
+- support tickets persist and are workable end-to-end — done
+- KPIs reflect real aggregated data, not mock values — done
+- Email, Calls, and Social channels are built and verified against the real database — done; real provider credentials (Zadarma/Resend/Meta) still need to be added before any of the three can actually reach an external account
+- remaining Campaigns UI (stats/import/filters) no longer reads mock data — done
+- mock data (`src/lib/mock-data.ts`) is no longer the source of truth for any non-AI module except WhatsApp (intentionally untouched, stays hidden) — done
+- permissions are enforced server-side — done
+- critical workflows have tests — not started (§18, the only remaining item)
+
+Only once all of the above are true should §19 (Prospecting/AI) be reopened.

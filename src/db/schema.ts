@@ -216,6 +216,20 @@ export const campaignMembers = pgTable("campaign_members", {
   index("campaign_members_campaign_status_idx").on(t.campaignId, t.status),
 ]);
 
+/** Plain CRM-direct campaign membership (guide §17 Option B) — deliberately
+ * separate from campaign_members, which requires a prospect_lead_id and
+ * belongs to the deferred AI/prospecting pipeline (see §19). A contact
+ * reaches a campaign here via direct CSV import, not AI qualification. */
+export const campaignContacts = pgTable("campaign_contacts", {
+  id: id(),
+  campaignId: uuid("campaign_id").notNull().references(() => campaigns.id, { onDelete: "cascade" }),
+  contactId: uuid("contact_id").notNull().references(() => contacts.id, { onDelete: "cascade" }),
+  createdAt: createdAt(),
+}, (t) => [
+  uniqueIndex("campaign_contacts_campaign_contact_idx").on(t.campaignId, t.contactId),
+  index("campaign_contacts_campaign_id_idx").on(t.campaignId),
+]);
+
 // ---------------------------------------------------------------------------
 // Communications
 // ---------------------------------------------------------------------------
@@ -248,6 +262,22 @@ export const messages = pgTable("messages", {
   sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("messages_conversation_sent_idx").on(t.conversationId, t.sentAt),
+]);
+
+/** Maps an external social page/account to the company it belongs to, so an
+ * inbound Meta webhook (which only carries a Page ID) can resolve which
+ * company's conversations table a message belongs to. One row per connected
+ * page — added for guide §16 Social; populated when a company connects a
+ * Facebook Page/Instagram account (no UI for that yet, see guide). */
+export const companySocialAccounts = pgTable("company_social_accounts", {
+  id: id(),
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  // META_PAGE | META_INSTAGRAM
+  platform: text("platform").notNull(),
+  externalPageId: text("external_page_id").notNull(),
+  createdAt: createdAt(),
+}, (t) => [
+  uniqueIndex("company_social_accounts_platform_page_idx").on(t.platform, t.externalPageId),
 ]);
 
 export const calls = pgTable("calls", {

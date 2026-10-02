@@ -33,6 +33,15 @@ export const STAGE_LABEL_ES: Record<Stage, string> = {
   PEDIDO_REALIZADO: "Pedido realizado",
 };
 
+/** KPIs §15: a contact counts as an "opportunity" once it has reached OPORTUNIDAD
+ * or any later stage in the funnel (current stage, not stage history — there is
+ * no separate stage-change log beyond the STATUS_CHANGE activity trail). */
+export const OPPORTUNITY_STAGE_KEYS: Stage[] = ["OPORTUNIDAD", "PEDIDO_EN_CURSO", "CLIENTE", "SEGUIMIENTO"];
+
+/** A contact counts as a "customer" once it reaches CLIENTE or the post-sale
+ * SEGUIMIENTO follow-up stage. */
+export const CUSTOMER_STAGE_KEYS: Stage[] = ["CLIENTE", "SEGUIMIENTO"];
+
 export const STAGE_TONE: Record<Stage, "green" | "amber" | "blue" | "gray"> = {
   NUEVO_LEAD: "blue",
   CONTACTADO: "amber",
