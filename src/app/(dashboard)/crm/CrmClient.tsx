@@ -20,6 +20,7 @@ import {
   Kanban,
   Download,
   AlertCircle,
+  UserCog,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -30,7 +31,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { Modal } from "@/components/ui/Modal";
 import { StageBadge } from "@/components/StageBadge";
 import { useLanguage } from "@/context/LanguageContext";
-import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
+import { useCompany } from "@/context/CompanyContext";
 import { STAGE_TONE, STAGE_LABEL, STAGE_LABEL_ES, Stage } from "@/lib/pipeline";
 import { formatRelativeTime, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -48,12 +49,15 @@ import {
   classifyContactAction,
   addNoteAction,
   moveContactStageAction,
+  assignContactAction,
   getContactActivitiesAction,
   getAssignableUsersAction,
   getContactTasksAction,
   createTaskAction,
   completeTaskAction,
   importContactsAction,
+  getContactsForCampaignAction,
+  getManualContactsAction,
 } from "./actions";
 
 const toneDot: Record<string, string> = {
@@ -69,6 +73,7 @@ const channelIcon: Record<string, React.ElementType> = {
   EMAIL: Mail,
   SOCIAL: Globe,
   NOTE: CheckSquare,
+  ASSIGNMENT: UserCog,
 };
 
 // Same fixed option set as the original design (5 of the 7 pipeline stages) —
@@ -83,28 +88,34 @@ const CHANNEL_OPTIONS: { value: string; type: string; channel: string; labelEn: 
 ];
 
 type CompanyOption = { id: string; name: string };
+type CampaignOption = { id: string; name: string; companyName: string };
 
 export function CrmClient({
   contacts,
   stages,
   companies,
+  campaigns,
   initialSelectedId,
   initialActivities,
   initialTasks,
 }: {
   contacts: ContactWithJoins[];
   stages: PipelineStage[];
+  campaigns: CampaignOption[];
   companies: CompanyOption[];
   initialSelectedId: string | null;
   initialActivities: ActivityWithAuthor[];
   initialTasks: TaskWithAssignee[];
 }) {
   const { t, language } = useLanguage();
-  const { companies: companyNames, activeCompany, setActiveCompany } = useCompany();
+  const { activeCompany } = useCompany();
   const router = useRouter();
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
   const [historyTab, setHistoryTab] = useState("All");
   const [search, setSearch] = useState("");
+  const [filterKey, setFilterKey] = useState("ALL"); // "ALL" | "MANUAL" | a campaign id
+  const [rawScopedContacts, setScopedContacts] = useState<ContactWithJoins[]>([]);
+  const [scopeLoading, setScopeLoading] = useState(false);
   const [activities, setActivities] = useState<ActivityWithAuthor[]>(initialActivities);
   const [activitiesLoading, setActivitiesLoading] = useState(false);
   const [assignableUsers, setAssignableUsers] = useState<UserWithRole[]>([]);
@@ -112,6 +123,7 @@ export function CrmClient({
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [view, setView] = useState<"list" | "board">("list");
   const [, startTransition] = useTransition();
@@ -135,15 +147,34 @@ export function CrmClient({
 
   const selected = contacts.find((c) => c.id === selectedId) ?? contacts[0];
 
-  const filteredContacts = useMemo(
-    () =>
-      contacts.filter((c) => {
-        const matchesCompany = activeCompany === ALL_COMPANIES || c.companyName === activeCompany;
-        const matchesSearch = c.name.toLowerCase().includes(search.toLowerCase());
-        return matchesCompany && matchesSearch;
-      }),
-    [contacts, activeCompany, search]
-  );
+  // Fetches the "Manual Leads" / specific-campaign member list whenever one
+  // of those is selected. "All Contacts" needs no fetch — it's just the
+  // already-loaded `contacts` prop, used directly below. Also re-fetches
+  // whenever `contacts` itself changes (router.refresh() after a mutation
+  // like Assign Agent or New Task) so a scoped view doesn't go stale.
+  useEffect(() => {
+    if (filterKey === "ALL") return;
+    let active = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- kicks off a loading flag for the fetch this effect triggers, not a synchronous derived-state mirror
+    setScopeLoading(true);
+    const fetcher = filterKey === "MANUAL" ? getManualContactsAction() : getContactsForCampaignAction(filterKey);
+    fetcher.then((r) => {
+      if (!active) return;
+      setScopedContacts(r.contacts);
+      setScopeLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [filterKey, contacts]);
+
+  const scopedContacts = filterKey === "ALL" ? contacts : rawScopedContacts;
+
+  const filteredContacts = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return scopedContacts;
+    return scopedContacts.filter((c) => c.name.toLowerCase().includes(q));
+  }, [scopedContacts, search]);
 
   const classifyStages = useMemo(
     () => CLASSIFY_STAGE_KEYS.map((key) => stages.find((s) => s.key === key)).filter((s): s is PipelineStage => !!s),
@@ -226,32 +257,19 @@ export function CrmClient({
             <Badge tone="green">{filteredContacts.length}</Badge>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => setActiveCompany(ALL_COMPANIES)}
-              className={cn(
-                "rounded-full px-3 py-1.5 text-[12.5px] font-medium transition-colors",
-                activeCompany === ALL_COMPANIES
-                  ? "bg-text-primary text-white"
-                  : "bg-surface-muted text-text-secondary hover:bg-gray-200"
-              )}
-            >
-              {t("All", "Todos")}
-            </button>
-            {companyNames.map((c) => (
-              <button
-                key={c}
-                onClick={() => setActiveCompany(c)}
-                className={cn(
-                  "rounded-full px-3 py-1.5 text-[12.5px] font-medium transition-colors",
-                  activeCompany === c
-                    ? "bg-text-primary text-white"
-                    : "bg-surface-muted text-text-secondary hover:bg-gray-200"
-                )}
-              >
-                {c}
-              </button>
-            ))}
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-tertiary">
+              {t("CAMPAIGN", "CAMPAÑA")}
+            </label>
+            <Select value={filterKey} onChange={(e) => setFilterKey(e.target.value)}>
+              <option value="ALL">{t("All Contacts", "Todos los contactos")}</option>
+              <option value="MANUAL">{t("Manual Leads", "Leads manuales")}</option>
+              {campaigns.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </Select>
           </div>
 
           <div>
@@ -263,37 +281,43 @@ export function CrmClient({
           </div>
 
           <div className="flex flex-col gap-1.5 -mx-1">
-            {filteredContacts.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => setSelectedId(c.id)}
-                className={cn(
-                  "flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
-                  selectedId === c.id || (!selectedId && selected?.id === c.id) ? "bg-brand-50" : "hover:bg-surface-muted"
+            {scopeLoading ? (
+              <p className="px-3 py-6 text-center text-[13px] text-text-tertiary">{t("Loading...", "Cargando...")}</p>
+            ) : (
+              <>
+                {filteredContacts.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => setSelectedId(c.id)}
+                    className={cn(
+                      "flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
+                      selectedId === c.id || (!selectedId && selected?.id === c.id) ? "bg-brand-50" : "hover:bg-surface-muted"
+                    )}
+                  >
+                    <Avatar name={c.name} size={34} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13.5px] font-semibold text-text-primary">{c.name}</p>
+                      <p className="truncate text-[12px] text-text-secondary">{c.companyName}</p>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <span
+                        className={cn("h-1.5 w-1.5 rounded-full", toneDot[STAGE_TONE[c.stageKey as Stage] ?? "gray"])}
+                        aria-hidden
+                      />
+                      <span className="text-[11px] text-text-tertiary" suppressHydrationWarning>
+                        {formatRelativeTime(c.lastContactAt, language)}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+                {filteredContacts.length === 0 && (
+                  <p className="px-3 py-6 text-center text-[13px] text-text-tertiary">
+                    {scopedContacts.length === 0
+                      ? t("No contacts for this filter.", "No hay contactos para este filtro.")
+                      : t("No contacts match your search.", "Ningún contacto coincide con tu búsqueda.")}
+                  </p>
                 )}
-              >
-                <Avatar name={c.name} size={34} />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13.5px] font-semibold text-text-primary">{c.name}</p>
-                  <p className="truncate text-[12px] text-text-secondary">{c.companyName}</p>
-                </div>
-                <div className="flex shrink-0 flex-col items-end gap-1">
-                  <span
-                    className={cn("h-1.5 w-1.5 rounded-full", toneDot[STAGE_TONE[c.stageKey as Stage] ?? "gray"])}
-                    aria-hidden
-                  />
-                  <span className="text-[11px] text-text-tertiary" suppressHydrationWarning>
-                    {formatRelativeTime(c.lastContactAt, language)}
-                  </span>
-                </div>
-              </button>
-            ))}
-            {filteredContacts.length === 0 && (
-              <p className="px-3 py-6 text-center text-[13px] text-text-tertiary">
-                {contacts.length === 0
-                  ? t("No contacts yet. Create the first one.", "Aún no hay contactos. Crea el primero.")
-                  : t("No contacts for this filter.", "No hay contactos para este filtro.")}
-              </p>
+              </>
             )}
           </div>
         </Card>
@@ -319,6 +343,9 @@ export function CrmClient({
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => setTaskOpen(true)}>
                   <Plus className="h-3.5 w-3.5" /> {t("New Task", "Nueva Tarea")}
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setAssignOpen(true)}>
+                  <UserCog className="h-3.5 w-3.5" /> {t("Assign agent", "Asignar agente")}
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
                   <Pencil className="h-3.5 w-3.5" /> {t("Edit contact", "Editar contacto")}
@@ -405,7 +432,9 @@ export function CrmClient({
                         : channelLabel.labelEn
                       : a.type === "NOTE"
                         ? t("Note", "Nota")
-                        : a.type;
+                        : a.type === "ASSIGNMENT"
+                          ? t("Assigned", "Asignado")
+                          : a.type;
                     const outcomeLabel = a.outcome ? stageLabels[a.outcome as Stage] ?? a.outcome : null;
                     return (
                       <div key={a.id} className="flex items-center gap-3 rounded-xl border border-border p-3.5">
@@ -499,6 +528,26 @@ export function CrmClient({
                 // after preempts a low-priority transition before it ever commits — the
                 // task silently never appears until something else re-renders the tree.
                 setTasks((prev) => [...prev, newTask]);
+                router.refresh();
+              }
+              return result;
+            }}
+          />
+        </Modal>
+      )}
+
+      {selected && (
+        <Modal open={assignOpen} onClose={() => setAssignOpen(false)} title={t("Assign agent", "Asignar agente")}>
+          <AssignAgentForm
+            currentAssignedUserId={selected.assignedUserId}
+            users={assignableUsers}
+            onSubmit={async (assignedUserId) => {
+              const result = await assignContactAction(selected.id, assignedUserId);
+              if (result.ok) {
+                setAssignOpen(false);
+                if (result.activity) {
+                  startTransition(() => setActivities((prev) => [result.activity!, ...prev]));
+                }
                 router.refresh();
               }
               return result;
@@ -809,6 +858,56 @@ function TaskForm({
 
       <Button type="submit" disabled={saving || !title.trim()} className="mt-1 w-full">
         {saving ? t("Saving...", "Guardando...") : t("Create task", "Crear tarea")}
+      </Button>
+    </form>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Assign agent — quick standalone reassignment, separate from Classify
+// contact: changes only the owner, with no channel/stage/notes required.
+// -----------------------------------------------------------------------------
+
+function AssignAgentForm({
+  currentAssignedUserId,
+  users,
+  onSubmit,
+}: {
+  currentAssignedUserId: string | null;
+  users: UserWithRole[];
+  onSubmit: (assignedUserId: string) => Promise<{ error?: string; ok?: true }>;
+}) {
+  const { t } = useLanguage();
+  const [assignedUserId, setAssignedUserId] = useState(currentAssignedUserId ?? "");
+  const [error, setError] = useState<string | undefined>();
+  const [saving, setSaving] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setSaving(true);
+    setError(undefined);
+    const result = await onSubmit(assignedUserId);
+    setSaving(false);
+    if (result.error) setError(result.error);
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <Field label={t("ASSIGNED TO", "ASIGNADO A")}>
+        <Select value={assignedUserId} onChange={(e) => setAssignedUserId(e.target.value)}>
+          <option value="">{t("Unassigned", "Sin asignar")}</option>
+          {users.map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.fullName}
+            </option>
+          ))}
+        </Select>
+      </Field>
+
+      {error && <p className="text-[13px] text-danger">{error}</p>}
+
+      <Button type="submit" disabled={saving} className="mt-1 w-full">
+        {saving ? t("Saving...", "Guardando...") : t("Assign agent", "Asignar agente")}
       </Button>
     </form>
   );

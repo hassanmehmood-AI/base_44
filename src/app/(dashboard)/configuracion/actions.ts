@@ -63,3 +63,39 @@ export async function moveStageAction(stageId: string, direction: "up" | "down")
   revalidatePath("/crm");
   return { ok: true };
 }
+
+export async function getUserAccessAction(userId: string) {
+  try {
+    return await usersService.getUserAccess(userId);
+  } catch {
+    return { companyIds: [] as string[], modules: [] as ModuleKey[], isSuperuser: false };
+  }
+}
+
+export async function updateUserPermissionsAction(input: {
+  userId: string;
+  companyIds: string[];
+  modules: ModuleKey[];
+}): Promise<ActionResult> {
+  try {
+    await usersService.updateUserPermissions(input);
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "Only Superusers can edit permissions." };
+    if (e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+export async function deactivateUserAction(userId: string): Promise<ActionResult> {
+  try {
+    await usersService.deactivateUser(userId);
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "Only Superusers can delete users." };
+    if (e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  return { ok: true };
+}

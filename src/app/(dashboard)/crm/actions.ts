@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import * as contactsService from "@/server/services/contacts";
 import * as usersService from "@/server/services/users";
 import * as tasksService from "@/server/services/tasks";
+import * as campaignsService from "@/server/services/campaigns";
 import { UnauthorizedError, requireSession } from "@/server/services/authorization";
 import type { ActivityWithAuthor } from "@/server/repositories/activities";
 import type { TaskWithAssignee } from "@/server/repositories/tasks";
@@ -13,6 +14,22 @@ export type ActionResult = { error?: string; ok?: true };
 export async function getContactActivitiesAction(contactId: string) {
   const result = await contactsService.getContact(contactId);
   return { activities: result?.activities ?? [] };
+}
+
+export async function getContactsForCampaignAction(campaignId: string) {
+  try {
+    return { contacts: await campaignsService.listContactsForCrm(campaignId) };
+  } catch {
+    return { contacts: [] };
+  }
+}
+
+export async function getManualContactsAction() {
+  try {
+    return { contacts: await contactsService.listManualContactsForCurrentUser() };
+  } catch {
+    return { contacts: [] };
+  }
 }
 
 export async function getAssignableUsersAction(companyId: string) {
@@ -153,6 +170,24 @@ export async function classifyContactAction(
       outcome: input.outcome,
       notes: input.notes.trim() || null,
     });
+    activity = { ...result.activity, authorName: session.user.name };
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "You don't have access to that contact." };
+    throw e;
+  }
+
+  revalidatePath("/crm");
+  return { ok: true, activity };
+}
+
+export async function assignContactAction(
+  contactId: string,
+  assignedUserId: string
+): Promise<ActionResult & { activity?: ActivityWithAuthor }> {
+  let activity;
+  try {
+    const session = await requireSession();
+    const result = await contactsService.assignContact(contactId, assignedUserId || null);
     activity = { ...result.activity, authorName: session.user.name };
   } catch (e) {
     if (e instanceof UnauthorizedError) return { error: "You don't have access to that contact." };

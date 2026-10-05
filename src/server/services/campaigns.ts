@@ -58,6 +58,18 @@ export async function importCampaignMembers(
   return { created };
 }
 
+/** CRM page's "Campaign" filter: contacts linked to this campaign, in the
+ * same ContactWithJoins shape the CRM page already renders everywhere else
+ * (unlike getCampaignMembers() below, which returns the Campaigns-page-
+ * specific member/channels shape). Authorizes against the campaign's
+ * company before touching any contact data — never trusts the client. */
+export async function listContactsForCrm(campaignId: string) {
+  const companyId = await campaignsRepo.findCompanyIdById(campaignId);
+  if (!companyId) throw new UnauthorizedError("Campaign not found.");
+  await assertCompanyAccess(companyId);
+  return contactsRepo.findManyByCampaignId(campaignId);
+}
+
 export type CampaignMemberWithChannels = Awaited<ReturnType<typeof campaignContactsRepo.findByCampaignId>>[number] & { channels: string[] };
 
 export async function getCampaignMembers(campaignId: string): Promise<CampaignMemberWithChannels[]> {

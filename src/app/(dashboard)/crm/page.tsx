@@ -1,14 +1,16 @@
 import * as contactsService from "@/server/services/contacts";
 import * as tasksService from "@/server/services/tasks";
+import * as campaignsService from "@/server/services/campaigns";
 import { getActiveDefaultPipelineStages } from "@/server/services/pipelineStages";
 import { getAllowedCompaniesForCurrentUser } from "@/server/services/companies";
 import { CrmClient } from "./CrmClient";
 
 export default async function CrmPage() {
-  const [contacts, stages, companies] = await Promise.all([
+  const [contacts, stages, companies, campaigns] = await Promise.all([
     contactsService.listContactsForCurrentUser(),
     getActiveDefaultPipelineStages(),
     getAllowedCompaniesForCurrentUser(),
+    campaignsService.listCampaignsForCurrentUser(),
   ]);
 
   const initialSelectedId = contacts[0]?.id ?? null;
@@ -22,6 +24,7 @@ export default async function CrmPage() {
       contacts={contacts}
       stages={stages}
       companies={companies}
+      campaigns={campaigns}
       initialSelectedId={initialSelectedId}
       initialActivities={initialResult?.activities ?? []}
       initialTasks={initialTasks}

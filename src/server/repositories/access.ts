@@ -33,3 +33,21 @@ export async function grantModuleAccess(userId: string, modules: string[]) {
     .values(modules.map((module) => ({ userId, module })))
     .onConflictDoNothing();
 }
+
+/** Replaces a user's full company-access set with exactly the given ids. */
+export async function replaceCompanyAccess(userId: string, companyIds: string[]) {
+  const db = getDb();
+  await db.delete(userCompanyAccess).where(eq(userCompanyAccess.userId, userId));
+  if (companyIds.length > 0) {
+    await db.insert(userCompanyAccess).values(companyIds.map((companyId) => ({ userId, companyId })));
+  }
+}
+
+/** Replaces a user's full module-access set with exactly the given modules. */
+export async function replaceModuleAccess(userId: string, modules: string[]) {
+  const db = getDb();
+  await db.delete(userModuleAccess).where(eq(userModuleAccess.userId, userId));
+  if (modules.length > 0) {
+    await db.insert(userModuleAccess).values(modules.map((module) => ({ userId, module })));
+  }
+}

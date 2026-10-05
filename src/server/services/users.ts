@@ -10,6 +10,60 @@ export async function getAssignableUsersForCompany(companyId: string) {
   return usersRepo.findAssignableForCompany(companyId);
 }
 
+export async function listUsers() {
+  const session = await requireSession();
+  if (session.user.roleKey !== "SUPERUSER") throw new UnauthorizedError("Only Superusers can view all users.");
+  return usersRepo.findAll();
+}
+
+export async function getUserAccess(userId: string) {
+  const session = await requireSession();
+  if (session.user.roleKey !== "SUPERUSER") throw new UnauthorizedError("Only Superusers can view user permissions.");
+
+  const user = await usersRepo.findById(userId);
+  if (!user) throw new Error("User not found.");
+  if (user.roleKey === "SUPERUSER") return { companyIds: [], modules: [] as ModuleKey[], isSuperuser: true };
+
+  const [companyIds, modules] = await Promise.all([
+    accessRepo.findCompanyIdsForUser(userId),
+    accessRepo.findModulesForUser(userId),
+  ]);
+  return { companyIds, modules: modules as ModuleKey[], isSuperuser: false };
+}
+
+export type UpdateUserPermissionsInput = {
+  userId: string;
+  companyIds: string[];
+  modules: ModuleKey[];
+};
+
+export async function updateUserPermissions(input: UpdateUserPermissionsInput) {
+  const session = await requireSession();
+  if (session.user.roleKey !== "SUPERUSER") throw new UnauthorizedError("Only Superusers can edit permissions.");
+
+  const user = await usersRepo.findById(input.userId);
+  if (!user) throw new Error("User not found.");
+  if (user.roleKey === "SUPERUSER") {
+    throw new Error("Superusers have implicit access to every company and module and cannot be edited.");
+  }
+
+  const validCompanyIds = input.companyIds.length
+    ? (await companiesRepo.findByIds(input.companyIds)).map((c) => c.id)
+    : [];
+  await accessRepo.replaceCompanyAccess(input.userId, validCompanyIds);
+  await accessRepo.replaceModuleAccess(input.userId, input.modules);
+}
+
+export async function deactivateUser(userId: string) {
+  const session = await requireSession();
+  if (session.user.roleKey !== "SUPERUSER") throw new UnauthorizedError("Only Superusers can delete users.");
+  if (session.user.id === userId) throw new Error("You cannot delete your own account.");
+
+  const user = await usersRepo.findById(userId);
+  if (!user) throw new Error("User not found.");
+  await usersRepo.setActive(userId, false);
+}
+
 export type CreateUserInput = {
   fullName: string;
   email: string;

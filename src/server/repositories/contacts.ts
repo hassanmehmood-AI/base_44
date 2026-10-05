@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, notExists } from "drizzle-orm";
 import { getDb } from "@/db";
-import { contacts, companies, pipelineStages, users } from "@/db/schema";
+import { contacts, companies, pipelineStages, users, campaignContacts } from "@/db/schema";
 
 export type Contact = typeof contacts.$inferSelect;
 export type NewContact = typeof contacts.$inferInsert;
@@ -32,6 +32,43 @@ export async function findManyByCompanyIds(companyIds: string[]): Promise<Contac
     .innerJoin(pipelineStages, eq(contacts.pipelineStageId, pipelineStages.id))
     .leftJoin(users, eq(contacts.assignedUserId, users.id))
     .where(inArray(contacts.companyId, companyIds))
+    .orderBy(desc(contacts.createdAt));
+  return rows.map(toJoined);
+}
+
+/** Contacts linked to a given campaign via campaign_contacts — the CRM page's
+ * "Campaign" filter. Caller must authorize the campaign's companyId first. */
+export async function findManyByCampaignId(campaignId: string): Promise<ContactWithJoins[]> {
+  const rows = await getDb()
+    .select(baseSelect)
+    .from(contacts)
+    .innerJoin(companies, eq(contacts.companyId, companies.id))
+    .innerJoin(pipelineStages, eq(contacts.pipelineStageId, pipelineStages.id))
+    .leftJoin(users, eq(contacts.assignedUserId, users.id))
+    .innerJoin(campaignContacts, eq(campaignContacts.contactId, contacts.id))
+    .where(eq(campaignContacts.campaignId, campaignId))
+    .orderBy(desc(contacts.createdAt));
+  return rows.map(toJoined);
+}
+
+/** Contacts with no campaign_contacts row at all — the CRM page's "Manual
+ * Leads" filter. Reliable because campaign linkage is a hard relational
+ * fact (set only by campaign CSV import), not inferred from free-text
+ * leadSource. Scoped to the caller's already-authorized company ids. */
+export async function findManualByCompanyIds(companyIds: string[]): Promise<ContactWithJoins[]> {
+  if (companyIds.length === 0) return [];
+  const rows = await getDb()
+    .select(baseSelect)
+    .from(contacts)
+    .innerJoin(companies, eq(contacts.companyId, companies.id))
+    .innerJoin(pipelineStages, eq(contacts.pipelineStageId, pipelineStages.id))
+    .leftJoin(users, eq(contacts.assignedUserId, users.id))
+    .where(
+      and(
+        inArray(contacts.companyId, companyIds),
+        notExists(getDb().select().from(campaignContacts).where(eq(campaignContacts.contactId, contacts.id)))
+      )
+    )
     .orderBy(desc(contacts.createdAt));
   return rows.map(toJoined);
 }

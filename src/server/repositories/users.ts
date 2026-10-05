@@ -31,6 +31,19 @@ export async function existsByEmail(email: string): Promise<boolean> {
   return !!row;
 }
 
+export async function findAll(): Promise<UserWithRole[]> {
+  const rows = await getDb()
+    .select({ user: users, roleKey: roles.key })
+    .from(users)
+    .innerJoin(roles, eq(users.roleId, roles.id))
+    .orderBy(users.fullName);
+  return rows.map((r) => ({ ...r.user, roleKey: r.roleKey as RoleKey }));
+}
+
+export async function setActive(userId: string, isActive: boolean): Promise<void> {
+  await getDb().update(users).set({ isActive, updatedAt: new Date() }).where(eq(users.id, userId));
+}
+
 export async function findRoleIdByKey(roleKey: RoleKey): Promise<string | undefined> {
   const [row] = await getDb().select({ id: roles.id }).from(roles).where(eq(roles.key, roleKey)).limit(1);
   return row?.id;

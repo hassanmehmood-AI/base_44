@@ -2,6 +2,7 @@ import * as contactsRepo from "@/server/repositories/contacts";
 import * as activitiesRepo from "@/server/repositories/activities";
 import * as companiesRepo from "@/server/repositories/companies";
 import * as pipelineStagesRepo from "@/server/repositories/pipelineStages";
+import * as usersRepo from "@/server/repositories/users";
 import { assertCompanyAccess, requireSession } from "@/server/services/authorization";
 import { UnauthorizedError } from "@/server/services/authorization";
 
@@ -17,6 +18,14 @@ export async function listContactsForCurrentUser() {
   const session = await requireSession();
   const companyIds = await getAllowedCompanyIds(session);
   return contactsRepo.findManyByCompanyIds(companyIds);
+}
+
+/** CRM page's "Manual Leads" filter: contacts never linked to any campaign,
+ * scoped to the same allowed-company rule as the default "All Contacts" view. */
+export async function listManualContactsForCurrentUser() {
+  const session = await requireSession();
+  const companyIds = await getAllowedCompanyIds(session);
+  return contactsRepo.findManualByCompanyIds(companyIds);
 }
 
 export async function getContact(id: string) {
@@ -35,6 +44,7 @@ export async function createContact(input: {
   email?: string | null;
   leadSource?: string | null;
   pipelineStageId: string;
+  assignedUserId?: string | null;
 }) {
   await assertCompanyAccess(input.companyId);
   return contactsRepo.create(input);
@@ -158,6 +168,32 @@ export async function moveContactStage(id: string, pipelineStageId: string) {
       type: "STATUS_CHANGE",
       channel: null,
       outcome: stage.key,
+      notes: null,
+      createdBy: session.user.id,
+    });
+    return { contact, activity };
+  });
+}
+
+/** Quick standalone "reassign this contact" action — lighter than
+ * classifyContact() for when you just want to change the owner without
+ * logging a full interaction (channel/stage/notes). */
+export async function assignContact(id: string, assignedUserId: string | null) {
+  const session = await requireSession();
+  const companyId = await contactsRepo.findCompanyIdById(id);
+  if (!companyId) throw new UnauthorizedError("Contact not found.");
+  await assertCompanyAccess(companyId);
+
+  const agentName = assignedUserId ? (await usersRepo.findById(assignedUserId))?.fullName ?? null : null;
+
+  return contactsRepo.withTransaction(async (tx) => {
+    const contact = await contactsRepo.updateInTx(tx, id, { assignedUserId });
+    const activity = await activitiesRepo.create(tx, {
+      companyId,
+      contactId: id,
+      type: "ASSIGNMENT",
+      channel: null,
+      outcome: agentName ?? "Unassigned",
       notes: null,
       createdBy: session.user.id,
     });

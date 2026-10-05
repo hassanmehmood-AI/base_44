@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus, CheckCircle2, Trash2, RotateCcw, ArrowUp, ArrowDown, Power, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -11,18 +11,28 @@ import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/PageHeader";
 import { useLanguage } from "@/context/LanguageContext";
 import { STAGE_LABEL, STAGE_LABEL_ES, Stage } from "@/lib/pipeline";
-import {
-  users,
-  allowedCompanies,
-  allowedModules,
-  kpiDepartments,
-} from "@/lib/mock-data";
 import { cn } from "@/lib/cn";
 import type { PipelineStage } from "@/server/repositories/pipelineStages";
 import type { Company } from "@/server/repositories/companies";
 import { ROLE_KEYS, MODULE_KEYS, type RoleKey, type ModuleKey } from "@/server/constants";
 import { ROLE_LABEL, ROLE_LABEL_ES } from "@/lib/roles";
-import { toggleStageActiveAction, moveStageAction, createCompanyAction, createUserAction } from "./actions";
+import {
+  toggleStageActiveAction,
+  moveStageAction,
+  createCompanyAction,
+  createUserAction,
+  getUserAccessAction,
+  updateUserPermissionsAction,
+  deactivateUserAction,
+} from "./actions";
+
+export type UserRow = {
+  id: string;
+  fullName: string;
+  email: string;
+  roleKey: RoleKey;
+  isActive: boolean;
+};
 
 const MODULE_LABEL: Record<ModuleKey, string> = {
   PROSPECTING: "Prospecting",
@@ -51,36 +61,92 @@ export function ConfiguracionClient({
   canManageStages,
   companies: realCompanies,
   canManageAdmin,
+  users,
+  currentUserId,
 }: {
   stages: PipelineStage[];
   canManageStages: boolean;
   companies: Company[];
   canManageAdmin: boolean;
+  users: UserRow[];
+  currentUserId: string;
 }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  const roleLabels = language === "es" ? ROLE_LABEL_ES : ROLE_LABEL;
+  const moduleLabels = language === "es" ? MODULE_LABEL_ES : MODULE_LABEL;
   const [tab, setTab] = useState<"users" | "roles" | "companies" | "pipeline">("users");
-  const [selectedId, setSelectedId] = useState(users[0].id);
-  const [companies, setCompanies] = useState(new Set(allowedCompanies));
-  const [modules, setModules] = useState(new Set(allowedModules));
-  const [departments, setDepartments] = useState(new Set(kpiDepartments));
+  const [selectedId, setSelectedId] = useState(users[0]?.id ?? "");
+  const [companyIds, setCompanyIds] = useState<Set<string>>(new Set());
+  const [moduleKeys, setModuleKeys] = useState<Set<ModuleKey>>(new Set());
+  const [isSuperuserSelected, setIsSuperuserSelected] = useState(false);
+  const [loadingAccess, setLoadingAccess] = useState(false);
+  const [savePending, setSavePending] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
+  const [accessError, setAccessError] = useState<string | undefined>();
   const [addCompanyOpen, setAddCompanyOpen] = useState(false);
   const [addUserOpen, setAddUserOpen] = useState(false);
 
-  const roles = [
-    { name: t("Superuser", "Superusuario"), desc: t("Full access to all modules and companies.", "Acceso total a todos los módulos y empresas.") },
-    { name: t("Director", "Director"), desc: t("Global view of KPIs and campaigns, without user editing.", "Visión global de KPIs y campañas, sin edición de usuarios.") },
-    { name: t("Call Center Lead", "Jefe de Call Center"), desc: t("Manages agents, campaigns and team channels.", "Gestiona agentes, campañas y canales del equipo.") },
-    { name: t("Call Center Agent", "Agente Call Center"), desc: t("Access to channels and CRM of their assigned clients.", "Acceso a canales y CRM de sus clientes asignados.") },
-    { name: t("Marketing", "Marketing"), desc: t("Access to prospecting, campaigns and marketing KPIs.", "Acceso a prospección, campañas y KPIs de marketing.") },
-  ];
+  const roleDescByKey: Record<RoleKey, string> = {
+    SUPERUSER: t("Full access to all modules and companies.", "Acceso total a todos los módulos y empresas."),
+    DIRECTOR: t("Global view of KPIs and campaigns, without user editing.", "Visión global de KPIs y campañas, sin edición de usuarios."),
+    CALL_CENTER_LEAD: t("Manages agents, campaigns and team channels.", "Gestiona agentes, campañas y canales del equipo."),
+    CALL_CENTER_AGENT: t("Access to channels and CRM of their assigned clients.", "Acceso a canales y CRM de sus clientes asignados."),
+    MARKETING: t("Access to prospecting, campaigns and marketing KPIs.", "Acceso a prospección, campañas y KPIs de marketing."),
+  };
+  const roles = ROLE_KEYS.map((key) => ({ key, name: roleLabels[key], desc: roleDescByKey[key] }));
 
-  const selected = users.find((u) => u.id === selectedId) ?? users[0];
+  const selected = users.find((u) => u.id === selectedId);
 
-  function toggle(set: Set<string>, setter: (s: Set<string>) => void, v: string) {
+  useEffect(() => {
+    if (!selectedId) return;
+    let active = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- kicks off a loading flag for the fetch this effect triggers, not a synchronous derived-state mirror
+    setLoadingAccess(true);
+    setAccessError(undefined);
+    getUserAccessAction(selectedId).then((res) => {
+      if (!active) return;
+      setCompanyIds(new Set(res.companyIds));
+      setModuleKeys(new Set(res.modules));
+      setIsSuperuserSelected(res.isSuperuser);
+      setLoadingAccess(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [selectedId]);
+
+  function toggle<T>(set: Set<T>, setter: (s: Set<T>) => void, v: T) {
     const next = new Set(set);
     if (next.has(v)) next.delete(v);
     else next.add(v);
     setter(next);
+  }
+
+  async function handleSavePermissions() {
+    if (!selected) return;
+    setSavePending(true);
+    setAccessError(undefined);
+    const result = await updateUserPermissionsAction({
+      userId: selected.id,
+      companyIds: Array.from(companyIds),
+      modules: Array.from(moduleKeys),
+    });
+    setSavePending(false);
+    if (result.error) setAccessError(result.error);
+  }
+
+  async function handleDeleteUser() {
+    if (!selected) return;
+    setDeletePending(true);
+    setAccessError(undefined);
+    const result = await deactivateUserAction(selected.id);
+    setDeletePending(false);
+    if (result.error) {
+      setAccessError(result.error);
+      return;
+    }
+    const next = users.find((u) => u.id !== selected.id);
+    if (next) setSelectedId(next.id);
   }
 
   return (
@@ -152,7 +218,9 @@ export function ConfiguracionClient({
           <Card className="flex flex-col gap-1 p-5">
             <div className="mb-2 flex items-center justify-between">
               <CardTitle>{t("Users", "Usuarios")}</CardTitle>
-              <Badge tone="green">{users.length} {t("active", "activos")}</Badge>
+              <Badge tone="green">
+                {users.filter((u) => u.isActive).length} {t("active", "activos")}
+              </Badge>
             </div>
             {users.map((u) => (
               <button
@@ -160,117 +228,124 @@ export function ConfiguracionClient({
                 onClick={() => setSelectedId(u.id)}
                 className={cn(
                   "flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-left transition-colors",
-                  selectedId === u.id ? "bg-brand-50" : "hover:bg-surface-muted"
+                  selectedId === u.id ? "bg-brand-50" : "hover:bg-surface-muted",
+                  !u.isActive && "opacity-50"
                 )}
               >
-                <Avatar name={u.name} size={36} />
+                <Avatar name={u.fullName} size={36} />
                 <div className="min-w-0">
-                  <p className="truncate text-[13.5px] font-semibold text-text-primary">{u.name}</p>
-                  <p className="truncate text-[12px] text-text-secondary">{u.role}</p>
+                  <p className="truncate text-[13.5px] font-semibold text-text-primary">{u.fullName}</p>
+                  <p className="truncate text-[12px] text-text-secondary">{roleLabels[u.roleKey]}</p>
                 </div>
               </button>
             ))}
+            {users.length === 0 && (
+              <p className="px-1 py-2 text-[13px] text-text-secondary">{t("No users yet.", "Todavía no hay usuarios.")}</p>
+            )}
           </Card>
 
           <div className="flex flex-col gap-6">
-            <Card className="p-6">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <Avatar name={selected.name} size={48} />
-                  <div>
-                    <p className="text-[17px] font-semibold text-text-primary">{selected.name}</p>
-                    <p className="text-[13px] text-text-secondary">{selected.role}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Badge tone="green">{t("Active user", "Usuario activo")}</Badge>
-                  <div className="w-[180px]">
-                    <Select defaultValue={selected.role}>
-                      {roles.map((r) => (
-                        <option key={r.name}>{r.name}</option>
-                      ))}
-                    </Select>
-                  </div>
-                </div>
-              </div>
-            </Card>
-
-            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+            {!selected ? (
               <Card className="p-6">
-                <CardTitle>{t("Allowed companies", "Empresas permitidas")}</CardTitle>
-                <div className="mt-4 flex flex-col gap-2.5">
-                  {allowedCompanies.map((c) => (
-                    <PermissionPill
-                      key={c}
-                      label={c}
-                      active={companies.has(c)}
-                      onClick={() => toggle(companies, setCompanies, c)}
-                    />
-                  ))}
-                </div>
+                <p className="text-[13.5px] text-text-secondary">{t("Select a user.", "Selecciona un usuario.")}</p>
               </Card>
-              <Card className="p-6">
-                <CardTitle>{t("Allowed modules", "Módulos permitidos")}</CardTitle>
-                <div className="mt-4 flex flex-col gap-2.5">
-                  {allowedModules.map((m) => (
-                    <PermissionPill
-                      key={m}
-                      label={m}
-                      active={modules.has(m)}
-                      onClick={() => toggle(modules, setModules, m)}
-                    />
-                  ))}
-                </div>
-              </Card>
-            </div>
-
-            <Card className="p-6">
-              <CardTitle>{t("Specific KPI permissions", "Permisos específicos de KPI")}</CardTitle>
-              <div className="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2">
-                <div>
-                  <p className="mb-2.5 text-[11px] font-semibold tracking-wide text-text-tertiary">
-                    {t("DEPARTMENTS", "DEPARTAMENTOS")}
-                  </p>
-                  <div className="flex flex-col gap-2.5">
-                    {kpiDepartments.map((d) => (
-                      <PermissionPill
-                        key={d}
-                        label={d}
-                        active={departments.has(d)}
-                        onClick={() => toggle(departments, setDepartments, d)}
-                      />
-                    ))}
+            ) : (
+              <>
+                <Card className="p-6">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <Avatar name={selected.fullName} size={48} />
+                      <div>
+                        <p className="text-[17px] font-semibold text-text-primary">{selected.fullName}</p>
+                        <p className="text-[13px] text-text-secondary">{selected.email}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Badge tone={selected.isActive ? "green" : "gray"}>
+                        {selected.isActive ? t("Active user", "Usuario activo") : t("Deactivated", "Desactivado")}
+                      </Badge>
+                      <div className="w-[180px]">
+                        <Select value={selected.roleKey} disabled title={t("Role changes aren't available yet.", "El cambio de rol todavía no está disponible.")}>
+                          {roles.map((r) => (
+                            <option key={r.key} value={r.key}>
+                              {r.name}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <p className="mb-2.5 text-[11px] font-semibold tracking-wide text-text-tertiary">
-                    {t("COMPANIES", "EMPRESAS")}
-                  </p>
-                  <div className="flex flex-col gap-2.5">
-                    {allowedCompanies.map((c) => (
-                      <PermissionPill
-                        key={c}
-                        label={c}
-                        active={companies.has(c)}
-                        onClick={() => toggle(companies, setCompanies, c)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </Card>
+                </Card>
 
-            <Card className="flex flex-wrap items-center justify-between gap-3 p-5">
-              <button className="flex items-center gap-1.5 text-[13.5px] font-medium text-danger hover:text-danger-700">
-                <Trash2 className="h-4 w-4" /> {t("Delete user", "Eliminar usuario")}
-              </button>
-              <div className="flex gap-3">
-                <Button variant="outline">
-                  <RotateCcw className="h-4 w-4" /> {t("Reset by role", "Restablecer por rol")}
-                </Button>
-                <Button>{t("Save permissions", "Guardar permisos")}</Button>
-              </div>
-            </Card>
+                {isSuperuserSelected ? (
+                  <Card className="p-6">
+                    <p className="text-[13px] text-text-secondary">
+                      {t(
+                        "Superusers have implicit access to every company and module.",
+                        "Los superusuarios tienen acceso implícito a todas las empresas y módulos."
+                      )}
+                    </p>
+                  </Card>
+                ) : (
+                  <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                    <Card className="p-6">
+                      <CardTitle>{t("Allowed companies", "Empresas permitidas")}</CardTitle>
+                      <div className="mt-4 flex flex-col gap-2.5">
+                        {realCompanies.map((c) => (
+                          <PermissionPill
+                            key={c.id}
+                            label={c.name}
+                            active={companyIds.has(c.id)}
+                            disabled={loadingAccess}
+                            onClick={() => toggle(companyIds, setCompanyIds, c.id)}
+                          />
+                        ))}
+                      </div>
+                    </Card>
+                    <Card className="p-6">
+                      <CardTitle>{t("Allowed modules", "Módulos permitidos")}</CardTitle>
+                      <div className="mt-4 flex flex-col gap-2.5">
+                        {MODULE_KEYS.map((m) => (
+                          <PermissionPill
+                            key={m}
+                            label={moduleLabels[m]}
+                            active={moduleKeys.has(m)}
+                            disabled={loadingAccess}
+                            onClick={() => toggle(moduleKeys, setModuleKeys, m)}
+                          />
+                        ))}
+                      </div>
+                    </Card>
+                  </div>
+                )}
+
+                {accessError && <p className="text-[13px] text-danger">{accessError}</p>}
+
+                <Card className="flex flex-wrap items-center justify-between gap-3 p-5">
+                  <button
+                    onClick={handleDeleteUser}
+                    disabled={deletePending || selected.id === currentUserId || !selected.isActive}
+                    className="flex items-center gap-1.5 text-[13.5px] font-medium text-danger hover:text-danger-700 disabled:opacity-40"
+                    title={
+                      selected.id === currentUserId
+                        ? t("You cannot delete your own account.", "No puedes eliminar tu propia cuenta.")
+                        : undefined
+                    }
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {deletePending ? t("Deleting...", "Eliminando...") : t("Delete user", "Eliminar usuario")}
+                  </button>
+                  <div className="flex gap-3">
+                    <Button variant="outline" disabled title={t("Coming soon", "Próximamente")}>
+                      <RotateCcw className="h-4 w-4" /> {t("Reset by role", "Restablecer por rol")}
+                    </Button>
+                    <Button onClick={handleSavePermissions} disabled={savePending || loadingAccess || isSuperuserSelected}>
+                      {savePending ? t("Saving...", "Guardando...") : t("Save permissions", "Guardar permisos")}
+                    </Button>
+                  </div>
+                </Card>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -278,11 +353,11 @@ export function ConfiguracionClient({
       {tab === "roles" && (
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
           {roles.map((r) => (
-            <Card key={r.name} className="p-5">
+            <Card key={r.key} className="p-5">
               <p className="text-[15px] font-semibold text-text-primary">{r.name}</p>
               <p className="mt-1.5 text-[13px] leading-5 text-text-secondary">{r.desc}</p>
               <p className="mt-3 text-[12.5px] font-medium text-brand-700">
-                {users.filter((u) => u.role === r.name).length} {t("users", "usuarios")}
+                {users.filter((u) => u.roleKey === r.key).length} {t("users", "usuarios")}
               </p>
             </Card>
           ))}
@@ -547,17 +622,20 @@ function PermissionCheckbox({ label, checked, onClick }: { label: string; checke
 function PermissionPill({
   label,
   active,
+  disabled,
   onClick,
 }: {
   label: string;
   active: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       className={cn(
-        "flex items-center gap-2.5 rounded-full px-4 py-2.5 text-left text-[13.5px] font-medium transition-colors",
+        "flex items-center gap-2.5 rounded-full px-4 py-2.5 text-left text-[13.5px] font-medium transition-colors disabled:opacity-50",
         active
           ? "bg-brand-50 text-brand-700"
           : "bg-surface-muted text-text-tertiary line-through decoration-1"
