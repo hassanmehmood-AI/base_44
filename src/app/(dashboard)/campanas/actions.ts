@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import * as campaignsService from "@/server/services/campaigns";
 import * as usersService from "@/server/services/users";
 import * as contactsService from "@/server/services/contacts";
-import { UnauthorizedError } from "@/server/services/authorization";
+import { requireSession, UnauthorizedError } from "@/server/services/authorization";
 import type { CampaignStatus } from "@/server/constants";
 
 export type ActionResult = { error?: string; ok?: true };
@@ -123,6 +123,22 @@ export async function assignCampaignMemberAction(contactId: string, assignedUser
 
 export async function getCampaignPageStatsAction() {
   return { stats: await campaignsService.getCampaignPageStats() };
+}
+
+/** "My Team" card on the Manage Campaigns page: a Call Center Manager's own
+ * agents (manager_agent_assignments), scoped to one company. Deliberately
+ * takes no managerUserId from the client -- it's always the caller's own id
+ * from the session, so there's no way to pass another manager's id and see
+ * their roster. Non-managers always get an empty team (the UI only renders
+ * this card for CALL_CENTER_LEAD anyway, but this is the real boundary). */
+export async function getMyTeamAction(companyId: string) {
+  try {
+    const session = await requireSession();
+    if (session.user.roleKey !== "CALL_CENTER_LEAD") return { team: [] };
+    return { team: await usersService.getManagerTeam(session.user.id, companyId) };
+  } catch {
+    return { team: [] };
+  }
 }
 
 export async function autoAssignCampaignLeadsAction(

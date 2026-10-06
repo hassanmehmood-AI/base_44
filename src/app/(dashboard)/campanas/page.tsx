@@ -25,6 +25,8 @@ export default async function CampanasPage() {
   // see this page's members at all, it's necessarily their own campaign.
   const canAssignAgent =
     session?.user.roleKey === "SUPERUSER" || session?.user.roleKey === "DIRECTOR" || session?.user.roleKey === "CALL_CENTER_LEAD";
+  // "My Team" card: only a Call Center Manager has a team of their own to see.
+  const isManager = session?.user.roleKey === "CALL_CENTER_LEAD";
 
   return (
     <CampanasClient
@@ -35,6 +37,7 @@ export default async function CampanasPage() {
       initialMembers={initialMembers}
       canAssignManager={canAssignManager}
       canAssignAgent={canAssignAgent}
+      isManager={isManager}
     />
   );
 }

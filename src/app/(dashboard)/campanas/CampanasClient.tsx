@@ -10,6 +10,7 @@ import { SearchInput, Select, Input, Textarea } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { StatCard } from "@/components/StatCard";
 import { StageBadge } from "@/components/StageBadge";
+import { Avatar } from "@/components/ui/Avatar";
 import { useLanguage } from "@/context/LanguageContext";
 import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { formatRelativeTime } from "@/lib/format";
@@ -30,6 +31,7 @@ import {
   getAssignableAgentsForCampaignAction,
   assignCampaignMemberAction,
   autoAssignCampaignLeadsAction,
+  getMyTeamAction,
 } from "./actions";
 
 const STATUS_TONE: Record<CampaignStatus, "gray" | "green" | "amber" | "blue"> = {
@@ -63,6 +65,7 @@ export function CampanasClient({
   initialMembers,
   canAssignManager,
   canAssignAgent,
+  isManager,
 }: {
   campaigns: CampaignWithJoins[];
   companies: CompanyOption[];
@@ -71,6 +74,7 @@ export function CampanasClient({
   initialMembers: CampaignMemberWithChannels[];
   canAssignManager: boolean;
   canAssignAgent: boolean;
+  isManager: boolean;
 }) {
   const { t } = useLanguage();
   const { activeCompany } = useCompany();
@@ -173,6 +177,8 @@ export function CampanasClient({
         <StatCard label={t("Customers", "Clientes")} value={totals.customers.toLocaleString("en-US")} />
         <StatCard label={t("Opportunities", "Oportunidades")} value={totals.opportunities.toLocaleString("en-US")} />
       </div>
+
+      {isManager && allowedCompanies[0] && <MyTeamCard companyId={allowedCompanies[0].id} />}
 
       <Card className="flex flex-col gap-4 p-5">
         <CardHeader>
@@ -369,6 +375,62 @@ export function CampanasClient({
         <CreateCampaignForm companies={allowedCompanies} onClose={() => setCreateOpen(false)} />
       </Modal>
     </div>
+  );
+}
+
+/** "My Team" card: a Call Center Manager's own agents, always visible on
+ * their Manage Campaigns page (not just inside an admin-only settings
+ * screen). Read-only here — managing the team itself still happens in
+ * Settings > Users. Scoped to one company: a manager has exactly one in the
+ * normal business flow (see plan.md), same simplification already used by
+ * the Settings > Users "Manager"/"Team" panels. */
+function MyTeamCard({ companyId }: { companyId: string }) {
+  const { t } = useLanguage();
+  const [team, setTeam] = useState<{ id: string; fullName: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    getMyTeamAction(companyId).then((res) => {
+      if (active) {
+        setTeam(res.team);
+        setLoading(false);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [companyId]);
+
+  return (
+    <Card className="flex flex-col gap-4 p-5">
+      <CardHeader>
+        <CardTitle>{t("My Team", "Mi Equipo")}</CardTitle>
+        <Badge tone="green">
+          {team.length} {t(`agent${team.length === 1 ? "" : "s"}`, `agente${team.length === 1 ? "" : "s"}`)}
+        </Badge>
+      </CardHeader>
+
+      {loading ? (
+        <p className="py-2 text-center text-[13.5px] text-text-tertiary">{t("Loading...", "Cargando...")}</p>
+      ) : team.length === 0 ? (
+        <p className="py-2 text-center text-[13.5px] text-text-tertiary">
+          {t(
+            "No agents assigned to you yet. Ask a Director or Superuser to link an agent to you in Settings > Users.",
+            "Todavía no tienes agentes asignados. Pide a un Director o Superusuario que te vincule un agente en Configuración > Usuarios."
+          )}
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-2.5">
+          {team.map((a) => (
+            <div key={a.id} className="flex items-center gap-2.5 rounded-lg bg-surface-muted px-3 py-2">
+              <Avatar name={a.fullName} size={28} />
+              <span className="text-[13.5px] font-medium text-text-primary">{a.fullName}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
