@@ -99,3 +99,43 @@ export async function deactivateUserAction(userId: string): Promise<ActionResult
   revalidatePath("/configuracion");
   return { ok: true };
 }
+
+export async function getManagersForCompanyAction(companyId: string) {
+  try {
+    return { users: await usersService.getManagersForCompany(companyId) };
+  } catch {
+    return { users: [] };
+  }
+}
+
+export async function getAgentManagerAction(agentUserId: string, companyId: string) {
+  try {
+    return { managerUserId: await usersService.getAgentManager(agentUserId, companyId) };
+  } catch {
+    return { managerUserId: null };
+  }
+}
+
+export async function getManagerTeamAction(managerUserId: string, companyId: string) {
+  try {
+    return { team: await usersService.getManagerTeam(managerUserId, companyId) };
+  } catch {
+    return { team: [] };
+  }
+}
+
+export async function setAgentManagerAction(input: {
+  agentUserId: string;
+  companyId: string;
+  managerUserId: string | null;
+}): Promise<ActionResult> {
+  try {
+    await usersService.setAgentManager(input);
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "Only a Superuser or that company's Director can do this." };
+    if (e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  return { ok: true };
+}

@@ -32,6 +32,20 @@ export async function assertCompanyAccess(companyId: string) {
   return session;
 }
 
+/** Narrower than assertCompanyAccess: throws unless the caller is a
+ * Superuser, or a Director with explicit access to this specific company.
+ * Used by top-down manager-hierarchy actions (manager/agent assignment,
+ * campaign-manager reassignment) that only Directors and Superusers should
+ * perform — never the Manager/Agent/Marketing roles, even if they have
+ * company access themselves. A Director granted company A cannot use this
+ * for company B. */
+export async function assertDirectorOrSuperuser(companyId: string) {
+  const session = await requireSession();
+  if (isSuperuser(session.user.roleKey)) return session;
+  if (session.user.roleKey === "DIRECTOR" && session.user.companyIds.includes(companyId)) return session;
+  throw new UnauthorizedError(`Only a Superuser or company ${companyId}'s Director can perform this action.`);
+}
+
 export async function assertModuleAccess(module: ModuleKey) {
   const session = await requireSession();
   if (isSuperuser(session.user.roleKey)) return session;

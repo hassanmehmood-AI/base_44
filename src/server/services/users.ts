@@ -2,12 +2,69 @@ import { hash } from "bcryptjs";
 import * as usersRepo from "@/server/repositories/users";
 import * as accessRepo from "@/server/repositories/access";
 import * as companiesRepo from "@/server/repositories/companies";
-import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
+import * as managerAgentRepo from "@/server/repositories/managerAgentAssignments";
+import { assertCompanyAccess, assertDirectorOrSuperuser, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import type { RoleKey, ModuleKey } from "@/server/constants";
 
 export async function getAssignableUsersForCompany(companyId: string) {
   await assertCompanyAccess(companyId);
   return usersRepo.findAssignableForCompany(companyId);
+}
+
+/** Call Center Managers available in this company — for the manager-
+ * assignment dropdown (agent -> manager) and, later, the campaign ->
+ * manager dropdown. Read-only, so uses the same company-access gate as
+ * getAssignableUsersForCompany (not restricted to Director/Superuser —
+ * anyone who can see this company can see who manages it). */
+export async function getManagersForCompany(companyId: string) {
+  await assertCompanyAccess(companyId);
+  return usersRepo.findUsersByRoleForCompany(companyId, "CALL_CENTER_LEAD");
+}
+
+/** The manager currently linked to this agent in this company, or null. */
+export async function getAgentManager(agentUserId: string, companyId: string): Promise<string | null> {
+  await assertCompanyAccess(companyId);
+  const row = await managerAgentRepo.findManagerForAgent(agentUserId, companyId);
+  return row?.managerUserId ?? null;
+}
+
+/** This manager's team in this company — what the admin UI's "Team"
+ * read-out shows, and what the manager-scoped Assign Agent dropdown and
+ * Auto Assign Leads (later phases) will draw their eligible agents from. */
+export async function getManagerTeam(managerUserId: string, companyId: string) {
+  await assertCompanyAccess(companyId);
+  return usersRepo.findTeamForManager(managerUserId, companyId);
+}
+
+export type SetAgentManagerInput = { agentUserId: string; companyId: string; managerUserId: string | null };
+
+/** Links (or, with managerUserId null, unlinks) an agent to a manager within
+ * one company. Restricted to that company's Director or a Superuser —
+ * never the Manager/Agent themselves — matching the hierarchy's top-down
+ * assignment model. Validates both ends server-side so a cross-company
+ * pairing is structurally impossible, not just hidden in the UI: the agent
+ * must actually hold CALL_CENTER_AGENT and have access to this company, and
+ * the manager (when given) must hold CALL_CENTER_LEAD and have access to
+ * this SAME company. */
+export async function setAgentManager(input: SetAgentManagerInput): Promise<void> {
+  await assertDirectorOrSuperuser(input.companyId);
+
+  const agent = await usersRepo.findById(input.agentUserId);
+  if (!agent || agent.roleKey !== "CALL_CENTER_AGENT") throw new Error("Target user is not a Call Center Agent.");
+  const agentCompanyIds = await accessRepo.findCompanyIdsForUser(input.agentUserId);
+  if (!agentCompanyIds.includes(input.companyId)) throw new Error("That agent does not have access to this company.");
+
+  if (input.managerUserId === null) {
+    await managerAgentRepo.removeManagerForAgent(input.agentUserId, input.companyId);
+    return;
+  }
+
+  const manager = await usersRepo.findById(input.managerUserId);
+  if (!manager || manager.roleKey !== "CALL_CENTER_LEAD") throw new Error("Target manager is not a Call Center Manager.");
+  const managerCompanyIds = await accessRepo.findCompanyIdsForUser(input.managerUserId);
+  if (!managerCompanyIds.includes(input.companyId)) throw new Error("That manager does not have access to this company.");
+
+  await managerAgentRepo.setManagerForAgent(input.agentUserId, input.companyId, input.managerUserId);
 }
 
 export async function listUsers() {

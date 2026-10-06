@@ -24,6 +24,10 @@ import {
   getUserAccessAction,
   updateUserPermissionsAction,
   deactivateUserAction,
+  getManagersForCompanyAction,
+  getAgentManagerAction,
+  getManagerTeamAction,
+  setAgentManagerAction,
 } from "./actions";
 
 export type UserRow = {
@@ -317,6 +321,13 @@ export function ConfiguracionClient({
                       </div>
                     </Card>
                   </div>
+                )}
+
+                {!isSuperuserSelected && selected.roleKey === "CALL_CENTER_AGENT" && (
+                  <ManagerAssignmentPanel agentId={selected.id} companyIds={Array.from(companyIds)} />
+                )}
+                {!isSuperuserSelected && selected.roleKey === "CALL_CENTER_LEAD" && (
+                  <ManagerTeamPanel managerId={selected.id} companyIds={Array.from(companyIds)} />
                 )}
 
                 {accessError && <p className="text-[13px] text-danger">{accessError}</p>}
@@ -644,6 +655,145 @@ function PermissionPill({
       <CheckCircle2 className={cn("h-4 w-4 shrink-0", active ? "text-brand" : "text-gray-300")} />
       {label}
     </button>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Manager <-> Agent assignment (hierarchy redesign phase 2). Scoped to
+// exactly one company at a time — an agent/manager with 0 or 2+ companies
+// selected can't use this panel yet (edge case, not the common single-
+// company flow the spec describes); the panel asks for exactly one instead
+// of guessing which company the relationship applies to.
+// -----------------------------------------------------------------------------
+
+function ManagerAssignmentPanel({ agentId, companyIds }: { agentId: string; companyIds: string[] }) {
+  const { t } = useLanguage();
+  const companyId = companyIds.length === 1 ? companyIds[0] : undefined;
+  const [managers, setManagers] = useState<{ id: string; fullName: string }[]>([]);
+  const [managerUserId, setManagerUserId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (!companyId) return;
+    let active = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- kicks off a loading flag for the fetch this effect triggers, not a synchronous derived-state mirror
+    setLoading(true);
+    setSaved(false);
+    Promise.all([getManagersForCompanyAction(companyId), getAgentManagerAction(agentId, companyId)]).then(
+      ([managersRes, managerRes]) => {
+        if (!active) return;
+        setManagers(managersRes.users);
+        setManagerUserId(managerRes.managerUserId ?? "");
+        setLoading(false);
+      }
+    );
+    return () => {
+      active = false;
+    };
+  }, [agentId, companyId]);
+
+  async function handleSave() {
+    if (!companyId) return;
+    setPending(true);
+    setError(undefined);
+    setSaved(false);
+    const result = await setAgentManagerAction({ agentUserId: agentId, companyId, managerUserId: managerUserId || null });
+    setPending(false);
+    if (result.error) setError(result.error);
+    else setSaved(true);
+  }
+
+  return (
+    <Card className="p-6">
+      <CardTitle>{t("Manager", "Gerente")}</CardTitle>
+      {!companyId ? (
+        <p className="mt-3 text-[13px] text-text-secondary">
+          {t(
+            "Assign exactly one company above to set this agent's manager.",
+            "Asigna exactamente una empresa arriba para fijar el gerente de este agente."
+          )}
+        </p>
+      ) : (
+        <>
+          <div className="mt-3 max-w-xs">
+            <Select value={managerUserId} onChange={(e) => setManagerUserId(e.target.value)} disabled={loading}>
+              <option value="">{t("Unassigned", "Sin asignar")}</option>
+              {managers.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.fullName}
+                </option>
+              ))}
+            </Select>
+          </div>
+          {managers.length === 0 && !loading && (
+            <p className="mt-2 text-[12.5px] text-text-tertiary">
+              {t("No Call Center Managers in this company yet.", "Todavía no hay gerentes de Call Center en esta empresa.")}
+            </p>
+          )}
+          {error && <p className="mt-2 text-[13px] text-danger">{error}</p>}
+          <div className="mt-4 flex items-center gap-3">
+            <Button onClick={handleSave} disabled={pending || loading}>
+              {pending ? t("Saving...", "Guardando...") : t("Save manager", "Guardar gerente")}
+            </Button>
+            {saved && <span className="text-[12.5px] font-medium text-success">{t("Saved.", "Guardado.")}</span>}
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
+function ManagerTeamPanel({ managerId, companyIds }: { managerId: string; companyIds: string[] }) {
+  const { t } = useLanguage();
+  const companyId = companyIds.length === 1 ? companyIds[0] : undefined;
+  const [team, setTeam] = useState<{ id: string; fullName: string }[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!companyId) return;
+    let active = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- kicks off a loading flag for the fetch this effect triggers, not a synchronous derived-state mirror
+    setLoading(true);
+    getManagerTeamAction(managerId, companyId).then((res) => {
+      if (!active) return;
+      setTeam(res.team);
+      setLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [managerId, companyId]);
+
+  return (
+    <Card className="p-6">
+      <CardTitle>{t("Team", "Equipo")}</CardTitle>
+      {!companyId ? (
+        <p className="mt-3 text-[13px] text-text-secondary">
+          {t(
+            "Assign exactly one company above to see this manager's team.",
+            "Asigna exactamente una empresa arriba para ver el equipo de este gerente."
+          )}
+        </p>
+      ) : loading ? (
+        <p className="mt-3 text-[13px] text-text-secondary">{t("Loading...", "Cargando...")}</p>
+      ) : team.length === 0 ? (
+        <p className="mt-3 text-[13px] text-text-secondary">
+          {t("No agents assigned to this manager yet.", "Todavía no hay agentes asignados a este gerente.")}
+        </p>
+      ) : (
+        <div className="mt-3 flex flex-col gap-2">
+          {team.map((a) => (
+            <div key={a.id} className="flex items-center gap-2.5 rounded-lg bg-surface-muted px-3 py-2">
+              <Avatar name={a.fullName} size={28} />
+              <span className="text-[13.5px] font-medium text-text-primary">{a.fullName}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 

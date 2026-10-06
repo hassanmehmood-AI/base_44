@@ -1,6 +1,6 @@
 import { eq, ne, or, exists, and, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
-import { users, roles, userCompanyAccess } from "@/db/schema";
+import { users, roles, userCompanyAccess, managerAgentAssignments } from "@/db/schema";
 import { ROUND_ROBIN_ELIGIBLE_ROLES, type RoleKey } from "@/server/constants";
 
 export type User = typeof users.$inferSelect;
@@ -96,6 +96,33 @@ export async function findEligibleForRoundRobin(
       )
     )
     .orderBy(users.id);
+}
+
+/** Active users holding a specific role, explicitly granted this company —
+ * used for the manager-hierarchy admin UI (e.g. "which Call Center Managers
+ * exist in this company" for the manager-assignment dropdown). */
+export async function findUsersByRoleForCompany(companyId: string, roleKey: RoleKey): Promise<UserWithRole[]> {
+  const rows = await getDb()
+    .select({ user: users, roleKey: roles.key })
+    .from(users)
+    .innerJoin(roles, eq(users.roleId, roles.id))
+    .innerJoin(userCompanyAccess, eq(userCompanyAccess.userId, users.id))
+    .where(and(eq(users.isActive, true), eq(userCompanyAccess.companyId, companyId), eq(roles.key, roleKey)))
+    .orderBy(users.fullName);
+  return rows.map((r) => ({ ...r.user, roleKey: r.roleKey as RoleKey }));
+}
+
+/** This manager's agents in this company, via manager_agent_assignments —
+ * the admin UI's "Team" read-out on a Manager's row. */
+export async function findTeamForManager(managerUserId: string, companyId: string): Promise<UserWithRole[]> {
+  const rows = await getDb()
+    .select({ user: users, roleKey: roles.key })
+    .from(managerAgentAssignments)
+    .innerJoin(users, eq(users.id, managerAgentAssignments.agentUserId))
+    .innerJoin(roles, eq(users.roleId, roles.id))
+    .where(and(eq(managerAgentAssignments.managerUserId, managerUserId), eq(managerAgentAssignments.companyId, companyId)))
+    .orderBy(users.fullName);
+  return rows.map((r) => ({ ...r.user, roleKey: r.roleKey as RoleKey }));
 }
 
 /** Users a contact in this company could sensibly be assigned to: SUPERUSERs
