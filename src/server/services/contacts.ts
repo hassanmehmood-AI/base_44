@@ -3,9 +3,29 @@ import * as activitiesRepo from "@/server/repositories/activities";
 import * as companiesRepo from "@/server/repositories/companies";
 import * as pipelineStagesRepo from "@/server/repositories/pipelineStages";
 import * as usersRepo from "@/server/repositories/users";
+import * as managerAgentRepo from "@/server/repositories/managerAgentAssignments";
 import * as roundRobinService from "@/server/services/roundRobin";
 import { assertCompanyAccess, requireSession } from "@/server/services/authorization";
 import { UnauthorizedError } from "@/server/services/authorization";
+
+/** Shared by every write path that can set contacts.assignedUserId
+ * (assignContact, classifyContact): a Call Center Manager may only assign to
+ * a user on their own team (manager_agent_assignments). Without this, a
+ * manager could bypass the UI's already-scoped options via a direct action
+ * call with a tampered assignedUserId — this is what actually makes
+ * "Manager 1 cannot assign to Manager 2's agents" true server-side, not just
+ * hidden in the dropdown. */
+async function assertManagerCanAssign(
+  session: Awaited<ReturnType<typeof requireSession>>,
+  assignedUserId: string | null,
+  companyId: string
+) {
+  if (session.user.roleKey !== "CALL_CENTER_LEAD" || !assignedUserId) return;
+  const link = await managerAgentRepo.findManagerForAgent(assignedUserId, companyId);
+  if (link?.managerUserId !== session.user.id) {
+    throw new UnauthorizedError("You can only assign leads to agents on your own team.");
+  }
+}
 
 async function getAllowedCompanyIds(session: Awaited<ReturnType<typeof requireSession>>) {
   if (session.user.roleKey === "SUPERUSER") {
@@ -233,6 +253,7 @@ export async function classifyContact(
   const companyId = await contactsRepo.findCompanyIdById(id);
   if (!companyId) throw new UnauthorizedError("Contact not found.");
   await assertCompanyAccess(companyId);
+  await assertManagerCanAssign(session, input.assignedUserId, companyId);
 
   return contactsRepo.withTransaction(async (tx) => {
     const now = new Date();
@@ -292,6 +313,7 @@ export async function assignContact(id: string, assignedUserId: string | null) {
   const companyId = await contactsRepo.findCompanyIdById(id);
   if (!companyId) throw new UnauthorizedError("Contact not found.");
   await assertCompanyAccess(companyId);
+  await assertManagerCanAssign(session, assignedUserId, companyId);
 
   const agentName = assignedUserId ? (await usersRepo.findById(assignedUserId))?.fullName ?? null : null;
 

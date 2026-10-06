@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import * as campaignsService from "@/server/services/campaigns";
 import * as usersService from "@/server/services/users";
+import * as contactsService from "@/server/services/contacts";
 import { UnauthorizedError } from "@/server/services/authorization";
 import type { CampaignStatus } from "@/server/constants";
 
@@ -91,6 +92,33 @@ export async function getCampaignMembersAction(campaignId: string) {
   } catch {
     return { members: [] };
   }
+}
+
+/** Options for the per-member "Assign Agent" dropdown — reuses the same
+ * CRM-scoped function as the Contacts page (phase 4): a Call Center Manager
+ * sees only their own team, everyone else keeps the full company list. */
+export async function getAssignableAgentsForCampaignAction(companyId: string) {
+  try {
+    return { users: await usersService.getAssignableAgentsForCrm(companyId) };
+  } catch {
+    return { users: [] };
+  }
+}
+
+/** Manual per-lead assignment on the Campaign Members table — reuses
+ * contactsService.assignContact unchanged (same append-only ASSIGNMENT
+ * activity, same server-side manager-team guard as the CRM's own Assign
+ * Agent action). */
+export async function assignCampaignMemberAction(contactId: string, assignedUserId: string): Promise<ActionResult> {
+  try {
+    await contactsService.assignContact(contactId, assignedUserId || null);
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "You don't have access to that contact." };
+    if (e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/campanas");
+  return { ok: true };
 }
 
 export async function getCampaignPageStatsAction() {

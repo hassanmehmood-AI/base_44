@@ -12,6 +12,7 @@ export type CampaignMemberRow = {
   phone: string | null;
   email: string | null;
   stageKey: string;
+  assignedUserId: string | null;
   assignedUserName: string | null;
   lastContactAt: Date | null;
 };
@@ -27,6 +28,7 @@ export async function findByCampaignId(campaignId: string): Promise<CampaignMemb
       phone: contacts.phone,
       email: contacts.email,
       stageKey: pipelineStages.key,
+      assignedUserId: contacts.assignedUserId,
       assignedUserName: users.fullName,
       lastContactAt: contacts.lastContactAt,
     })

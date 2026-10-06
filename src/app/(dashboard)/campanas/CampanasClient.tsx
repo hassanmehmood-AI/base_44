@@ -27,6 +27,8 @@ import {
   reassignCampaignManagerAction,
   importCampaignMembersAction,
   getCampaignMembersAction,
+  getAssignableAgentsForCampaignAction,
+  assignCampaignMemberAction,
 } from "./actions";
 
 const STATUS_TONE: Record<CampaignStatus, "gray" | "green" | "amber" | "blue"> = {
@@ -59,6 +61,7 @@ export function CampanasClient({
   initialSelectedCampaignId,
   initialMembers,
   canAssignManager,
+  canAssignAgent,
 }: {
   campaigns: CampaignWithJoins[];
   companies: CompanyOption[];
@@ -66,6 +69,7 @@ export function CampanasClient({
   initialSelectedCampaignId: string | null;
   initialMembers: CampaignMemberWithChannels[];
   canAssignManager: boolean;
+  canAssignAgent: boolean;
 }) {
   const { t } = useLanguage();
   const { activeCompany } = useCompany();
@@ -244,7 +248,17 @@ export function CampanasClient({
                       {filteredMembers.map((m) => (
                         <tr key={m.id} className="border-t border-border text-[13.5px] transition-colors hover:bg-surface-muted/70">
                           <td className="py-3.5 pr-4 font-medium text-text-primary">{m.contactName}</td>
-                          <td className="py-3.5 pr-4 text-text-secondary">{m.assignedUserName ?? t("Unassigned", "Sin asignar")}</td>
+                          <td className="py-3.5 pr-4 text-text-secondary">
+                            {canAssignAgent && selectedCampaign ? (
+                              <MemberAssignAgentSelect
+                                companyId={selectedCampaign.companyId}
+                                member={m}
+                                onAssigned={refreshMembers}
+                              />
+                            ) : (
+                              m.assignedUserName ?? t("Unassigned", "Sin asignar")
+                            )}
+                          </td>
                           <td className="py-3.5 pr-4 text-text-secondary">{m.channels.length > 0 ? m.channels.join(", ") : "—"}</td>
                           <td className="py-3.5 pr-4">
                             <StageBadge stage={m.stageKey} />
@@ -458,6 +472,65 @@ function ManagerAssignSelect({ campaign }: { campaign: CampaignWithJoins }) {
         {managers.map((m) => (
           <option key={m.id} value={m.id}>
             {m.fullName}
+          </option>
+        ))}
+      </Select>
+      {error && <p className="mt-1 text-[11px] text-danger">{error}</p>}
+    </div>
+  );
+}
+
+/** Campaign Members table's per-lead "Assign Agent" (hierarchy redesign
+ * phase 5) — reuses the same scoped options and assignContact() write path
+ * as the CRM's own Assign Agent action (phase 4), just a different entry
+ * point. Options are scoped per company, fetched once per row on mount. */
+function MemberAssignAgentSelect({
+  companyId,
+  member,
+  onAssigned,
+}: {
+  companyId: string;
+  member: CampaignMemberWithChannels;
+  onAssigned: () => void;
+}) {
+  const { t } = useLanguage();
+  const [agents, setAgents] = useState<{ id: string; fullName: string }[]>([]);
+  const [assignedUserId, setAssignedUserId] = useState(member.assignedUserId ?? "");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    let active = true;
+    getAssignableAgentsForCampaignAction(companyId).then((res) => {
+      if (active) setAgents(res.users);
+    });
+    return () => {
+      active = false;
+    };
+  }, [companyId]);
+
+  async function handleChange(next: string) {
+    const previous = assignedUserId;
+    setAssignedUserId(next);
+    setPending(true);
+    setError(undefined);
+    const result = await assignCampaignMemberAction(member.contactId, next);
+    setPending(false);
+    if (result.error) {
+      setError(result.error);
+      setAssignedUserId(previous);
+      return;
+    }
+    onAssigned();
+  }
+
+  return (
+    <div className="min-w-[150px]" onClick={(e) => e.stopPropagation()}>
+      <Select value={assignedUserId} disabled={pending} onChange={(e) => handleChange(e.target.value)}>
+        <option value="">{t("Unassigned", "Sin asignar")}</option>
+        {agents.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.fullName}
           </option>
         ))}
       </Select>
