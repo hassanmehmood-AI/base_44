@@ -74,6 +74,18 @@ export const userModuleAccess = pgTable("user_module_access", {
   primaryKey({ columns: [t.userId, t.module] }),
 ]);
 
+/** One row per company — the persisted "whose turn is next" state for
+ * automatic Round Robin lead assignment. Read with `SELECT ... FOR UPDATE`
+ * inside the same transaction as the contact insert, so concurrent contact
+ * creations for the same company serialize on this one row instead of
+ * racing (different companies never block each other). Deliberately not an
+ * in-memory counter — survives restarts and works across server instances. */
+export const companyRoundRobinCursors = pgTable("company_round_robin_cursors", {
+  companyId: uuid("company_id").primaryKey().references(() => companies.id, { onDelete: "cascade" }),
+  lastAssignedUserId: uuid("last_assigned_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ---------------------------------------------------------------------------
 // Sales pipeline
 // ---------------------------------------------------------------------------

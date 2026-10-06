@@ -1,7 +1,7 @@
-import { eq, ne, or, exists, and } from "drizzle-orm";
+import { eq, ne, or, exists, and, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { users, roles, userCompanyAccess } from "@/db/schema";
-import type { RoleKey } from "@/server/constants";
+import { ROUND_ROBIN_ELIGIBLE_ROLES, type RoleKey } from "@/server/constants";
 
 export type User = typeof users.$inferSelect;
 export type UserWithRole = User & { roleKey: RoleKey };
@@ -71,6 +71,31 @@ export async function findImpersonatableUsers(): Promise<UserWithRole[]> {
     .where(and(eq(users.isActive, true), ne(roles.key, "SUPERUSER")))
     .orderBy(users.fullName);
   return rows.map((r) => ({ ...r.user, roleKey: r.roleKey as RoleKey }));
+}
+
+/** Candidates for automatic Round Robin assignment for this company: active,
+ * explicitly granted this company (Superuser's implicit access does NOT
+ * count here — Superuser is deliberately excluded from auto-assignment),
+ * and holding one of ROUND_ROBIN_ELIGIBLE_ROLES. Ordered by id for a stable,
+ * deterministic rotation order. Takes the db/tx handle explicitly so the
+ * caller can run this inside the same transaction as the cursor lock. */
+export async function findEligibleForRoundRobin(
+  db: ReturnType<typeof getDb>,
+  companyId: string
+): Promise<{ id: string }[]> {
+  return db
+    .select({ id: users.id })
+    .from(users)
+    .innerJoin(roles, eq(users.roleId, roles.id))
+    .innerJoin(userCompanyAccess, eq(userCompanyAccess.userId, users.id))
+    .where(
+      and(
+        eq(users.isActive, true),
+        eq(userCompanyAccess.companyId, companyId),
+        inArray(roles.key, ROUND_ROBIN_ELIGIBLE_ROLES)
+      )
+    )
+    .orderBy(users.id);
 }
 
 /** Users a contact in this company could sensibly be assigned to: SUPERUSERs

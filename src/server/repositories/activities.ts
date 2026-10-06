@@ -27,6 +27,11 @@ export async function create(db: ReturnType<typeof getDb>, data: NewActivity) {
   return row;
 }
 
+export async function createMany(db: ReturnType<typeof getDb>, rows: NewActivity[]) {
+  if (rows.length === 0) return [];
+  return db.insert(activities).values(rows).returning();
+}
+
 /** KPIs §15 "Contacted" definition: distinct contacts with at least one logged
  * CALL/EMAIL/SOCIAL activity, scoped to the given companies. When `since` is
  * given (period filter), only counts activities logged within the period —

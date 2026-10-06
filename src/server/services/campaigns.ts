@@ -40,7 +40,12 @@ export async function updateCampaignStatus(id: string, status: CampaignStatus) {
  * and links the newly created contacts to this campaign via campaign_contacts
  * — deliberately not campaign_members, which belongs to the deferred
  * AI/prospecting pipeline (requires a prospect_lead_id). New contacts land
- * in the pipeline's first stage (NUEVO_LEAD), same as the CRM import. */
+ * in the pipeline's first stage (NUEVO_LEAD), same as the CRM import.
+ *
+ * skipRoundRobin: true — campaign leads must land Unassigned, never grabbed
+ * by the company-level Round Robin meant for manual/standalone CRM leads.
+ * The campaign's manager distributes these via manual Assign Agent or the
+ * manager-scoped "Auto Assign Leads" Round Robin instead. */
 export async function importCampaignMembers(
   campaignId: string,
   rows: Array<{ name: string; businessName?: string | null; phone?: string | null; email?: string | null; leadSource?: string | null }>
@@ -53,7 +58,9 @@ export async function importCampaignMembers(
   const entryStage = stages[0];
   if (!entryStage) throw new Error("No pipeline stage configured.");
 
-  const { created, contactIds } = await contactsService.importContacts(companyId, entryStage.id, rows);
+  const { created, contactIds } = await contactsService.importContacts(companyId, entryStage.id, rows, {
+    skipRoundRobin: true,
+  });
   await campaignContactsRepo.addMany(campaignId, contactIds);
   return { created };
 }

@@ -74,6 +74,7 @@ const channelIcon: Record<string, React.ElementType> = {
   SOCIAL: Globe,
   NOTE: CheckSquare,
   ASSIGNMENT: UserCog,
+  AUTO_ASSIGNMENT: UserCog,
 };
 
 // Same fixed option set as the original design (5 of the 7 pipeline stages) —
@@ -434,7 +435,9 @@ export function CrmClient({
                         ? t("Note", "Nota")
                         : a.type === "ASSIGNMENT"
                           ? t("Assigned", "Asignado")
-                          : a.type;
+                          : a.type === "AUTO_ASSIGNMENT"
+                            ? t("Auto Assigned", "Asignado automáticamente")
+                            : a.type;
                     const outcomeLabel = a.outcome ? stageLabels[a.outcome as Stage] ?? a.outcome : null;
                     return (
                       <div key={a.id} className="flex items-center gap-3 rounded-xl border border-border p-3.5">

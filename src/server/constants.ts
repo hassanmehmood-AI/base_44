@@ -7,6 +7,11 @@ export const ROLE_KEYS = [
 ] as const;
 export type RoleKey = (typeof ROLE_KEYS)[number];
 
+// Roles eligible to receive automatic Round Robin lead assignment — confirmed
+// with the product owner (Call Center Agent only; Superuser is explicitly
+// excluded by design even though it has implicit company access everywhere).
+export const ROUND_ROBIN_ELIGIBLE_ROLES: RoleKey[] = ["CALL_CENTER_AGENT"];
+
 // Matches src/lib/mock-data.ts `allowedModules` (one key per sidebar-gated module)
 export const MODULE_KEYS = [
   "PROSPECTING",

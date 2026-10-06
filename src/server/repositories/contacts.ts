@@ -92,14 +92,14 @@ export async function findCompanyIdById(id: string): Promise<string | undefined>
   return row?.companyId;
 }
 
-export async function create(data: NewContact): Promise<Contact> {
-  const [row] = await getDb().insert(contacts).values(data).returning();
+export async function create(data: NewContact, db: ReturnType<typeof getDb> = getDb()): Promise<Contact> {
+  const [row] = await db.insert(contacts).values(data).returning();
   return row;
 }
 
-export async function createMany(rows: NewContact[]): Promise<Contact[]> {
+export async function createMany(rows: NewContact[], db: ReturnType<typeof getDb> = getDb()): Promise<Contact[]> {
   if (rows.length === 0) return [];
-  return getDb().insert(contacts).values(rows).returning();
+  return db.insert(contacts).values(rows).returning();
 }
 
 export async function update(id: string, data: ContactUpdate): Promise<Contact> {

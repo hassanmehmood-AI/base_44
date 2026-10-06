@@ -3,6 +3,7 @@ import * as activitiesRepo from "@/server/repositories/activities";
 import * as companiesRepo from "@/server/repositories/companies";
 import * as pipelineStagesRepo from "@/server/repositories/pipelineStages";
 import * as usersRepo from "@/server/repositories/users";
+import * as roundRobinService from "@/server/services/roundRobin";
 import { assertCompanyAccess, requireSession } from "@/server/services/authorization";
 import { UnauthorizedError } from "@/server/services/authorization";
 
@@ -36,6 +37,12 @@ export async function getContact(id: string) {
   return { contact, activities: recentActivities };
 }
 
+/** Creates a contact. When the caller doesn't specify an owner at all
+ * (assignedUserId left undefined — the CRM "New Contact" form never passes
+ * one), the contact is automatically assigned via company Round Robin and
+ * an AUTO_ASSIGNMENT activity is logged, atomically with the insert. If the
+ * caller explicitly passes assignedUserId (including null), that's
+ * respected as-is and Round Robin is skipped. */
 export async function createContact(input: {
   companyId: string;
   name: string;
@@ -46,8 +53,48 @@ export async function createContact(input: {
   pipelineStageId: string;
   assignedUserId?: string | null;
 }) {
-  await assertCompanyAccess(input.companyId);
-  return contactsRepo.create(input);
+  const session = await assertCompanyAccess(input.companyId);
+
+  return contactsRepo.withTransaction(async (tx) => {
+    let assignedUserId = input.assignedUserId ?? null;
+    let autoAssignedName: string | null = null;
+
+    if (input.assignedUserId === undefined) {
+      const [picked] = await roundRobinService.pickNextAgents(tx, input.companyId, 1);
+      if (picked) {
+        assignedUserId = picked;
+        autoAssignedName = (await usersRepo.findById(picked))?.fullName ?? null;
+      }
+    }
+
+    const contact = await contactsRepo.create(
+      {
+        companyId: input.companyId,
+        name: input.name,
+        businessName: input.businessName,
+        phone: input.phone,
+        email: input.email,
+        leadSource: input.leadSource,
+        pipelineStageId: input.pipelineStageId,
+        assignedUserId,
+      },
+      tx
+    );
+
+    if (assignedUserId && autoAssignedName) {
+      await activitiesRepo.create(tx, {
+        companyId: input.companyId,
+        contactId: contact.id,
+        type: "AUTO_ASSIGNMENT",
+        channel: null,
+        outcome: autoAssignedName,
+        notes: null,
+        createdBy: session.user.id,
+      });
+    }
+
+    return contact;
+  });
 }
 
 const MAX_IMPORT_ROWS = 500;
@@ -57,6 +104,15 @@ const MAX_IMPORT_ROWS = 500;
  * and bulk-inserts. Every row lands in the same company/stage — one row's
  * bad data doesn't block the rest, since invalid rows are filtered out
  * before this is called (see CrmClient's import preview step). */
+/** Bulk create — used by both the CRM's own "Import Excel/CSV" (Round Robin
+ * applies, same as a single manual contact) and, with `skipRoundRobin: true`,
+ * by campaignsService.importCampaignMembers() for the Manage Campaigns CSV
+ * import: campaign leads must land Unassigned so the campaign's manager can
+ * distribute them manually or via the manager-scoped "Auto Assign Leads"
+ * Round Robin, never the company-level one. When Round Robin does apply,
+ * every newly created row gets it (same per-company cursor as createContact —
+ * one lock acquisition for the whole batch, so a 20-row import distributes
+ * fairly across agents in one atomic pass, not 20 separate races). */
 export async function importContacts(
   companyId: string,
   pipelineStageId: string,
@@ -66,25 +122,56 @@ export async function importContacts(
     phone?: string | null;
     email?: string | null;
     leadSource?: string | null;
-  }>
+  }>,
+  options?: { skipRoundRobin?: boolean }
 ) {
-  await assertCompanyAccess(companyId);
+  const session = await assertCompanyAccess(companyId);
   if (rows.length === 0) return { created: 0, contactIds: [] };
   if (rows.length > MAX_IMPORT_ROWS) throw new Error(`Can't import more than ${MAX_IMPORT_ROWS} contacts at once.`);
 
   const validRows = rows.filter((r) => r.name.trim().length > 0);
-  const created = await contactsRepo.createMany(
-    validRows.map((r) => ({
-      companyId,
-      pipelineStageId,
-      name: r.name.trim(),
-      businessName: r.businessName?.trim() || null,
-      phone: r.phone?.trim() || null,
-      email: r.email?.trim() || null,
-      leadSource: r.leadSource?.trim() || null,
-    }))
-  );
-  return { created: created.length, contactIds: created.map((c) => c.id) };
+  if (validRows.length === 0) return { created: 0, contactIds: [] };
+
+  return contactsRepo.withTransaction(async (tx) => {
+    const assignments = options?.skipRoundRobin
+      ? []
+      : await roundRobinService.pickNextAgents(tx, companyId, validRows.length);
+
+    const created = await contactsRepo.createMany(
+      validRows.map((r, i) => ({
+        companyId,
+        pipelineStageId,
+        name: r.name.trim(),
+        businessName: r.businessName?.trim() || null,
+        phone: r.phone?.trim() || null,
+        email: r.email?.trim() || null,
+        leadSource: r.leadSource?.trim() || null,
+        assignedUserId: assignments[i] ?? null,
+      })),
+      tx
+    );
+
+    if (assignments.length > 0) {
+      const uniqueAgentIds = [...new Set(assignments)];
+      const agents = await Promise.all(uniqueAgentIds.map((id) => usersRepo.findById(id)));
+      const nameById = new Map(uniqueAgentIds.map((id, i) => [id, agents[i]?.fullName ?? "Unknown"]));
+
+      await activitiesRepo.createMany(
+        tx,
+        created.map((c, i) => ({
+          companyId,
+          contactId: c.id,
+          type: "AUTO_ASSIGNMENT",
+          channel: null,
+          outcome: nameById.get(assignments[i]) ?? "Unknown",
+          notes: null,
+          createdBy: session.user.id,
+        }))
+      );
+    }
+
+    return { created: created.length, contactIds: created.map((c) => c.id) };
+  });
 }
 
 export async function updateContactCore(
