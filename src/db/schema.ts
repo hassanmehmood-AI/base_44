@@ -86,6 +86,26 @@ export const companyRoundRobinCursors = pgTable("company_round_robin_cursors", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** Real Manager → Agent relationship (hierarchy redesign phase 1 — not yet
+ * read or written by any service/action/UI; additive only this phase). One
+ * row per agent per company — the unique index enforces "one manager per
+ * agent per company at a time," so reassigning an agent to a different
+ * manager is a single UPDATE, never a delete+recreate, and never touches
+ * contacts/activities history. onDelete "restrict" on both FKs matches this
+ * codebase's existing convention of deactivating users (users.isActive)
+ * rather than deleting them. An agent with no row here simply has no
+ * manager yet and is not eligible for any manager's Auto Assign Leads. */
+export const managerAgentAssignments = pgTable("manager_agent_assignments", {
+  id: id(),
+  managerUserId: uuid("manager_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  agentUserId: uuid("agent_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "restrict" }),
+  createdAt: createdAt(),
+}, (t) => [
+  uniqueIndex("manager_agent_company_idx").on(t.agentUserId, t.companyId),
+  index("manager_agent_assignments_manager_idx").on(t.managerUserId),
+]);
+
 // ---------------------------------------------------------------------------
 // Sales pipeline
 // ---------------------------------------------------------------------------
@@ -183,6 +203,10 @@ export const campaigns = pgTable("campaigns", {
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "restrict" }),
   name: text("name").notNull(),
   objective: text("objective"),
+  // Hierarchy redesign phase 3 reuses this as "assigned Call Center Manager"
+  // (already the right shape: nullable, one owner, historical campaigns keep
+  // working with ownerId = null meaning "unassigned") — not yet enforced or
+  // scoped by role this phase; still today's plain creation-time field.
   ownerId: uuid("owner_id").references(() => users.id, { onDelete: "set null" }),
   // DRAFT | ACTIVE | PAUSED | COMPLETED
   status: text("status").notNull().default("DRAFT"),
@@ -190,6 +214,24 @@ export const campaigns = pgTable("campaigns", {
 }, (t) => [
   index("campaigns_company_id_idx").on(t.companyId),
 ]);
+
+/** One row per campaign — the persisted "whose turn is next" state for the
+ * manager-scoped "Auto Assign Leads" Round Robin (hierarchy redesign phase 6
+ * — not yet read or written by any service/action/UI this phase). Keyed by
+ * campaign, not by manager: each campaign's lead distribution rotates
+ * independently, so one manager's other campaigns are never perturbed by
+ * where this campaign's rotation landed. Same lock/self-heal shape as
+ * companyRoundRobinCursors (SELECT ... FOR UPDATE in the same transaction as
+ * the assignment writes; if the last-assigned agent is no longer eligible —
+ * e.g. the campaign was reassigned to a different manager with a different
+ * team — the rotation safely restarts from the top). If a campaign is
+ * reassigned to a new manager, this one row carries over rather than
+ * orphaning a manager-keyed cursor. */
+export const campaignRoundRobinCursors = pgTable("campaign_round_robin_cursors", {
+  campaignId: uuid("campaign_id").primaryKey().references(() => campaigns.id, { onDelete: "cascade" }),
+  lastAssignedUserId: uuid("last_assigned_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const prospectLeads = pgTable("prospect_leads", {
   id: id(),
