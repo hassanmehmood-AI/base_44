@@ -368,7 +368,7 @@ export function ConfiguracionClient({
               <p className="text-[15px] font-semibold text-text-primary">{r.name}</p>
               <p className="mt-1.5 text-[13px] leading-5 text-text-secondary">{r.desc}</p>
               <p className="mt-3 text-[12.5px] font-medium text-brand-700">
-                {users.filter((u) => u.roleKey === r.key).length} {t("users", "usuarios")}
+                {users.filter((u) => u.roleKey === r.key && u.isActive).length} {t("users", "usuarios")}
               </p>
             </Card>
           ))}
