@@ -60,11 +60,26 @@ const MODULE_LABEL_ES: Record<ModuleKey, string> = {
   TECHNICAL_SUPPORT: "Soporte técnico",
 };
 
+/** Who may CREATE which role (hierarchy redesign: Director/Manager user
+ * creation). Mirrors usersService.createUser's server-side matrix exactly —
+ * this only decides what the dropdown offers; the server is what actually
+ * enforces it, so even a tampered request still gets rejected. */
+const CREATABLE_ROLES_BY_VIEWER: Record<RoleKey, RoleKey[]> = {
+  SUPERUSER: ["SUPERUSER", "DIRECTOR", "CALL_CENTER_LEAD", "CALL_CENTER_AGENT", "MARKETING"],
+  DIRECTOR: ["CALL_CENTER_LEAD", "CALL_CENTER_AGENT"],
+  CALL_CENTER_LEAD: ["CALL_CENTER_AGENT"],
+  CALL_CENTER_AGENT: [],
+  MARKETING: [],
+};
+
 export function ConfiguracionClient({
   stages,
   canManageStages,
   companies: realCompanies,
   canManageAdmin,
+  canAddUsers,
+  viewerRoleKey,
+  viewerCompanyId,
   users,
   currentUserId,
 }: {
@@ -72,9 +87,13 @@ export function ConfiguracionClient({
   canManageStages: boolean;
   companies: Company[];
   canManageAdmin: boolean;
+  canAddUsers: boolean;
+  viewerRoleKey: RoleKey;
+  viewerCompanyId: string | null;
   users: UserRow[];
   currentUserId: string;
 }) {
+  const isSuperuser = viewerRoleKey === "SUPERUSER";
   const { t, language } = useLanguage();
   const roleLabels = language === "es" ? ROLE_LABEL_ES : ROLE_LABEL;
   const moduleLabels = language === "es" ? MODULE_LABEL_ES : MODULE_LABEL;
@@ -102,7 +121,10 @@ export function ConfiguracionClient({
   const selected = users.find((u) => u.id === selectedId);
 
   useEffect(() => {
-    if (!selectedId) return;
+    // Only a Superuser can actually use getUserAccessAction (server-gated) —
+    // skip the call entirely for other viewers rather than firing a request
+    // that will just come back empty.
+    if (!selectedId || !isSuperuser) return;
     let active = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- kicks off a loading flag for the fetch this effect triggers, not a synchronous derived-state mirror
     setLoadingAccess(true);
@@ -117,7 +139,7 @@ export function ConfiguracionClient({
     return () => {
       active = false;
     };
-  }, [selectedId]);
+  }, [selectedId, isSuperuser]);
 
   function toggle<T>(set: Set<T>, setter: (s: Set<T>) => void, v: T) {
     const next = new Set(set);
@@ -201,7 +223,7 @@ export function ConfiguracionClient({
             {tab === "users" && (
               <>
                 <SearchInput placeholder={t("Search user...", "Buscar usuario...")} className="max-w-xs" />
-                {canManageAdmin && (
+                {canAddUsers && (
                   <Button onClick={() => setAddUserOpen(true)}>
                     <Plus className="h-4 w-4" /> {t("Add user", "Agregar usuario")}
                   </Button>
@@ -281,7 +303,7 @@ export function ConfiguracionClient({
                   </div>
                 </Card>
 
-                {isSuperuserSelected ? (
+                {!isSuperuser ? null : isSuperuserSelected ? (
                   <Card className="p-6">
                     <p className="text-[13px] text-text-secondary">
                       {t(
@@ -324,10 +346,16 @@ export function ConfiguracionClient({
                 )}
 
                 {!isSuperuserSelected && selected.roleKey === "CALL_CENTER_AGENT" && (
-                  <ManagerAssignmentPanel agentId={selected.id} companyIds={Array.from(companyIds)} />
+                  <ManagerAssignmentPanel
+                    agentId={selected.id}
+                    companyIds={isSuperuser ? Array.from(companyIds) : viewerCompanyId ? [viewerCompanyId] : []}
+                  />
                 )}
                 {!isSuperuserSelected && selected.roleKey === "CALL_CENTER_LEAD" && (
-                  <ManagerTeamPanel managerId={selected.id} companyIds={Array.from(companyIds)} />
+                  <ManagerTeamPanel
+                    managerId={selected.id}
+                    companyIds={isSuperuser ? Array.from(companyIds) : viewerCompanyId ? [viewerCompanyId] : []}
+                  />
                 )}
 
                 {accessError && <p className="text-[13px] text-danger">{accessError}</p>}
@@ -397,7 +425,12 @@ export function ConfiguracionClient({
       {tab === "pipeline" && <PipelineStagesPanel stages={stages} canManage={canManageStages} />}
 
       <AddCompanyModal open={addCompanyOpen} onClose={() => setAddCompanyOpen(false)} />
-      <AddUserModal open={addUserOpen} onClose={() => setAddUserOpen(false)} companies={realCompanies} />
+      <AddUserModal
+        open={addUserOpen}
+        onClose={() => setAddUserOpen(false)}
+        companies={realCompanies}
+        viewerRoleKey={viewerRoleKey}
+      />
     </div>
   );
 }
@@ -450,25 +483,42 @@ function AddCompanyModal({ open, onClose }: { open: boolean; onClose: () => void
   );
 }
 
-function AddUserModal({ open, onClose, companies }: { open: boolean; onClose: () => void; companies: Company[] }) {
+function AddUserModal({
+  open,
+  onClose,
+  companies,
+  viewerRoleKey,
+}: {
+  open: boolean;
+  onClose: () => void;
+  companies: Company[];
+  viewerRoleKey: RoleKey;
+}) {
   const { t, language } = useLanguage();
   const roleLabels = language === "es" ? ROLE_LABEL_ES : ROLE_LABEL;
   const moduleLabels = language === "es" ? MODULE_LABEL_ES : MODULE_LABEL;
+  const viewerIsSuperuser = viewerRoleKey === "SUPERUSER";
+  const creatableRoles = CREATABLE_ROLES_BY_VIEWER[viewerRoleKey];
 
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [roleKey, setRoleKey] = useState<RoleKey>("CALL_CENTER_AGENT");
+  const [roleKey, setRoleKey] = useState<RoleKey>(creatableRoles.includes("CALL_CENTER_AGENT") ? "CALL_CENTER_AGENT" : creatableRoles[0]);
   const [companyIds, setCompanyIds] = useState<Set<string>>(new Set());
   const [moduleKeys, setModuleKeys] = useState<Set<ModuleKey>>(new Set());
   const [error, setError] = useState<string | undefined>();
   const [pending, setPending] = useState(false);
 
+  // When there's only one allowed role (Director, Manager), that IS the
+  // role being created regardless of leftover dropdown state — no fragile
+  // reliance on the initial useState value staying in sync.
+  const effectiveRoleKey = creatableRoles.length === 1 ? creatableRoles[0] : roleKey;
+
   function handleClose() {
     setFullName("");
     setEmail("");
     setPassword("");
-    setRoleKey("CALL_CENTER_AGENT");
+    setRoleKey(creatableRoles.includes("CALL_CENTER_AGENT") ? "CALL_CENTER_AGENT" : creatableRoles[0]);
     setCompanyIds(new Set());
     setModuleKeys(new Set());
     setError(undefined);
@@ -501,7 +551,9 @@ function AddUserModal({ open, onClose, companies }: { open: boolean; onClose: ()
       fullName,
       email,
       password,
-      roleKey,
+      roleKey: effectiveRoleKey,
+      // Ignored server-side for a Director/Manager creator (always forced to
+      // their own company) — only meaningful when viewerIsSuperuser.
       companyIds: Array.from(companyIds),
       modules: Array.from(moduleKeys),
     });
@@ -513,7 +565,7 @@ function AddUserModal({ open, onClose, companies }: { open: boolean; onClose: ()
     handleClose();
   }
 
-  const isSuperuserRole = roleKey === "SUPERUSER";
+  const isSuperuserRole = effectiveRoleKey === "SUPERUSER";
 
   return (
     <Modal open={open} onClose={handleClose} title={t("Add user", "Agregar usuario")} className="max-w-xl">
@@ -548,13 +600,19 @@ function AddUserModal({ open, onClose, companies }: { open: boolean; onClose: ()
             <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
               {t("ROLE", "ROL")}
             </label>
-            <Select value={roleKey} onChange={(e) => setRoleKey(e.target.value as RoleKey)}>
-              {ROLE_KEYS.map((r) => (
-                <option key={r} value={r}>
-                  {roleLabels[r]}
-                </option>
-              ))}
-            </Select>
+            {creatableRoles.length <= 1 ? (
+              <p className="flex h-10 items-center text-[14px] font-medium text-text-primary">
+                {roleLabels[effectiveRoleKey]}
+              </p>
+            ) : (
+              <Select value={roleKey} onChange={(e) => setRoleKey(e.target.value as RoleKey)}>
+                {creatableRoles.map((r) => (
+                  <option key={r} value={r}>
+                    {roleLabels[r]}
+                  </option>
+                ))}
+              </Select>
+            )}
           </div>
         </div>
 
@@ -566,38 +624,50 @@ function AddUserModal({ open, onClose, companies }: { open: boolean; onClose: ()
             )}
           </p>
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <p className="mb-2 text-[11px] font-semibold tracking-wide text-text-tertiary">
-                {t("COMPANY ACCESS", "ACCESO A EMPRESAS")}
+          <>
+            {!viewerIsSuperuser && (
+              <p className="rounded-lg bg-surface-muted px-3.5 py-2.5 text-[13px] text-text-secondary">
+                {t(
+                  "This user will be added to your own company automatically.",
+                  "Este usuario se agregará automáticamente a tu propia empresa."
+                )}
               </p>
-              <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto">
-                {companies.map((c) => (
-                  <PermissionCheckbox
-                    key={c.id}
-                    label={c.name}
-                    checked={companyIds.has(c.id)}
-                    onClick={() => toggleCompany(c.id)}
-                  />
-                ))}
+            )}
+            <div className={cn("grid grid-cols-1 gap-4", viewerIsSuperuser && "sm:grid-cols-2")}>
+              {viewerIsSuperuser && (
+                <div>
+                  <p className="mb-2 text-[11px] font-semibold tracking-wide text-text-tertiary">
+                    {t("COMPANY ACCESS", "ACCESO A EMPRESAS")}
+                  </p>
+                  <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto">
+                    {companies.map((c) => (
+                      <PermissionCheckbox
+                        key={c.id}
+                        label={c.name}
+                        checked={companyIds.has(c.id)}
+                        onClick={() => toggleCompany(c.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div>
+                <p className="mb-2 text-[11px] font-semibold tracking-wide text-text-tertiary">
+                  {t("MODULE ACCESS", "ACCESO A MÓDULOS")}
+                </p>
+                <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto">
+                  {MODULE_KEYS.map((m) => (
+                    <PermissionCheckbox
+                      key={m}
+                      label={moduleLabels[m]}
+                      checked={moduleKeys.has(m)}
+                      onClick={() => toggleModule(m)}
+                    />
+                  ))}
+                </div>
               </div>
             </div>
-            <div>
-              <p className="mb-2 text-[11px] font-semibold tracking-wide text-text-tertiary">
-                {t("MODULE ACCESS", "ACCESO A MÓDULOS")}
-              </p>
-              <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto">
-                {MODULE_KEYS.map((m) => (
-                  <PermissionCheckbox
-                    key={m}
-                    label={moduleLabels[m]}
-                    checked={moduleKeys.has(m)}
-                    onClick={() => toggleModule(m)}
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
+          </>
         )}
 
         {error && <p className="text-[13px] text-danger">{error}</p>}

@@ -3,7 +3,7 @@ import * as usersRepo from "@/server/repositories/users";
 import * as accessRepo from "@/server/repositories/access";
 import * as companiesRepo from "@/server/repositories/companies";
 import * as managerAgentRepo from "@/server/repositories/managerAgentAssignments";
-import { assertCompanyAccess, assertDirectorOrSuperuser, requireSession, UnauthorizedError } from "@/server/services/authorization";
+import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import type { RoleKey, ModuleKey } from "@/server/constants";
 
 export async function getAssignableUsersForCompany(companyId: string) {
@@ -27,12 +27,21 @@ export async function getAssignableAgentsForCrm(companyId: string) {
 }
 
 /** Call Center Managers available in this company — for the manager-
- * assignment dropdown (agent -> manager) and, later, the campaign ->
- * manager dropdown. Read-only, so uses the same company-access gate as
+ * assignment dropdown (agent -> manager) and the campaign -> manager
+ * dropdown. Read-only, so uses the same company-access gate as
  * getAssignableUsersForCompany (not restricted to Director/Superuser —
- * anyone who can see this company can see who manages it). */
+ * anyone who can see this company can see who manages it).
+ *
+ * Exception: a Call Center Manager only ever sees themselves here, never
+ * their peers — they're only allowed to link an agent to themselves
+ * (see setAgentManager), so showing other managers as options would just
+ * be a dead end that setAgentManager rejects anyway. */
 export async function getManagersForCompany(companyId: string) {
-  await assertCompanyAccess(companyId);
+  const session = await assertCompanyAccess(companyId);
+  if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    const self = await usersRepo.findById(session.user.id);
+    return self ? [self] : [];
+  }
   return usersRepo.findUsersByRoleForCompany(companyId, "CALL_CENTER_LEAD");
 }
 
@@ -54,15 +63,38 @@ export async function getManagerTeam(managerUserId: string, companyId: string) {
 export type SetAgentManagerInput = { agentUserId: string; companyId: string; managerUserId: string | null };
 
 /** Links (or, with managerUserId null, unlinks) an agent to a manager within
- * one company. Restricted to that company's Director or a Superuser —
- * never the Manager/Agent themselves — matching the hierarchy's top-down
- * assignment model. Validates both ends server-side so a cross-company
- * pairing is structurally impossible, not just hidden in the UI: the agent
- * must actually hold CALL_CENTER_AGENT and have access to this company, and
- * the manager (when given) must hold CALL_CENTER_LEAD and have access to
- * this SAME company. */
+ * one company. Director/Superuser can assign an agent to ANY manager in
+ * that company (top-down reassignment). A Call Center Manager has a
+ * narrower right: they may only claim an agent that is currently
+ * unassigned (or already theirs), and only ever link it to *themselves* —
+ * never hand an agent to a different manager, and never take an agent away
+ * from another manager. That's what makes "Manager should be able to link
+ * an agent under their own team" true without also granting general
+ * reassignment power that belongs to Director/Superuser.
+ *
+ * Validates both ends server-side so a cross-company pairing is
+ * structurally impossible, not just hidden in the UI: the agent must
+ * actually hold CALL_CENTER_AGENT and have access to this company, and the
+ * manager (when given) must hold CALL_CENTER_LEAD and have access to this
+ * SAME company. */
 export async function setAgentManager(input: SetAgentManagerInput): Promise<void> {
-  await assertDirectorOrSuperuser(input.companyId);
+  const session = await assertCompanyAccess(input.companyId);
+
+  if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    if (input.managerUserId !== null && input.managerUserId !== session.user.id) {
+      throw new UnauthorizedError("You can only link agents to yourself.");
+    }
+    const current = await managerAgentRepo.findManagerForAgent(input.agentUserId, input.companyId);
+    if (current && current.managerUserId !== session.user.id) {
+      throw new UnauthorizedError("That agent is already assigned to another manager.");
+    }
+  } else if (session.user.roleKey !== "SUPERUSER" && session.user.roleKey !== "DIRECTOR") {
+    // Director/Superuser fall through here with no extra check: Superuser's
+    // bypass and a Director's own company grant are both already enforced
+    // by assertCompanyAccess above (it's role-agnostic, so this branch is
+    // what actually rejects everyone else -- Marketing, Agent, etc).
+    throw new UnauthorizedError("You don't have permission to assign a manager.");
+  }
 
   const agent = await usersRepo.findById(input.agentUserId);
   if (!agent || agent.roleKey !== "CALL_CENTER_AGENT") throw new Error("Target user is not a Call Center Agent.");
@@ -86,6 +118,16 @@ export async function listUsers() {
   const session = await requireSession();
   if (session.user.roleKey !== "SUPERUSER") throw new UnauthorizedError("Only Superusers can view all users.");
   return usersRepo.findAll();
+}
+
+/** Director's own Settings > Users list: every Call Center Manager and
+ * Call Center Agent in their own company/companies -- never other
+ * Directors, Superusers, or Marketing, and never another company's users.
+ * Scoped from the session's own companyIds, never a client-supplied value. */
+export async function listUsersForDirector() {
+  const session = await requireSession();
+  if (session.user.roleKey !== "DIRECTOR") throw new UnauthorizedError("Only Directors can use this.");
+  return usersRepo.findUsersByRolesForCompanies(session.user.companyIds, ["CALL_CENTER_LEAD", "CALL_CENTER_AGENT"]);
 }
 
 export async function getUserAccess(userId: string) {
@@ -146,9 +188,54 @@ export type CreateUserInput = {
   modules: ModuleKey[];
 };
 
+/** Who may create which role, and for which company — the server-side
+ * matrix (never trust the client's roleKey/companyIds for a non-Superuser
+ * creator):
+ *
+ *  - Superuser: any role, any company (unchanged).
+ *  - Director: CALL_CENTER_LEAD or CALL_CENTER_AGENT only, and ALWAYS for
+ *    their own company/companies -- the client's companyIds is ignored
+ *    entirely and replaced with the Director's own session.user.companyIds,
+ *    so there is no way to request a different company.
+ *  - Call Center Manager: CALL_CENTER_AGENT only, same ignore-the-client-
+ *    input treatment for company.
+ *  - everyone else: cannot create users at all.
+ *
+ * A Manager's newly created agent is also auto-linked to the Manager
+ * themselves (manager_agent_assignments), so the agent is immediately
+ * usable for assignment -- this is exactly the missing step that silently
+ * broke Mazhar's setup earlier (an agent created but never linked to a
+ * manager, invisible to the manager-scoped Assign Agent dropdown). */
+function resolveCreateUserCompanyIds(session: Awaited<ReturnType<typeof requireSession>>, requestedRoleKey: RoleKey): string[] {
+  const creatorRole = session.user.roleKey;
+
+  if (creatorRole === "SUPERUSER") return []; // validated/looked-up below, from input.companyIds
+
+  if (creatorRole === "DIRECTOR") {
+    if (requestedRoleKey !== "CALL_CENTER_LEAD" && requestedRoleKey !== "CALL_CENTER_AGENT") {
+      throw new UnauthorizedError("Directors can only create Call Center Managers or Call Center Agents.");
+    }
+    if (session.user.companyIds.length === 0) throw new Error("You don't have a company assigned.");
+    return session.user.companyIds;
+  }
+
+  if (creatorRole === "CALL_CENTER_LEAD") {
+    if (requestedRoleKey !== "CALL_CENTER_AGENT") {
+      throw new UnauthorizedError("Managers can only create Call Center Agents.");
+    }
+    if (session.user.companyIds.length === 0) throw new Error("You don't have a company assigned.");
+    return session.user.companyIds;
+  }
+
+  throw new UnauthorizedError("You don't have permission to add users.");
+}
+
 export async function createUser(input: CreateUserInput) {
   const session = await requireSession();
-  if (session.user.roleKey !== "SUPERUSER") throw new UnauthorizedError("Only Superusers can add users.");
+  const isSuperuserCreator = session.user.roleKey === "SUPERUSER";
+
+  // Throws for any creator role that isn't allowed to make this roleKey at all.
+  const forcedCompanyIds = resolveCreateUserCompanyIds(session, input.roleKey);
 
   const fullName = input.fullName.trim();
   const email = input.email.trim().toLowerCase();
@@ -164,13 +251,19 @@ export async function createUser(input: CreateUserInput) {
   const user = await usersRepo.create({ fullName, email, passwordHash, roleId });
 
   if (input.roleKey !== "SUPERUSER") {
-    const validCompanyIds = input.companyIds.length
-      ? (await companiesRepo.findByIds(input.companyIds)).map((c) => c.id)
-      : [];
+    const validCompanyIds = isSuperuserCreator
+      ? input.companyIds.length
+        ? (await companiesRepo.findByIds(input.companyIds)).map((c) => c.id)
+        : []
+      : forcedCompanyIds;
     await Promise.all([
       accessRepo.grantCompanyAccess(user.id, validCompanyIds),
       accessRepo.grantModuleAccess(user.id, input.modules),
     ]);
+
+    if (session.user.roleKey === "CALL_CENTER_LEAD" && input.roleKey === "CALL_CENTER_AGENT") {
+      await managerAgentRepo.setManagerForAgent(user.id, forcedCompanyIds[0], session.user.id);
+    }
   }
 
   return user;

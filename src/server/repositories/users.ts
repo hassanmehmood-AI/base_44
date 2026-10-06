@@ -112,6 +112,24 @@ export async function findUsersByRoleForCompany(companyId: string, roleKey: Role
   return rows.map((r) => ({ ...r.user, roleKey: r.roleKey as RoleKey }));
 }
 
+/** Active users holding any of the given roles, explicitly granted any of
+ * the given companies — the Director-facing Settings > Users list ("all
+ * Managers and Agents in my company"). Deliberately excludes other roles
+ * (Director, Superuser, Marketing) even if present in those companies. */
+export async function findUsersByRolesForCompanies(companyIds: string[], roleKeys: RoleKey[]): Promise<UserWithRole[]> {
+  if (companyIds.length === 0 || roleKeys.length === 0) return [];
+  const rows = await getDb()
+    .select({ user: users, roleKey: roles.key })
+    .from(users)
+    .innerJoin(roles, eq(users.roleId, roles.id))
+    .innerJoin(userCompanyAccess, eq(userCompanyAccess.userId, users.id))
+    .where(and(inArray(userCompanyAccess.companyId, companyIds), inArray(roles.key, roleKeys)))
+    .orderBy(users.fullName);
+  // dedupe: a user could technically match on more than one of their granted companies
+  const byId = new Map(rows.map((r) => [r.user.id, { ...r.user, roleKey: r.roleKey as RoleKey }]));
+  return [...byId.values()];
+}
+
 /** This manager's agents in this company, via manager_agent_assignments —
  * the admin UI's "Team" read-out on a Manager's row. */
 export async function findTeamForManager(managerUserId: string, companyId: string): Promise<UserWithRole[]> {

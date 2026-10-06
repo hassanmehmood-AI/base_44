@@ -32,12 +32,21 @@ export async function createUserAction(input: {
   try {
     await usersService.createUser(input);
   } catch (e) {
-    if (e instanceof UnauthorizedError) return { error: "Only Superusers can add users." };
-    if (e instanceof Error) return { error: e.message };
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
     throw e;
   }
   revalidatePath("/configuracion");
   return { ok: true };
+}
+
+/** Director's own scoped user list — Managers/Agents in their own company
+ * only (see usersService.listUsersForDirector). */
+export async function listUsersForDirectorAction() {
+  try {
+    return { users: await usersService.listUsersForDirector() };
+  } catch {
+    return { users: [] };
+  }
 }
 
 export async function toggleStageActiveAction(stageId: string): Promise<ActionResult> {
@@ -132,8 +141,7 @@ export async function setAgentManagerAction(input: {
   try {
     await usersService.setAgentManager(input);
   } catch (e) {
-    if (e instanceof UnauthorizedError) return { error: "Only a Superuser or that company's Director can do this." };
-    if (e instanceof Error) return { error: e.message };
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
     throw e;
   }
   revalidatePath("/configuracion");
