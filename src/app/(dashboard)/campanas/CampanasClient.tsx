@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { UploadCloud, Trash2, Plus, Download } from "lucide-react";
+import { UploadCloud, Trash2, Plus, Download, Shuffle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -29,6 +29,7 @@ import {
   getCampaignMembersAction,
   getAssignableAgentsForCampaignAction,
   assignCampaignMemberAction,
+  autoAssignCampaignLeadsAction,
 } from "./actions";
 
 const STATUS_TONE: Record<CampaignStatus, "gray" | "green" | "amber" | "blue"> = {
@@ -209,9 +210,14 @@ export function CampanasClient({
         <Card className="flex flex-col gap-4 p-5">
           <CardHeader>
             <CardTitle>{t("Campaign members", "Miembros de campaña")}</CardTitle>
-            <Badge tone="green">
-              {filteredMembers.length} {t("members", "miembros")}
-            </Badge>
+            <div className="flex items-center gap-2">
+              <Badge tone="green">
+                {filteredMembers.length} {t("members", "miembros")}
+              </Badge>
+              {canAssignAgent && selectedCampaign && (
+                <AutoAssignLeadsButton campaign={selectedCampaign} members={members} onAssigned={refreshMembers} />
+              )}
+            </div>
           </CardHeader>
 
           {!selectedCampaign ? (
@@ -536,6 +542,95 @@ function MemberAssignAgentSelect({
       </Select>
       {error && <p className="mt-1 text-[11px] text-danger">{error}</p>}
     </div>
+  );
+}
+
+/** "Auto Assign Leads" (hierarchy redesign phase 6) — manager-scoped,
+ * per-campaign Round Robin for this campaign's currently unassigned leads.
+ * The unassigned count shown in the confirm step comes from the already-
+ * loaded members list (no extra round trip, and always accurate for the
+ * viewer); the agent count in the success summary comes back from the
+ * action itself, since that's computed from the campaign's actual manager
+ * team server-side, not necessarily the viewer's own. */
+function AutoAssignLeadsButton({
+  campaign,
+  members,
+  onAssigned,
+}: {
+  campaign: CampaignWithJoins;
+  members: CampaignMemberWithChannels[];
+  onAssigned: () => void;
+}) {
+  const { t } = useLanguage();
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [result, setResult] = useState<{ assigned: number; agentCount: number; message?: string } | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  const unassignedCount = members.filter((m) => !m.assignedUserId).length;
+
+  function handleOpen() {
+    setResult(undefined);
+    setError(undefined);
+    setOpen(true);
+  }
+
+  async function handleConfirm() {
+    setPending(true);
+    setError(undefined);
+    const res = await autoAssignCampaignLeadsAction(campaign.id);
+    setPending(false);
+    if (res.error) {
+      setError(res.error);
+      return;
+    }
+    setResult({ assigned: res.assigned ?? 0, agentCount: res.agentCount ?? 0, message: res.message });
+    onAssigned();
+  }
+
+  return (
+    <>
+      <Button variant="outline" onClick={handleOpen} disabled={unassignedCount === 0}>
+        <Shuffle className="h-4 w-4" /> {t("Auto Assign Leads", "Asignar automáticamente")}
+      </Button>
+      <Modal open={open} onClose={() => setOpen(false)} title={t("Auto Assign Leads", "Asignar automáticamente")}>
+        {result ? (
+          <div className="flex flex-col gap-4">
+            {result.message ? (
+              <p className="text-[13.5px] text-text-secondary">{result.message}</p>
+            ) : (
+              <p className="text-[14px] font-semibold text-text-primary">
+                {t(
+                  `${result.assigned} lead${result.assigned === 1 ? "" : "s"} assigned across ${result.agentCount} agent${result.agentCount === 1 ? "" : "s"} successfully.`,
+                  `${result.assigned} lead${result.assigned === 1 ? "" : "s"} asignado${result.assigned === 1 ? "" : "s"} entre ${result.agentCount} agente${result.agentCount === 1 ? "" : "s"} exitosamente.`
+                )}
+              </p>
+            )}
+            <Button onClick={() => setOpen(false)} className="w-full">
+              {t("Close", "Cerrar")}
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-4">
+            <p className="text-[13.5px] text-text-secondary">
+              {t(
+                `This will distribute ${unassignedCount} unassigned lead${unassignedCount === 1 ? "" : "s"} in "${campaign.name}" across this campaign's active agents using Round Robin. Already-assigned leads are never touched.`,
+                `Esto distribuirá ${unassignedCount} lead${unassignedCount === 1 ? "" : "s"} sin asignar en "${campaign.name}" entre los agentes activos de esta campaña usando Round Robin. Los leads ya asignados nunca se modifican.`
+              )}
+            </p>
+            {error && <p className="text-[13px] text-danger">{error}</p>}
+            <div className="flex justify-end gap-3">
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                {t("Cancel", "Cancelar")}
+              </Button>
+              <Button onClick={handleConfirm} disabled={pending}>
+                {pending ? t("Assigning...", "Asignando...") : t("Auto Assign Leads", "Asignar automáticamente")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </>
   );
 }
 

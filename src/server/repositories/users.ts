@@ -125,6 +125,33 @@ export async function findTeamForManager(managerUserId: string, companyId: strin
   return rows.map((r) => ({ ...r.user, roleKey: r.roleKey as RoleKey }));
 }
 
+/** Candidates for manager-scoped "Auto Assign Leads" Round Robin
+ * (campaign-level, not company-level): active agents actually linked to
+ * this manager via manager_agent_assignments in this company — never a
+ * manager's agents from another company, never other managers, never
+ * Director/Superuser/Marketing (they're simply not in this table at all).
+ * Same stable orderBy(users.id) as findEligibleForRoundRobin, for the same
+ * deterministic-rotation reason. Takes the db/tx handle explicitly so the
+ * caller can run this inside the same transaction as the cursor lock. */
+export async function findEligibleForManagerRoundRobin(
+  db: ReturnType<typeof getDb>,
+  companyId: string,
+  managerUserId: string
+): Promise<{ id: string }[]> {
+  return db
+    .select({ id: users.id })
+    .from(users)
+    .innerJoin(managerAgentAssignments, eq(managerAgentAssignments.agentUserId, users.id))
+    .where(
+      and(
+        eq(users.isActive, true),
+        eq(managerAgentAssignments.companyId, companyId),
+        eq(managerAgentAssignments.managerUserId, managerUserId)
+      )
+    )
+    .orderBy(users.id);
+}
+
 /** Users a contact in this company could sensibly be assigned to: SUPERUSERs
  * (implicit access everywhere) plus anyone explicitly granted this company. */
 export async function findAssignableForCompany(companyId: string): Promise<UserWithRole[]> {

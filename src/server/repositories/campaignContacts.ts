@@ -1,4 +1,4 @@
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import { campaignContacts, contacts, pipelineStages, users } from "@/db/schema";
 
@@ -50,6 +50,22 @@ export async function addMany(campaignId: string, contactIds: string[]): Promise
     .insert(campaignContacts)
     .values(contactIds.map((contactId) => ({ campaignId, contactId })))
     .onConflictDoNothing();
+}
+
+/** "Auto Assign Leads" eligible-lead pool — must be called inside the same
+ * transaction as, and AFTER, campaignRoundRobinCursors.lockCursor() for
+ * this campaignId: the cursor lock is what guarantees this read sees a
+ * fresh, race-free snapshot (no other concurrent Auto Assign click for the
+ * same campaign can be mid-flight when this runs). Never overwrites an
+ * already-assigned lead by construction — only ever selects where
+ * assignedUserId is null. */
+export async function findUnassignedContactIdsInTx(tx: ReturnType<typeof getDb>, campaignId: string): Promise<string[]> {
+  const rows = await tx
+    .select({ contactId: campaignContacts.contactId })
+    .from(campaignContacts)
+    .innerJoin(contacts, eq(campaignContacts.contactId, contacts.id))
+    .where(and(eq(campaignContacts.campaignId, campaignId), isNull(contacts.assignedUserId)));
+  return rows.map((r) => r.contactId);
 }
 
 export async function findContactIdsByCampaignId(campaignId: string): Promise<string[]> {

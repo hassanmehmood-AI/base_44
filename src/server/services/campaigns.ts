@@ -5,6 +5,8 @@ import * as activitiesRepo from "@/server/repositories/activities";
 import * as pipelineStagesRepo from "@/server/repositories/pipelineStages";
 import * as usersRepo from "@/server/repositories/users";
 import * as accessRepo from "@/server/repositories/access";
+import * as campaignRoundRobinCursorsRepo from "@/server/repositories/campaignRoundRobinCursors";
+import * as campaignRoundRobinService from "@/server/services/campaignRoundRobin";
 import * as companiesService from "@/server/services/companies";
 import * as contactsService from "@/server/services/contacts";
 import { assertCompanyAccess, assertDirectorOrSuperuser, requireSession, UnauthorizedError } from "@/server/services/authorization";
@@ -70,6 +72,88 @@ export async function reassignCampaignManager(campaignId: string, managerUserId:
   if (managerUserId) await assertValidManager(managerUserId, companyId);
 
   return campaignsRepo.updateOwner(campaignId, managerUserId);
+}
+
+export type AutoAssignResult = { assigned: number; agentCount: number; message?: string };
+
+/** "Auto Assign Leads" — manager-scoped, per-campaign Round Robin. Allowed
+ * callers: the campaign's own Manager, or Director/Superuser as an explicit
+ * override (same authority as reassignCampaignManager). Eligibility is
+ * always computed from the CAMPAIGN'S OWNER's team, never the caller's own
+ * team — a Director/Superuser triggering this isn't a manager of agents
+ * themselves, they're acting on the campaign's assigned manager's behalf.
+ *
+ * Concurrency: the campaign's Round Robin cursor is locked FIRST, before
+ * reading which leads are currently unassigned (see
+ * campaignRoundRobinCursors.lockCursor's doc comment) — this is what makes
+ * two concurrent Auto Assign clicks on the same campaign serialize instead
+ * of racing onto the same leads. Never touches an already-assigned lead:
+ * the "unassigned" read is a hard `assignedUserId IS NULL` filter, not a
+ * best-effort check. If there are no unassigned leads, or the manager has
+ * no active agents, returns a zero-result with a clear `message` instead of
+ * throwing — this is an expected outcome, not an error. */
+export async function autoAssignCampaignLeads(campaignId: string): Promise<AutoAssignResult> {
+  const session = await requireSession();
+  const companyId = await campaignsRepo.findCompanyIdById(campaignId);
+  if (!companyId) throw new UnauthorizedError("Campaign not found.");
+
+  if (!["SUPERUSER", "DIRECTOR", "CALL_CENTER_LEAD"].includes(session.user.roleKey)) {
+    throw new UnauthorizedError("Only a Manager, Director, or Superuser can auto-assign campaign leads.");
+  }
+  await assertCompanyAccess(companyId);
+
+  const ownerId = await campaignsRepo.findOwnerIdById(campaignId);
+  if (session.user.roleKey === "CALL_CENTER_LEAD" && ownerId !== session.user.id) {
+    throw new UnauthorizedError("You don't manage this campaign.");
+  }
+  if (!ownerId) {
+    return { assigned: 0, agentCount: 0, message: "This campaign has no manager assigned yet — assign one before auto-assigning leads." };
+  }
+
+  return contactsRepo.withTransaction(async (tx) => {
+    const cursor = await campaignRoundRobinCursorsRepo.lockCursor(tx, campaignId);
+
+    const unassignedContactIds = await campaignContactsRepo.findUnassignedContactIdsInTx(tx, campaignId);
+    if (unassignedContactIds.length === 0) {
+      return { assigned: 0, agentCount: 0, message: "No unassigned leads in this campaign." };
+    }
+
+    const eligible = await usersRepo.findEligibleForManagerRoundRobin(tx, companyId, ownerId);
+    if (eligible.length === 0) {
+      return { assigned: 0, agentCount: 0, message: "This campaign's manager has no active agents to assign to." };
+    }
+
+    const picks = await campaignRoundRobinService.pickAndAdvance(
+      tx,
+      campaignId,
+      eligible,
+      cursor.lastAssignedUserId,
+      unassignedContactIds.length
+    );
+
+    for (let i = 0; i < unassignedContactIds.length; i++) {
+      await contactsRepo.updateInTx(tx, unassignedContactIds[i], { assignedUserId: picks[i] });
+    }
+
+    const uniqueAgentIds = [...new Set(picks)];
+    const agents = await Promise.all(uniqueAgentIds.map((id) => usersRepo.findById(id)));
+    const nameById = new Map(uniqueAgentIds.map((id, i) => [id, agents[i]?.fullName ?? "Unknown"]));
+
+    await activitiesRepo.createMany(
+      tx,
+      unassignedContactIds.map((contactId, i) => ({
+        companyId,
+        contactId,
+        type: "AUTO_ASSIGNMENT",
+        channel: null,
+        outcome: nameById.get(picks[i]) ?? "Unknown",
+        notes: null,
+        createdBy: session.user.id,
+      }))
+    );
+
+    return { assigned: unassignedContactIds.length, agentCount: uniqueAgentIds.length };
+  });
 }
 
 /** Campaigns §17 Option B: imports a CSV of contacts straight into the CRM

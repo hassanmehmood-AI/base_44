@@ -124,3 +124,17 @@ export async function assignCampaignMemberAction(contactId: string, assignedUser
 export async function getCampaignPageStatsAction() {
   return { stats: await campaignsService.getCampaignPageStats() };
 }
+
+export async function autoAssignCampaignLeadsAction(
+  campaignId: string
+): Promise<ActionResult & { assigned?: number; agentCount?: number; message?: string }> {
+  try {
+    const result = await campaignsService.autoAssignCampaignLeads(campaignId);
+    revalidatePath("/campanas");
+    return { ok: true, ...result };
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "You don't have access to that campaign." };
+    if (e instanceof Error) return { error: e.message };
+    throw e;
+  }
+}
