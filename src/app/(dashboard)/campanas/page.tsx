@@ -1,9 +1,11 @@
+import { auth } from "@/auth";
 import * as campaignsService from "@/server/services/campaigns";
 import { getAllowedCompaniesForCurrentUser } from "@/server/services/companies";
 import { CampanasClient } from "./CampanasClient";
 
 export default async function CampanasPage() {
-  const [campaigns, companies, stats] = await Promise.all([
+  const [session, campaigns, companies, stats] = await Promise.all([
+    auth(),
     campaignsService.listCampaignsForCurrentUser(),
     getAllowedCompaniesForCurrentUser(),
     campaignsService.getCampaignPageStats(),
@@ -14,6 +16,10 @@ export default async function CampanasPage() {
     ? await campaignsService.getCampaignMembers(initialSelectedCampaignId)
     : [];
 
+  // Only a Director/Superuser may reassign a campaign's manager — matches
+  // the server-side assertDirectorOrSuperuser check in reassignCampaignManager.
+  const canAssignManager = session?.user.roleKey === "SUPERUSER" || session?.user.roleKey === "DIRECTOR";
+
   return (
     <CampanasClient
       campaigns={campaigns}
@@ -21,6 +27,7 @@ export default async function CampanasPage() {
       stats={stats}
       initialSelectedCampaignId={initialSelectedCampaignId}
       initialMembers={initialMembers}
+      canAssignManager={canAssignManager}
     />
   );
 }

@@ -41,12 +41,27 @@ export async function updateCampaignStatusAction(id: string, status: CampaignSta
   return { ok: true };
 }
 
+/** Options for the campaign "Manager" dropdown — Call Center Managers in
+ * this company only (not every assignable user), since a campaign's owner
+ * is now that company's assigned manager, not a free-for-all field. */
 export async function getCampaignOwnerOptionsAction(companyId: string) {
   try {
-    return { users: await usersService.getAssignableUsersForCompany(companyId) };
+    return { users: await usersService.getManagersForCompany(companyId) };
   } catch {
     return { users: [] };
   }
+}
+
+export async function reassignCampaignManagerAction(campaignId: string, managerUserId: string): Promise<ActionResult> {
+  try {
+    await campaignsService.reassignCampaignManager(campaignId, managerUserId || null);
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "Only a Superuser or that company's Director can do this." };
+    if (e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/campanas");
+  return { ok: true };
 }
 
 export async function importCampaignMembersAction(

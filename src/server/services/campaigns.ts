@@ -3,22 +3,44 @@ import * as campaignContactsRepo from "@/server/repositories/campaignContacts";
 import * as contactsRepo from "@/server/repositories/contacts";
 import * as activitiesRepo from "@/server/repositories/activities";
 import * as pipelineStagesRepo from "@/server/repositories/pipelineStages";
+import * as usersRepo from "@/server/repositories/users";
+import * as accessRepo from "@/server/repositories/access";
 import * as companiesService from "@/server/services/companies";
 import * as contactsService from "@/server/services/contacts";
-import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
+import { assertCompanyAccess, assertDirectorOrSuperuser, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import { OPPORTUNITY_STAGE_KEYS, CUSTOMER_STAGE_KEYS, type Stage } from "@/lib/pipeline";
 import type { CampaignStatus } from "@/server/constants";
 
+/** Validates that managerUserId actually holds CALL_CENTER_LEAD and has
+ * access to companyId — shared by createCampaign (initial assignment) and
+ * reassignCampaignManager (later reassignment), so a campaign's manager can
+ * never be set to a user who isn't actually a manager of that company. */
+async function assertValidManager(managerUserId: string, companyId: string) {
+  const manager = await usersRepo.findById(managerUserId);
+  if (!manager || manager.roleKey !== "CALL_CENTER_LEAD") throw new Error("Campaign manager must be a Call Center Manager.");
+  const managerCompanyIds = await accessRepo.findCompanyIdsForUser(managerUserId);
+  if (!managerCompanyIds.includes(companyId)) throw new Error("That manager does not have access to this company.");
+}
+
+/** Director/Superuser see every campaign in their allowed companies
+ * (unchanged). A Call Center Manager only sees campaigns assigned to them
+ * (ownerId = them) — campaigns not yet assigned to anyone, or assigned to a
+ * different manager, don't appear in their list at all. */
 export async function listCampaignsForCurrentUser() {
-  await requireSession();
+  const session = await requireSession();
   const allowed = await companiesService.getAllowedCompaniesForCurrentUser();
-  return campaignsRepo.findManyByCompanyIds(allowed.map((c) => c.id));
+  const companyIds = allowed.map((c) => c.id);
+  if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    return campaignsRepo.findManyByCompanyIdsAndOwner(companyIds, session.user.id);
+  }
+  return campaignsRepo.findManyByCompanyIds(companyIds);
 }
 
 export async function createCampaign(input: { companyId: string; name: string; objective?: string | null; ownerId?: string | null }) {
   await assertCompanyAccess(input.companyId);
   const name = input.name.trim();
   if (!name) throw new Error("Campaign name is required.");
+  if (input.ownerId) await assertValidManager(input.ownerId, input.companyId);
 
   return campaignsRepo.create({
     companyId: input.companyId,
@@ -33,6 +55,21 @@ export async function updateCampaignStatus(id: string, status: CampaignStatus) {
   if (!companyId) throw new UnauthorizedError("Campaign not found.");
   await assertCompanyAccess(companyId);
   return campaignsRepo.updateStatus(id, status);
+}
+
+/** Director (own company) / Superuser only — assigns or reassigns which
+ * Call Center Manager owns this campaign. Reassigning is a single UPDATE on
+ * campaigns.ownerId: it never touches campaign_contacts, contacts, or
+ * activities, so historical lead assignments and activity are completely
+ * unaffected (matches the spec's "do not automatically reassign existing
+ * leads" requirement — this is the ownership pointer only). */
+export async function reassignCampaignManager(campaignId: string, managerUserId: string | null) {
+  const companyId = await campaignsRepo.findCompanyIdById(campaignId);
+  if (!companyId) throw new UnauthorizedError("Campaign not found.");
+  await assertDirectorOrSuperuser(companyId);
+  if (managerUserId) await assertValidManager(managerUserId, companyId);
+
+  return campaignsRepo.updateOwner(campaignId, managerUserId);
 }
 
 /** Campaigns §17 Option B: imports a CSV of contacts straight into the CRM

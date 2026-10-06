@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { UploadCloud, Trash2, Plus, Download } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
@@ -24,6 +24,7 @@ import {
   createCampaignAction,
   updateCampaignStatusAction,
   getCampaignOwnerOptionsAction,
+  reassignCampaignManagerAction,
   importCampaignMembersAction,
   getCampaignMembersAction,
 } from "./actions";
@@ -57,12 +58,14 @@ export function CampanasClient({
   stats,
   initialSelectedCampaignId,
   initialMembers,
+  canAssignManager,
 }: {
   campaigns: CampaignWithJoins[];
   companies: CompanyOption[];
   stats: CampaignPageStatsByCompany[];
   initialSelectedCampaignId: string | null;
   initialMembers: CampaignMemberWithChannels[];
+  canAssignManager: boolean;
 }) {
   const { t } = useLanguage();
   const { activeCompany } = useCompany();
@@ -186,6 +189,7 @@ export function CampanasClient({
                 campaign={c}
                 selected={c.id === selectedCampaignId}
                 onSelect={() => selectCampaign(c.id)}
+                canAssignManager={canAssignManager}
               />
             ))}
           </div>
@@ -352,10 +356,12 @@ function CampaignRow({
   campaign,
   selected,
   onSelect,
+  canAssignManager,
 }: {
   campaign: CampaignWithJoins;
   selected: boolean;
   onSelect: () => void;
+  canAssignManager: boolean;
 }) {
   const { t, language } = useLanguage();
   const statusLabels = language === "es" ? STATUS_LABEL_ES : STATUS_LABEL;
@@ -391,19 +397,71 @@ function CampaignRow({
         <p className="truncate text-[12.5px] text-text-secondary">
           {campaign.companyName}
           {campaign.objective ? ` · ${campaign.objective}` : ""}
-          {campaign.ownerName ? ` · ${t("Owner", "Responsable")}: ${campaign.ownerName}` : ""}
+          {campaign.ownerName ? ` · ${t("Manager", "Gerente")}: ${campaign.ownerName}` : ""}
         </p>
         {error && <p className="mt-1 text-[12px] text-danger">{error}</p>}
       </div>
-      <div className="w-[150px] shrink-0" onClick={(e) => e.stopPropagation()}>
-        <Select value={status} disabled={pending} onChange={(e) => handleStatusChange(e.target.value as CampaignStatus)}>
-          {CAMPAIGN_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {statusLabels[s]}
-            </option>
-          ))}
-        </Select>
+      <div className="flex shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        {canAssignManager && <ManagerAssignSelect campaign={campaign} />}
+        <div className="w-[150px]">
+          <Select value={status} disabled={pending} onChange={(e) => handleStatusChange(e.target.value as CampaignStatus)}>
+            {CAMPAIGN_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {statusLabels[s]}
+              </option>
+            ))}
+          </Select>
+        </div>
       </div>
+    </div>
+  );
+}
+
+/** Director/Superuser-only control: reassigns which Call Center Manager owns
+ * this campaign. Options are scoped to this campaign's own company, lazily
+ * fetched on mount (not every campaign row needs this unless the viewer can
+ * actually use it — canAssignManager already gates whether this renders). */
+function ManagerAssignSelect({ campaign }: { campaign: CampaignWithJoins }) {
+  const { t } = useLanguage();
+  const [managers, setManagers] = useState<{ id: string; fullName: string }[]>([]);
+  const [ownerId, setOwnerId] = useState(campaign.ownerId ?? "");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    let active = true;
+    getCampaignOwnerOptionsAction(campaign.companyId).then((res) => {
+      if (active) setManagers(res.users);
+    });
+    return () => {
+      active = false;
+    };
+  }, [campaign.companyId]);
+
+  async function handleChange(next: string) {
+    const previous = ownerId;
+    setOwnerId(next);
+    setPending(true);
+    setError(undefined);
+    const result = await reassignCampaignManagerAction(campaign.id, next);
+    setPending(false);
+    if (result.error) {
+      setError(result.error);
+      setOwnerId(previous);
+    }
+  }
+
+  return (
+    <div className="w-[170px]">
+      <Select value={ownerId} disabled={pending} onChange={(e) => handleChange(e.target.value)}>
+        <option value="">{t("Unassigned", "Sin asignar")}</option>
+        {managers.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.fullName}
+          </option>
+        ))}
+      </Select>
+      {error && <p className="mt-1 text-[11px] text-danger">{error}</p>}
     </div>
   );
 }
@@ -470,7 +528,7 @@ function CreateCampaignForm({ companies, onClose }: { companies: CompanyOption[]
       </div>
       <div>
         <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
-          {t("OWNER", "RESPONSABLE")}
+          {t("MANAGER", "GERENTE")}
         </label>
         <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
           <option value="">{t("Unassigned", "Sin asignar")}</option>
