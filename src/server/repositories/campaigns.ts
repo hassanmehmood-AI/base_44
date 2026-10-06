@@ -48,6 +48,11 @@ export async function findCompanyIdById(id: string): Promise<string | undefined>
   return row?.companyId;
 }
 
+export async function findOwnerIdById(id: string): Promise<string | null | undefined> {
+  const [row] = await getDb().select({ ownerId: campaigns.ownerId }).from(campaigns).where(eq(campaigns.id, id)).limit(1);
+  return row?.ownerId;
+}
+
 export async function create(data: NewCampaign): Promise<Campaign> {
   const [row] = await getDb().insert(campaigns).values(data).returning();
   return row;

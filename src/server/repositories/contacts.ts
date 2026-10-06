@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray, notExists } from "drizzle-orm";
+import { and, desc, eq, inArray, notExists, exists, or } from "drizzle-orm";
 import { getDb } from "@/db";
-import { contacts, companies, pipelineStages, users, campaignContacts } from "@/db/schema";
+import { contacts, companies, pipelineStages, users, campaignContacts, campaigns, managerAgentAssignments } from "@/db/schema";
 
 export type Contact = typeof contacts.$inferSelect;
 export type NewContact = typeof contacts.$inferInsert;
@@ -69,6 +69,138 @@ export async function findManualByCompanyIds(companyIds: string[]): Promise<Cont
         notExists(getDb().select().from(campaignContacts).where(eq(campaignContacts.contactId, contacts.id)))
       )
     )
+    .orderBy(desc(contacts.createdAt));
+  return rows.map(toJoined);
+}
+
+/** Call Center Agent's CRM "All Contacts" view (hierarchy redesign phase 4):
+ * only contacts assigned to them, scoped to their allowed companies. */
+export async function findManyByAssignedUserId(companyIds: string[], assignedUserId: string): Promise<ContactWithJoins[]> {
+  if (companyIds.length === 0) return [];
+  const rows = await getDb()
+    .select(baseSelect)
+    .from(contacts)
+    .innerJoin(companies, eq(contacts.companyId, companies.id))
+    .innerJoin(pipelineStages, eq(contacts.pipelineStageId, pipelineStages.id))
+    .leftJoin(users, eq(contacts.assignedUserId, users.id))
+    .where(and(inArray(contacts.companyId, companyIds), eq(contacts.assignedUserId, assignedUserId)))
+    .orderBy(desc(contacts.createdAt));
+  return rows.map(toJoined);
+}
+
+/** Call Center Manager's CRM "All Contacts" view (hierarchy redesign phase
+ * 4): contacts linked (via campaign_contacts) to a campaign this manager
+ * owns, OR contacts currently assigned to one of this manager's own agents
+ * (manager_agent_assignments) — the latter keeps a manager's view of their
+ * team's work intact even for leads assigned before a campaign link existed
+ * or for manually-created leads outside any campaign. Scoped to their
+ * allowed companies. */
+export async function findManyByManagerScope(companyIds: string[], managerUserId: string): Promise<ContactWithJoins[]> {
+  if (companyIds.length === 0) return [];
+  const db = getDb();
+  const rows = await db
+    .select(baseSelect)
+    .from(contacts)
+    .innerJoin(companies, eq(contacts.companyId, companies.id))
+    .innerJoin(pipelineStages, eq(contacts.pipelineStageId, pipelineStages.id))
+    .leftJoin(users, eq(contacts.assignedUserId, users.id))
+    .where(
+      and(
+        inArray(contacts.companyId, companyIds),
+        or(
+          exists(
+            db
+              .select()
+              .from(campaignContacts)
+              .innerJoin(campaigns, eq(campaigns.id, campaignContacts.campaignId))
+              .where(and(eq(campaignContacts.contactId, contacts.id), eq(campaigns.ownerId, managerUserId)))
+          ),
+          exists(
+            db
+              .select()
+              .from(managerAgentAssignments)
+              .where(
+                and(
+                  eq(managerAgentAssignments.agentUserId, contacts.assignedUserId),
+                  eq(managerAgentAssignments.managerUserId, managerUserId)
+                )
+              )
+          )
+        )
+      )
+    )
+    .orderBy(desc(contacts.createdAt));
+  return rows.map(toJoined);
+}
+
+/** Agent-scoped "Manual Leads" filter — same role-scoping as
+ * findManyByAssignedUserId, additionally excluding any contact linked to a
+ * campaign (matches findManualByCompanyIds' definition of "manual"). */
+export async function findManualByAssignedUserId(companyIds: string[], assignedUserId: string): Promise<ContactWithJoins[]> {
+  if (companyIds.length === 0) return [];
+  const db = getDb();
+  const rows = await db
+    .select(baseSelect)
+    .from(contacts)
+    .innerJoin(companies, eq(contacts.companyId, companies.id))
+    .innerJoin(pipelineStages, eq(contacts.pipelineStageId, pipelineStages.id))
+    .leftJoin(users, eq(contacts.assignedUserId, users.id))
+    .where(
+      and(
+        inArray(contacts.companyId, companyIds),
+        eq(contacts.assignedUserId, assignedUserId),
+        notExists(db.select().from(campaignContacts).where(eq(campaignContacts.contactId, contacts.id)))
+      )
+    )
+    .orderBy(desc(contacts.createdAt));
+  return rows.map(toJoined);
+}
+
+/** Manager-scoped "Manual Leads" filter: campaign-less contacts assigned to
+ * one of this manager's own agents (the campaign-ownership half of
+ * findManyByManagerScope doesn't apply here by definition — these have no
+ * campaign link). */
+export async function findManualByManagerScope(companyIds: string[], managerUserId: string): Promise<ContactWithJoins[]> {
+  if (companyIds.length === 0) return [];
+  const db = getDb();
+  const rows = await db
+    .select(baseSelect)
+    .from(contacts)
+    .innerJoin(companies, eq(contacts.companyId, companies.id))
+    .innerJoin(pipelineStages, eq(contacts.pipelineStageId, pipelineStages.id))
+    .leftJoin(users, eq(contacts.assignedUserId, users.id))
+    .where(
+      and(
+        inArray(contacts.companyId, companyIds),
+        notExists(db.select().from(campaignContacts).where(eq(campaignContacts.contactId, contacts.id))),
+        exists(
+          db
+            .select()
+            .from(managerAgentAssignments)
+            .where(
+              and(
+                eq(managerAgentAssignments.agentUserId, contacts.assignedUserId),
+                eq(managerAgentAssignments.managerUserId, managerUserId)
+              )
+            )
+        )
+      )
+    )
+    .orderBy(desc(contacts.createdAt));
+  return rows.map(toJoined);
+}
+
+/** CRM's "Campaign" filter, scoped to a Call Center Agent: only the
+ * campaign's contacts that are also assigned to them. */
+export async function findManyByCampaignIdAndAssignedUser(campaignId: string, assignedUserId: string): Promise<ContactWithJoins[]> {
+  const rows = await getDb()
+    .select(baseSelect)
+    .from(contacts)
+    .innerJoin(companies, eq(contacts.companyId, companies.id))
+    .innerJoin(pipelineStages, eq(contacts.pipelineStageId, pipelineStages.id))
+    .leftJoin(users, eq(contacts.assignedUserId, users.id))
+    .innerJoin(campaignContacts, eq(campaignContacts.contactId, contacts.id))
+    .where(and(eq(campaignContacts.campaignId, campaignId), eq(contacts.assignedUserId, assignedUserId)))
     .orderBy(desc(contacts.createdAt));
   return rows.map(toJoined);
 }

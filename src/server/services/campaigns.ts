@@ -106,20 +106,46 @@ export async function importCampaignMembers(
  * same ContactWithJoins shape the CRM page already renders everywhere else
  * (unlike getCampaignMembers() below, which returns the Campaigns-page-
  * specific member/channels shape). Authorizes against the campaign's
- * company before touching any contact data — never trusts the client. */
+ * company before touching any contact data — never trusts the client.
+ * Phase 4: a Call Center Manager may only use this filter on a campaign
+ * they actually own (defense-in-depth — the UI's campaign dropdown is
+ * already scoped by listCampaignsForCurrentUser, but this blocks direct
+ * action calls with another manager's campaign id too); a Call Center Agent
+ * sees only their own contacts within the campaign. */
 export async function listContactsForCrm(campaignId: string) {
+  const session = await requireSession();
   const companyId = await campaignsRepo.findCompanyIdById(campaignId);
   if (!companyId) throw new UnauthorizedError("Campaign not found.");
   await assertCompanyAccess(companyId);
+
+  if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    const ownerId = await campaignsRepo.findOwnerIdById(campaignId);
+    if (ownerId !== session.user.id) throw new UnauthorizedError("You don't manage this campaign.");
+    return contactsRepo.findManyByCampaignId(campaignId);
+  }
+  if (session.user.roleKey === "CALL_CENTER_AGENT") {
+    return contactsRepo.findManyByCampaignIdAndAssignedUser(campaignId, session.user.id);
+  }
   return contactsRepo.findManyByCampaignId(campaignId);
 }
 
 export type CampaignMemberWithChannels = Awaited<ReturnType<typeof campaignContactsRepo.findByCampaignId>>[number] & { channels: string[] };
 
+/** Manage Campaigns page's member table. Phase 4: a Call Center Manager may
+ * only view members of a campaign they own — same defense-in-depth
+ * rationale as listContactsForCrm above (satisfies "Manager 2 cannot access
+ * Campaign 1 through direct request manipulation"). Director/Superuser
+ * unchanged. */
 export async function getCampaignMembers(campaignId: string): Promise<CampaignMemberWithChannels[]> {
+  const session = await requireSession();
   const companyId = await campaignsRepo.findCompanyIdById(campaignId);
   if (!companyId) throw new UnauthorizedError("Campaign not found.");
   await assertCompanyAccess(companyId);
+
+  if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    const ownerId = await campaignsRepo.findOwnerIdById(campaignId);
+    if (ownerId !== session.user.id) throw new UnauthorizedError("You don't manage this campaign.");
+  }
 
   const members = await campaignContactsRepo.findByCampaignId(campaignId);
   const channelRows = await activitiesRepo.findDistinctChannelsByContactIds(members.map((m) => m.contactId));

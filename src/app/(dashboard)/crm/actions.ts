@@ -34,7 +34,7 @@ export async function getManualContactsAction() {
 
 export async function getAssignableUsersAction(companyId: string) {
   try {
-    return { users: await usersService.getAssignableUsersForCompany(companyId) };
+    return { users: await usersService.getAssignableAgentsForCrm(companyId) };
   } catch {
     return { users: [] };
   }

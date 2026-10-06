@@ -15,17 +15,39 @@ async function getAllowedCompanyIds(session: Awaited<ReturnType<typeof requireSe
   return session.user.companyIds;
 }
 
+/** CRM page's default "All Contacts" view. Hierarchy redesign phase 4:
+ * Director/Superuser/Marketing see every contact in their allowed companies
+ * (unchanged). A Call Center Agent sees only contacts assigned to them. A
+ * Call Center Manager sees only contacts tied to campaigns they own, plus
+ * contacts assigned to their own agents (see findManyByManagerScope). This
+ * is an intentional, real tightening versus the previous "anyone with
+ * company access sees every company contact" behavior — confirmed with the
+ * product owner knowing it means an Agent/Manager with nothing assigned yet
+ * will see an empty list until leads are assigned or campaigns are owned. */
 export async function listContactsForCurrentUser() {
   const session = await requireSession();
   const companyIds = await getAllowedCompanyIds(session);
+  if (session.user.roleKey === "CALL_CENTER_AGENT") {
+    return contactsRepo.findManyByAssignedUserId(companyIds, session.user.id);
+  }
+  if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    return contactsRepo.findManyByManagerScope(companyIds, session.user.id);
+  }
   return contactsRepo.findManyByCompanyIds(companyIds);
 }
 
 /** CRM page's "Manual Leads" filter: contacts never linked to any campaign,
- * scoped to the same allowed-company rule as the default "All Contacts" view. */
+ * scoped to the same allowed-company rule as the default "All Contacts" view,
+ * with the same phase 4 Agent/Manager narrowing applied. */
 export async function listManualContactsForCurrentUser() {
   const session = await requireSession();
   const companyIds = await getAllowedCompanyIds(session);
+  if (session.user.roleKey === "CALL_CENTER_AGENT") {
+    return contactsRepo.findManualByAssignedUserId(companyIds, session.user.id);
+  }
+  if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    return contactsRepo.findManualByManagerScope(companyIds, session.user.id);
+  }
   return contactsRepo.findManualByCompanyIds(companyIds);
 }
 

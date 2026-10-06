@@ -11,6 +11,21 @@ export async function getAssignableUsersForCompany(companyId: string) {
   return usersRepo.findAssignableForCompany(companyId);
 }
 
+/** CRM's "Assign Agent" dropdown specifically (hierarchy redesign phase 4)
+ * — NOT a replacement for getAssignableUsersForCompany above, which Support
+ * and Social Channels also call for their own assignee dropdowns and must
+ * keep seeing the full company-wide list. Here, a Call Center Manager sees
+ * only their own team (manager_agent_assignments) — "Manager should only
+ * see agents who are under that manager." Every other role keeps today's
+ * full assignable list, unchanged. */
+export async function getAssignableAgentsForCrm(companyId: string) {
+  const session = await assertCompanyAccess(companyId);
+  if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    return usersRepo.findTeamForManager(session.user.id, companyId);
+  }
+  return usersRepo.findAssignableForCompany(companyId);
+}
+
 /** Call Center Managers available in this company — for the manager-
  * assignment dropdown (agent -> manager) and, later, the campaign ->
  * manager dropdown. Read-only, so uses the same company-access gate as
