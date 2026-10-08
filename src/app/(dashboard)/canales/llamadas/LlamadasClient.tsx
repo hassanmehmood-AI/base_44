@@ -52,12 +52,26 @@ export function LlamadasClient({
   const [activities, setActivities] = useState(initialActivities);
   const [calls, setCalls] = useState(initialCalls);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [search, setSearch] = useState("");
 
   const filteredQueue = queue.filter((c) => activeCompany === ALL_COMPANIES || c.companyName === activeCompany);
-  // Looked up from the company-scoped queue (not raw `queue`): a contact
-  // selected before switching companies must stop showing once it's out of
-  // scope, falling back to the empty state instead of another company's data.
-  const selected = filteredQueue.find((c) => c.id === selectedId);
+
+  const searchedQueue = (() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return filteredQueue;
+    return filteredQueue.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        (c.phone ?? "").toLowerCase().includes(q) ||
+        (c.email ?? "").toLowerCase().includes(q)
+    );
+  })();
+
+  // Looked up from the searched/company-scoped queue (not raw `queue`): a
+  // contact selected before switching companies or searching must stop
+  // showing once it's filtered out, falling back to the empty state instead
+  // of another, unrelated contact's call history.
+  const selected = searchedQueue.find((c) => c.id === selectedId);
 
   async function selectContact(id: string) {
     setSelectedId(id);
@@ -80,7 +94,14 @@ export function LlamadasClient({
       <PageHeader
         title={t("Call Management", "Gestión de Llamadas")}
         subtitle={t("Call queue and results log", "Cola de llamadas y registro de resultados")}
-        actions={<SearchInput placeholder={t("Search client, phone or email...", "Buscar cliente, teléfono o correo...")} className="max-w-sm" />}
+        actions={
+          <SearchInput
+            placeholder={t("Search client, phone or email...", "Buscar cliente, teléfono o correo...")}
+            className="max-w-sm"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        }
       />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -100,10 +121,10 @@ export function LlamadasClient({
         <Card className="flex flex-col gap-1 p-5">
           <div className="mb-2 flex items-center justify-between">
             <CardTitle>{t("Clients to call", "Clientes por llamar")}</CardTitle>
-            <Badge tone="green">{filteredQueue.length} {t("in queue", "en cola")}</Badge>
+            <Badge tone="green">{searchedQueue.length} {t("in queue", "en cola")}</Badge>
           </div>
           <div className="flex max-h-[560px] flex-col gap-1 overflow-y-auto">
-            {filteredQueue.map((c) => (
+            {searchedQueue.map((c) => (
               <button
                 key={c.id}
                 onClick={() => selectContact(c.id)}
@@ -116,9 +137,11 @@ export function LlamadasClient({
                 <span className="truncate text-[13.5px] font-medium text-text-primary">{c.name}</span>
               </button>
             ))}
-            {filteredQueue.length === 0 && (
+            {searchedQueue.length === 0 && (
               <p className="py-6 text-center text-[13px] text-text-tertiary">
-                {t("No contacts with a phone number yet.", "Aún no hay contactos con teléfono.")}
+                {filteredQueue.length === 0
+                  ? t("No contacts with a phone number yet.", "Aún no hay contactos con teléfono.")
+                  : t("No contacts match your search.", "Ningún contacto coincide con tu búsqueda.")}
               </p>
             )}
           </div>

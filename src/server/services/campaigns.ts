@@ -179,11 +179,11 @@ export async function importCampaignMembers(
   const entryStage = stages[0];
   if (!entryStage) throw new Error("No pipeline stage configured.");
 
-  const { created, contactIds } = await contactsService.importContacts(companyId, entryStage.id, rows, {
+  const result = await contactsService.importContacts(companyId, entryStage.id, rows, {
     skipRoundRobin: true,
   });
-  await campaignContactsRepo.addMany(campaignId, contactIds);
-  return { created };
+  await campaignContactsRepo.addMany(campaignId, result.contactIds);
+  return result;
 }
 
 /** CRM page's "Campaign" filter: contacts linked to this campaign, in the

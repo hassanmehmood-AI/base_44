@@ -25,9 +25,13 @@ function findColumn(header: string[], candidates: string[]): number {
 }
 
 /** Shared by the CRM contacts import and the Campaigns member import (guide
- * §17 Option B) — same CSV shape, same column-mapping rules. */
-export function parseContactImportRows(text: string, t: (en: string, es: string) => string): { rows: ContactImportRow[]; error?: string } {
-  const table = parseCsv(text).filter((r) => r.some((cell) => cell.trim() !== ""));
+ * §17 Option B) — same column-mapping rules regardless of whether the table
+ * came from a parsed CSV or an Excel sheet (see @/lib/spreadsheetFile). */
+export function mapTableToContactRows(
+  rawTable: string[][],
+  t: (en: string, es: string) => string
+): { rows: ContactImportRow[]; error?: string } {
+  const table = rawTable.filter((r) => r.some((cell) => cell.trim() !== ""));
   if (table.length === 0) return { rows: [], error: t("The file is empty.", "El archivo está vacío.") };
 
   const [header, ...dataRows] = table;
@@ -57,4 +61,10 @@ export function parseContactImportRows(text: string, t: (en: string, es: string)
   });
 
   return { rows };
+}
+
+/** CSV-specific convenience wrapper kept for any existing caller that still
+ * hands this raw CSV text directly — behavior is unchanged from before. */
+export function parseContactImportRows(text: string, t: (en: string, es: string) => string): { rows: ContactImportRow[]; error?: string } {
+  return mapTableToContactRows(parseCsv(text), t);
 }

@@ -224,6 +224,17 @@ export async function findCompanyIdById(id: string): Promise<string | undefined>
   return row?.companyId;
 }
 
+/** Just the two identifier columns, scoped to one company — used by the
+ * import's duplicate check. Deliberately not an `inArray(email, [...])`
+ * lookup: email/phone aren't stored normalized, so the caller normalizes
+ * (case, formatting) and compares in JS against this full set rather than
+ * risking an exact-match query silently missing equivalent values. */
+export async function findEmailsAndPhonesByCompanyId(
+  companyId: string
+): Promise<{ email: string | null; phone: string | null }[]> {
+  return getDb().select({ email: contacts.email, phone: contacts.phone }).from(contacts).where(eq(contacts.companyId, companyId));
+}
+
 export async function create(data: NewContact, db: ReturnType<typeof getDb> = getDb()): Promise<Contact> {
   const [row] = await db.insert(contacts).values(data).returning();
   return row;

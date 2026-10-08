@@ -32,6 +32,8 @@ import { UserSwitcherMenu, type ImpersonatableUser } from "@/components/UserSwit
 import { signOutAction, stopImpersonationAction } from "@/app/(dashboard)/actions";
 import { ROLE_LABEL, ROLE_LABEL_ES } from "@/lib/roles";
 import type { RoleKey } from "@/server/constants";
+import { clearAllDraftsForUser } from "@/lib/drafts";
+import { useCurrentUserId } from "@/context/CurrentUserContext";
 
 import { useLanguage } from "@/context/LanguageContext";
 
@@ -98,6 +100,7 @@ export function Sidebar({
 }) {
   const { t, language } = useLanguage();
   const router = useRouter();
+  const userId = useCurrentUserId();
   const roleLabel = (language === "es" ? ROLE_LABEL_ES : ROLE_LABEL)[user.roleKey];
   const pathname = usePathname();
   const channelsActive = pathname.startsWith("/canales");
@@ -242,7 +245,10 @@ export function Sidebar({
             </button>
           )
         )}
-        <form action={signOutAction}>
+        {/* Scrubs this user's locally-saved drafts before the sign-out
+            request fires, so unsent email/classification text doesn't linger
+            in localStorage for the next person on a shared machine. */}
+        <form action={signOutAction} onSubmit={() => clearAllDraftsForUser(userId)}>
           <button
             type="submit"
             className={cn("shrink-0 text-sidebar-text-dim hover:text-danger", REVEAL)}

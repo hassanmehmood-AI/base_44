@@ -30,7 +30,17 @@ export default function WhatsAppPage() {
   const { t, language } = useLanguage();
   const [view, setView] = useState<"pipeline" | "chat">("pipeline");
   const [selectedId, setSelectedId] = useState(allConversations[0]?.id);
-  const selected = allConversations.find((c) => c.id === selectedId) ?? allConversations[0];
+  const [search, setSearch] = useState("");
+
+  // This mock dataset only carries a name per conversation card (no
+  // phone/email), so that's what's actually searchable here.
+  const query = search.trim().toLowerCase();
+  const matchesSearch = (name: string) => !query || name.toLowerCase().includes(query);
+  const filteredConversations = allConversations.filter((c) => matchesSearch(c.name));
+  // Looked up from the filtered list, not the raw one: a conversation
+  // selected before searching must stop showing once it's filtered out,
+  // falling back to the empty state instead of an unrelated conversation.
+  const selected = filteredConversations.find((c) => c.id === selectedId);
 
   const getStageLabel = (stage: Stage) =>
     language === "es" ? STAGE_LABEL_ES[stage] : STAGE_LABEL[stage];
@@ -63,7 +73,12 @@ export default function WhatsAppPage() {
             {t("Chat View", "Vista Chat")}
           </button>
         </div>
-        <SearchInput placeholder={t("Search client, phone or email...", "Buscar cliente, teléfono o correo...")} className="max-w-sm" />
+        <SearchInput
+          placeholder={t("Search client, phone or email...", "Buscar cliente, teléfono o correo...")}
+          className="max-w-sm"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
         <Button className="ml-auto">
           <Plus className="h-4 w-4" /> {t("New conversation", "Nueva conversación")}
         </Button>
@@ -85,51 +100,56 @@ export default function WhatsAppPage() {
 
       {view === "pipeline" ? (
         <div className="flex gap-4 overflow-x-auto pb-2">
-          {columns.map((stage) => (
-            <div key={stage} className="w-[260px] shrink-0 rounded-xl bg-surface-muted/60 p-2.5">
-              <div className="mb-3 flex items-center gap-2 px-0.5">
-                <p className="text-[11px] font-semibold tracking-wide text-text-secondary">
-                  {getStageLabel(stage).toUpperCase()}
-                </p>
-                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-white px-1.5 text-[11px] font-semibold text-text-secondary">
-                  {whatsappPipeline[stage].length}
-                </span>
-              </div>
+          {columns.map((stage) => {
+            const stageCards = whatsappPipeline[stage].filter((card) => matchesSearch(card.name));
+            return (
+              <div key={stage} className="w-[260px] shrink-0 rounded-xl bg-surface-muted/60 p-2.5">
+                <div className="mb-3 flex items-center gap-2 px-0.5">
+                  <p className="text-[11px] font-semibold tracking-wide text-text-secondary">
+                    {getStageLabel(stage).toUpperCase()}
+                  </p>
+                  <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-white px-1.5 text-[11px] font-semibold text-text-secondary">
+                    {stageCards.length}
+                  </span>
+                </div>
 
-              <div className="flex flex-col gap-2.5">
-                {whatsappPipeline[stage].map((card) => (
-                  <Card
-                    key={card.id}
-                    className="cursor-pointer p-3.5 transition-shadow hover:shadow-md"
-                    onClick={() => {
-                      setSelectedId(card.id);
-                      setView("chat");
-                    }}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2.5">
-                        <Avatar name={card.agent} size={30} />
-                        <div>
-                          <p className="text-[13.5px] font-semibold text-text-primary">{card.name}</p>
-                          <p className="text-[11.5px] text-text-tertiary">
-                            {t("Last message", "Último mensaje")} · {card.time}
-                          </p>
+                <div className="flex flex-col gap-2.5">
+                  {stageCards.map((card) => (
+                    <Card
+                      key={card.id}
+                      className="cursor-pointer p-3.5 transition-shadow hover:shadow-md"
+                      onClick={() => {
+                        setSelectedId(card.id);
+                        setView("chat");
+                      }}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2.5">
+                          <Avatar name={card.agent} size={30} />
+                          <div>
+                            <p className="text-[13.5px] font-semibold text-text-primary">{card.name}</p>
+                            <p className="text-[11.5px] text-text-tertiary">
+                              {t("Last message", "Último mensaje")} · {card.time}
+                            </p>
+                          </div>
                         </div>
+                        <button className="text-text-tertiary hover:text-text-primary">
+                          <MoreHorizontal className="h-4 w-4" />
+                        </button>
                       </div>
-                      <button className="text-text-tertiary hover:text-text-primary">
-                        <MoreHorizontal className="h-4 w-4" />
-                      </button>
+                    </Card>
+                  ))}
+                  {stageCards.length === 0 && (
+                    <div className="rounded-xl border border-dashed border-border bg-white/60 py-6 text-center text-[12.5px] text-text-tertiary">
+                      {whatsappPipeline[stage].length === 0
+                        ? t("No conversations", "Sin conversaciones")
+                        : t("No matches", "Sin coincidencias")}
                     </div>
-                  </Card>
-                ))}
-                {whatsappPipeline[stage].length === 0 && (
-                  <div className="rounded-xl border border-dashed border-border bg-white/60 py-6 text-center text-[12.5px] text-text-tertiary">
-                    {t("No conversations", "Sin conversaciones")}
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <Card className="flex h-[640px] overflow-hidden p-0">
@@ -138,7 +158,7 @@ export default function WhatsAppPage() {
               <p className="text-[15px] font-semibold text-text-primary">{t("Conversations", "Conversaciones")}</p>
             </div>
             <div className="flex-1 overflow-y-auto">
-              {allConversations.map((c) => (
+              {filteredConversations.map((c) => (
                 <button
                   key={c.id}
                   onClick={() => setSelectedId(c.id)}
@@ -155,6 +175,11 @@ export default function WhatsAppPage() {
                   <span className="shrink-0 text-[11px] text-text-tertiary">{c.time}</span>
                 </button>
               ))}
+              {filteredConversations.length === 0 && (
+                <p className="px-4 py-6 text-center text-[13px] text-text-tertiary">
+                  {t("No conversations match your search.", "Ninguna conversación coincide con tu búsqueda.")}
+                </p>
+              )}
             </div>
           </div>
 

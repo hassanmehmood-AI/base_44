@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus, CheckCircle2, Trash2, RotateCcw, ArrowUp, ArrowDown, Power, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -108,6 +108,13 @@ export function ConfiguracionClient({
   const [accessError, setAccessError] = useState<string | undefined>();
   const [addCompanyOpen, setAddCompanyOpen] = useState(false);
   const [addUserOpen, setAddUserOpen] = useState(false);
+  const [userSearch, setUserSearch] = useState("");
+
+  const filteredUsers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter((u) => u.fullName.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
+  }, [users, userSearch]);
 
   const roleDescByKey: Record<RoleKey, string> = {
     SUPERUSER: t("Full access to all modules and companies.", "Acceso total a todos los módulos y empresas."),
@@ -222,7 +229,12 @@ export function ConfiguracionClient({
             </div>
             {tab === "users" && (
               <>
-                <SearchInput placeholder={t("Search user...", "Buscar usuario...")} className="max-w-xs" />
+                <SearchInput
+                  placeholder={t("Search user...", "Buscar usuario...")}
+                  className="max-w-xs"
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                />
                 {canAddUsers && (
                   <Button onClick={() => setAddUserOpen(true)}>
                     <Plus className="h-4 w-4" /> {t("Add user", "Agregar usuario")}
@@ -248,7 +260,7 @@ export function ConfiguracionClient({
                 {users.filter((u) => u.isActive).length} {t("active", "activos")}
               </Badge>
             </div>
-            {users.map((u) => (
+            {filteredUsers.map((u) => (
               <button
                 key={u.id}
                 onClick={() => setSelectedId(u.id)}
@@ -265,8 +277,12 @@ export function ConfiguracionClient({
                 </div>
               </button>
             ))}
-            {users.length === 0 && (
-              <p className="px-1 py-2 text-[13px] text-text-secondary">{t("No users yet.", "Todavía no hay usuarios.")}</p>
+            {filteredUsers.length === 0 && (
+              <p className="px-1 py-2 text-[13px] text-text-secondary">
+                {users.length === 0
+                  ? t("No users yet.", "Todavía no hay usuarios.")
+                  : t("No users match your search.", "Ningún usuario coincide con tu búsqueda.")}
+              </p>
             )}
           </Card>
 

@@ -10,12 +10,15 @@ import { SearchInput, Select, Input, Textarea } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { StatCard } from "@/components/StatCard";
 import { StageBadge } from "@/components/StageBadge";
+import { STAGE_LABEL, type Stage } from "@/lib/pipeline";
 import { Avatar } from "@/components/ui/Avatar";
 import { useLanguage } from "@/context/LanguageContext";
 import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { formatRelativeTime } from "@/lib/format";
 import { downloadTextFile } from "@/lib/csv";
-import { parseContactImportRows, CONTACTS_IMPORT_TEMPLATE_CSV, MAX_CONTACTS_IMPORT_ROWS, type ContactImportRow } from "@/lib/contactsImport";
+import { mapTableToContactRows, CONTACTS_IMPORT_TEMPLATE_CSV, MAX_CONTACTS_IMPORT_ROWS, type ContactImportRow } from "@/lib/contactsImport";
+import { readSpreadsheetFile, type SpreadsheetWorkbook } from "@/lib/spreadsheetFile";
+import { ImportResultSummaryView, type ImportResultSummary } from "@/components/ImportResultSummary";
 import { cn } from "@/lib/cn";
 import type { CampaignWithJoins } from "@/server/repositories/campaigns";
 import type { UserWithRole } from "@/server/repositories/users";
@@ -382,7 +385,7 @@ export function CampanasClient({
               <option value="">{t("All statuses", "Todos los estados")}</option>
               {statusOptions.map((key) => (
                 <option key={key} value={key}>
-                  {key}
+                  {STAGE_LABEL[key as Stage] ?? key}
                 </option>
               ))}
             </Select>
@@ -813,11 +816,13 @@ function ImportMembersPanel({
   const { t } = useLanguage();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState("");
+  const [workbook, setWorkbook] = useState<SpreadsheetWorkbook | null>(null);
+  const [sheetName, setSheetName] = useState("");
   const [rows, setRows] = useState<ContactImportRow[] | null>(null);
   const [fileError, setFileError] = useState<string | undefined>();
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | undefined>();
-  const [result, setResult] = useState<number | null>(null);
+  const [result, setResult] = useState<ImportResultSummary | null>(null);
 
   const validRows = rows?.filter((r) => r.valid) ?? [];
   const invalidCount = (rows?.length ?? 0) - validRows.length;
@@ -830,33 +835,50 @@ function ImportMembersPanel({
   function reset() {
     setFileName("");
     setRows(null);
+    setWorkbook(null);
+    setSheetName("");
     setFileError(undefined);
     setError(undefined);
     setResult(null);
   }
 
-  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+  function applySheet(wb: SpreadsheetWorkbook, sheet: string) {
+    const { rows: parsed, error: parseError } = mapTableToContactRows(wb.getRows(sheet), t);
+    if (parseError) {
+      setFileError(parseError);
+      setRows(null);
+      return;
+    }
+    setFileError(undefined);
+    setRows(parsed);
+  }
+
+  function handleSheetChange(next: string) {
+    setSheetName(next);
+    if (workbook) applySheet(workbook, next);
+  }
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
     setFileName(file.name);
     setRows(null);
+    setWorkbook(null);
+    setSheetName("");
     setFileError(undefined);
     setError(undefined);
     setResult(null);
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = typeof reader.result === "string" ? reader.result : "";
-      const { rows: parsed, error: parseError } = parseContactImportRows(text, t);
-      if (parseError) {
-        setFileError(parseError);
-        return;
-      }
-      setRows(parsed);
-    };
-    reader.onerror = () => setFileError(t("Could not read that file.", "No se pudo leer el archivo."));
-    reader.readAsText(file);
+    const { workbook: wb, error: readError } = await readSpreadsheetFile(file, t);
+    if (readError || !wb) {
+      setFileError(readError ?? t("Could not read that file.", "No se pudo leer el archivo."));
+      return;
+    }
+    setWorkbook(wb);
+    const firstSheet = wb.sheetNames[0];
+    setSheetName(firstSheet);
+    applySheet(wb, firstSheet);
   }
 
   async function handleImport() {
@@ -876,7 +898,12 @@ function ImportMembersPanel({
       setError(res.error);
       return;
     }
-    setResult(res.created ?? 0);
+    setResult({
+      totalRows: res.totalRows ?? rowsToSend.length,
+      created: res.created ?? 0,
+      duplicatesInFile: res.duplicatesInFile ?? 0,
+      duplicatesExisting: res.duplicatesExisting ?? 0,
+    });
     onImported();
   }
 
@@ -891,14 +918,23 @@ function ImportMembersPanel({
           {t("Select a campaign above to import contacts into it.", "Selecciona una campaña arriba para importar contactos.")}
         </p>
       ) : result !== null ? (
-        <div className="flex flex-col items-center gap-3 py-6 text-center">
-          <p className="text-[14px] font-semibold text-text-primary">
-            {t(`${result} contact${result === 1 ? "" : "s"} imported.`, `${result} contacto${result === 1 ? "" : "s"} importado${result === 1 ? "" : "s"}.`)}
-          </p>
-          <Button onClick={reset}>{t("Import more", "Importar más")}</Button>
-        </div>
+        <ImportResultSummaryView result={result} invalidCount={invalidCount} onDone={reset} />
       ) : rows ? (
         <div className="flex flex-col gap-3">
+          {workbook && workbook.sheetNames.length > 1 && (
+            <div>
+              <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+                {t("SHEET", "HOJA")}
+              </label>
+              <Select value={sheetName} onChange={(e) => handleSheetChange(e.target.value)}>
+                {workbook.sheetNames.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          )}
           <p className="text-[13px] text-text-secondary">{fileName}</p>
           <p className="text-[13px] text-text-primary">
             {t(`${validRows.length} valid row${validRows.length === 1 ? "" : "s"}`, `${validRows.length} fila${validRows.length === 1 ? "" : "s"} válida${validRows.length === 1 ? "" : "s"}`)}
@@ -937,10 +973,16 @@ function ImportMembersPanel({
               {t("Import Excel or CSV", "Importar Excel o CSV")}
             </span>
             <span className="text-[12.5px] text-text-secondary">
-              {t("Click to choose a file", "Haz clic para elegir un archivo")}
+              {t("Click to choose a CSV or Excel file", "Haz clic para elegir un archivo CSV o Excel")}
             </span>
           </button>
-          <input ref={fileInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={handleFile} />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+            className="hidden"
+            onChange={handleFile}
+          />
           {fileError && <p className="text-[12.5px] text-danger">{fileError}</p>}
           <button
             onClick={handleDownloadTemplate}

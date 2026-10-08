@@ -68,14 +68,13 @@ export async function reassignCampaignManagerAction(campaignId: string, managerU
 export async function importCampaignMembersAction(
   campaignId: string,
   rows: Array<{ name: string; businessName?: string; phone?: string; email?: string; leadSource?: string }>
-): Promise<ActionResult & { created?: number }> {
+): Promise<ActionResult & Partial<Awaited<ReturnType<typeof campaignsService.importCampaignMembers>>>> {
   if (!campaignId) return { error: "Select a campaign first." };
   if (rows.length === 0) return { error: "No valid rows to import." };
 
-  let created: number;
+  let result: Awaited<ReturnType<typeof campaignsService.importCampaignMembers>>;
   try {
-    const result = await campaignsService.importCampaignMembers(campaignId, rows);
-    created = result.created;
+    result = await campaignsService.importCampaignMembers(campaignId, rows);
   } catch (e) {
     if (e instanceof UnauthorizedError) return { error: "You don't have access to that campaign." };
     if (e instanceof Error) return { error: e.message };
@@ -83,7 +82,7 @@ export async function importCampaignMembersAction(
   }
 
   revalidatePath("/campanas");
-  return { ok: true, created };
+  return { ok: true, ...result };
 }
 
 export async function getCampaignMembersAction(campaignId: string) {

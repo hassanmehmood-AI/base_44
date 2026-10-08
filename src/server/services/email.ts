@@ -6,8 +6,30 @@ import * as activitiesRepo from "@/server/repositories/activities";
 import * as companiesService from "@/server/services/companies";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import * as emailProvider from "@/server/integrations/email";
+import { isValidEmailFormat } from "@/lib/email";
 
 const CHANNEL = "EMAIL";
+
+export type EmailSenderStatus = {
+  fromAddress: string | null;
+  /** Deliberately never "Connected" — isEmailConfigured() only checks that
+   * credentials are present, not that Resend has actually accepted them.
+   * "Not Verified" is the honest status until a real verified-send (or a
+   * dedicated provider health check) exists. */
+  status: "NOT_CONFIGURED" | "NOT_VERIFIED";
+};
+
+/** Session-gated (consistent with every other read in this module) even
+ * though the sender address itself isn't per-company secret data — there is
+ * exactly one sender account for the whole app (EMAIL_FROM_ADDRESS), not a
+ * per-company selection, so there's nothing to choose between here. */
+export async function getEmailSenderStatus(): Promise<EmailSenderStatus> {
+  await requireSession();
+  if (!emailProvider.isEmailConfigured()) {
+    return { fromAddress: null, status: "NOT_CONFIGURED" };
+  }
+  return { fromAddress: emailProvider.getEmailSenderAddress(), status: "NOT_VERIFIED" };
+}
 
 export async function listEmailConversationsForCurrentUser() {
   await requireSession();
@@ -49,6 +71,9 @@ export async function sendEmailToContact(input: { contactId: string; subject: st
   if (!contact) throw new UnauthorizedError("Contact not found.");
   await assertCompanyAccess(contact.companyId);
   if (!contact.email) throw new Error("This contact has no email address.");
+  if (!isValidEmailFormat(contact.email)) throw new Error("This contact's email address isn't valid.");
+  if (!input.subject.trim()) throw new Error("Subject is required.");
+  if (!input.body.trim()) throw new Error("Message body can't be empty.");
 
   const { externalId } = await emailProvider.sendEmail({
     to: contact.email,

@@ -19,6 +19,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   return (
     <DashboardShell
       user={{
+        id: session.user.id,
         name: session.user.name,
         roleKey: session.user.roleKey,
         impersonatorId: session.user.impersonatorId,

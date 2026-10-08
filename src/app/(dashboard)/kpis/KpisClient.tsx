@@ -204,7 +204,18 @@ export function KpisClient({
           </Select>
         </FilterField>
 
-        <SearchInput placeholder={t("Search metric...", "Buscar métrica...")} className="max-w-xs" />
+        {/* No metric-search backend exists for this fixed set of stat cards
+            and the chart below — disabled rather than left looking
+            functional with no actual filtering behind it. */}
+        <SearchInput
+          placeholder={t("Metric search not available", "Búsqueda de métricas no disponible")}
+          className="max-w-xs"
+          disabled
+          title={t(
+            "Metric search isn't available yet — use the Company and Period filters above to narrow these numbers.",
+            "La búsqueda de métricas aún no está disponible: usa los filtros de Empresa y Periodo arriba para acotar estos datos."
+          )}
+        />
         <Button className="ml-auto" onClick={handleExport}>
           <Download className="h-4 w-4" /> {t("Export report", "Exportar informe")}
         </Button>

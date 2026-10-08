@@ -120,8 +120,12 @@ export function CampanasActivasClient({
               </p>
             ) : (
               filteredClients.map((c) => (
-                <button
+                // Opens this exact contact's record in the CRM (reuses its
+                // existing /crm?contact= deep link) rather than just
+                // highlighting the card with nowhere to go.
+                <a
                   key={c.id}
+                  href={`/crm?contact=${c.id}`}
                   onClick={() => setSelectedClientId(c.id)}
                   className={cn(
                     "flex items-center justify-between rounded-lg px-3.5 py-2.5 text-left text-[14px] font-medium transition-colors",
@@ -137,7 +141,7 @@ export function CampanasActivasClient({
                       className="h-2 w-2 shrink-0 rounded-full bg-brand"
                     />
                   )}
-                </button>
+                </a>
               ))
             )}
           </div>

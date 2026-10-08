@@ -32,12 +32,16 @@ import { Modal } from "@/components/ui/Modal";
 import { StageBadge } from "@/components/StageBadge";
 import { useLanguage } from "@/context/LanguageContext";
 import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
+import { useCurrentUserId } from "@/context/CurrentUserContext";
 import { STAGE_TONE, STAGE_LABEL, STAGE_LABEL_ES, Stage } from "@/lib/pipeline";
 import { formatRelativeTime, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { downloadTextFile } from "@/lib/csv";
+import { loadDraft, saveDraft, clearDraft } from "@/lib/drafts";
 
-import { parseContactImportRows, CONTACTS_IMPORT_TEMPLATE_CSV, MAX_CONTACTS_IMPORT_ROWS, type ContactImportRow } from "@/lib/contactsImport";
+import { mapTableToContactRows, CONTACTS_IMPORT_TEMPLATE_CSV, MAX_CONTACTS_IMPORT_ROWS, type ContactImportRow } from "@/lib/contactsImport";
+import { readSpreadsheetFile, type SpreadsheetWorkbook } from "@/lib/spreadsheetFile";
+import { ImportResultSummaryView, type ImportResultSummary } from "@/components/ImportResultSummary";
 import type { ContactWithJoins } from "@/server/repositories/contacts";
 import type { PipelineStage } from "@/server/repositories/pipelineStages";
 import type { ActivityWithAuthor } from "@/server/repositories/activities";
@@ -77,10 +81,6 @@ const channelIcon: Record<string, React.ElementType> = {
   AUTO_ASSIGNMENT: UserCog,
 };
 
-// Same fixed option set as the original design (5 of the 7 pipeline stages) —
-// intentionally not expanded to keep the classify panel's shape unchanged.
-const CLASSIFY_STAGE_KEYS = ["NUEVO_LEAD", "CONTACTADO", "INTERESADO", "OPORTUNIDAD", "CLIENTE"];
-
 const CHANNEL_OPTIONS: { value: string; type: string; channel: string; labelEn: string; labelEs: string }[] = [
   { value: "CALL", type: "CALL", channel: "CALL", labelEn: "Call", labelEs: "Llamada" },
   { value: "WHATSAPP", type: "SOCIAL", channel: "WHATSAPP", labelEn: "WhatsApp", labelEs: "WhatsApp" },
@@ -91,6 +91,17 @@ const CHANNEL_OPTIONS: { value: string; type: string; channel: string; labelEn: 
 type CompanyOption = { id: string; name: string };
 type CampaignOption = { id: string; name: string; companyName: string };
 
+/** Everything the Classify panel's fields hold, excluding the activity-only
+ * `outcome` (derived from stageId at save time, not a separate input). */
+type ClassifyDraft = {
+  channel: string;
+  stageId: string;
+  nextAction: string;
+  assignedUserId: string;
+  notes: string;
+  followUpAt: string;
+};
+
 export function CrmClient({
   contacts,
   stages,
@@ -99,6 +110,8 @@ export function CrmClient({
   initialSelectedId,
   initialActivities,
   initialTasks,
+  deepLinkContactId,
+  deepLinkResolved,
 }: {
   contacts: ContactWithJoins[];
   stages: PipelineStage[];
@@ -107,11 +120,24 @@ export function CrmClient({
   initialSelectedId: string | null;
   initialActivities: ActivityWithAuthor[];
   initialTasks: TaskWithAssignee[];
+  /** Contact id requested via `/crm?contact=<id>` (e.g. from the Active
+   * Campaigns "assigned clients" card) — null when the page was opened
+   * without that param. */
+  deepLinkContactId: string | null;
+  /** Whether `deepLinkContactId` actually resolved to a contact this session
+   * can see (exists + company-access + role-scoping all passed server-side).
+   * Meaningless when `deepLinkContactId` is null. */
+  deepLinkResolved: boolean;
 }) {
   const { t, language } = useLanguage();
   const { activeCompany } = useCompany();
   const router = useRouter();
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
+  // Tracks whether the user has picked a contact themselves since this page
+  // loaded — distinguishes "still showing whatever a /crm?contact= link
+  // asked for" from "the user has since clicked something else", so the
+  // deep-link guard below only applies until the user actually interacts.
+  const [manualSelectionMade, setManualSelectionMade] = useState(false);
   const [historyTab, setHistoryTab] = useState("All");
   const [search, setSearch] = useState("");
   const [filterKey, setFilterKey] = useState("ALL"); // "ALL" | "MANUAL" | a campaign id
@@ -186,15 +212,28 @@ export function CrmClient({
     return companyScopedContacts.filter((c) => c.name.toLowerCase().includes(q));
   }, [companyScopedContacts, search]);
 
+  // A /crm?contact= link that failed to resolve (not found, no access, or
+  // excluded by role-scoping) or that points at a contact outside the
+  // currently active company filter. In either case we must not silently
+  // substitute a different, unrelated contact — show the empty state (with
+  // an explanatory notice below) instead, until the user picks something
+  // themselves.
+  const deepLinkBlocked =
+    !!deepLinkContactId &&
+    !manualSelectionMade &&
+    (!deepLinkResolved || !companyScopedContacts.some((c) => c.id === deepLinkContactId));
+
+  function selectContact(id: string) {
+    setSelectedId(id);
+    setManualSelectionMade(true);
+  }
+
   // Looked up from the company-scoped list, not the raw `contacts` prop: a
   // contact selected before switching companies must stop showing once it's
   // out of scope, falling back to the first in-scope contact instead.
-  const selected = companyScopedContacts.find((c) => c.id === selectedId) ?? companyScopedContacts[0];
-
-  const classifyStages = useMemo(
-    () => CLASSIFY_STAGE_KEYS.map((key) => stages.find((s) => s.key === key)).filter((s): s is PipelineStage => !!s),
-    [stages]
-  );
+  const selected = deepLinkBlocked
+    ? undefined
+    : companyScopedContacts.find((c) => c.id === selectedId) ?? companyScopedContacts[0];
 
   const filteredActivities = useMemo(() => {
     const channel = tabToChannel[historyTab];
@@ -221,8 +260,30 @@ export function CrmClient({
         subtitle={t("View, organize and classify all client contacts", "Visualiza, organiza y clasifica todos los contactos de clientes")}
       />
 
+      {deepLinkBlocked && (
+        <p className="rounded-xl border border-warning-100 bg-warning-50 px-4 py-3 text-[13px] text-warning-700">
+          {deepLinkResolved
+            ? t(
+                "That contact belongs to a different company than the one currently selected. Switch companies to view it.",
+                "Ese contacto pertenece a una empresa distinta de la seleccionada actualmente. Cambia de empresa para verlo."
+              )
+            : t(
+                "That contact is unavailable or you don't have access to it.",
+                "Ese contacto no está disponible o no tienes acceso a él."
+              )}
+        </p>
+      )}
+
       <div className="flex flex-wrap items-center gap-3">
-        <SearchInput placeholder={t("Search...", "Buscar...")} className="max-w-sm" />
+        {/* Same `search` state as the Contacts card's own search box below —
+            this is the CRM's only searchable record type, so both inputs
+            drive one shared filter rather than two disconnected ones. */}
+        <SearchInput
+          placeholder={t("Search...", "Buscar...")}
+          className="max-w-sm"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" /> {t("New contact", "Nuevo contacto")}
         </Button>
@@ -257,7 +318,7 @@ export function CrmClient({
           stages={stages}
           contacts={filteredContacts}
           onSelect={(id) => {
-            setSelectedId(id);
+            selectContact(id);
             setView("list");
           }}
           onMoved={() => router.refresh()}
@@ -303,7 +364,7 @@ export function CrmClient({
                 {filteredContacts.map((c) => (
                   <button
                     key={c.id}
-                    onClick={() => setSelectedId(c.id)}
+                    onClick={() => selectContact(c.id)}
                     className={cn(
                       "flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
                       selectedId === c.id || (!selectedId && selected?.id === c.id) ? "bg-brand-50" : "hover:bg-surface-muted"
@@ -486,7 +547,7 @@ export function CrmClient({
           <ClassifyPanel
             key={selected.id}
             contact={selected}
-            stages={classifyStages}
+            stages={stages}
             users={assignableUsers}
             onSaved={(newActivity) => {
               startTransition(() => setActivities((prev) => [newActivity, ...prev]));
@@ -946,14 +1007,35 @@ function ClassifyPanel({
   onSaved: (activity: ActivityWithAuthor) => void;
 }) {
   const { t } = useLanguage();
-  const [channel, setChannel] = useState(CHANNEL_OPTIONS[0].value);
-  const [stageId, setStageId] = useState(stages.find((s) => s.key === contact.stageKey)?.id ?? stages[0]?.id ?? "");
-  const [nextAction, setNextAction] = useState("");
-  const [assignedUserId, setAssignedUserId] = useState(contact.assignedUserId ?? "");
-  const [notes, setNotes] = useState("");
-  const [followUpAt, setFollowUpAt] = useState("");
+  const userId = useCurrentUserId();
+  // Restored once per contact (this panel remounts on every contact switch
+  // via its `key={selected.id}` in CrmClient — see below), never copied from
+  // a different contact's draft: keyed by this exact contact.id/companyId.
+  const draft = loadDraft<ClassifyDraft>("classify", userId, contact.companyId, contact.id);
+  const [channel, setChannel] = useState(draft?.channel ?? CHANNEL_OPTIONS[0].value);
+  // The contact's actual saved stage, verbatim — never swapped to another
+  // stage (e.g. "New Lead") just because the catalog below doesn't happen to
+  // list it. Guarantees an existing status like "Order in progress" or
+  // "Follow-up" survives opening this panel unless the user explicitly picks
+  // a different one and saves.
+  const classifyStages = useMemo(
+    () =>
+      stages.some((s) => s.key === contact.stageKey)
+        ? stages
+        : [{ id: contact.pipelineStageId, key: contact.stageKey, position: -1, isActive: false } as PipelineStage, ...stages],
+    [stages, contact.stageKey, contact.pipelineStageId]
+  );
+  // A draft's in-progress stage pick is only restored into this dropdown —
+  // it never touches the contact's actually-saved status, which stays
+  // whatever it was until the user explicitly saves again.
+  const [stageId, setStageId] = useState(draft?.stageId ?? contact.pipelineStageId);
+  const [nextAction, setNextAction] = useState(draft?.nextAction ?? "");
+  const [assignedUserId, setAssignedUserId] = useState(draft?.assignedUserId ?? contact.assignedUserId ?? "");
+  const [notes, setNotes] = useState(draft?.notes ?? "");
+  const [followUpAt, setFollowUpAt] = useState(draft?.followUpAt ?? "");
   const [error, setError] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
+  const [draftWarning, setDraftWarning] = useState<string | undefined>();
 
   const nextActionOptions = [
     { value: t("Call back", "Volver a llamar") },
@@ -962,9 +1044,47 @@ function ClassifyPanel({
     { value: t("Send quote", "Enviar presupuesto") },
   ];
 
+  // Autosaves every field on each change — remounting on contact switch
+  // (see the `key` prop where this panel is used) means the latest edits are
+  // already in localStorage before the unmount, and the same effect is what
+  // lets a refresh restore them. Never submitted to the server by itself —
+  // only handleSave() below writes to the database.
+  useEffect(() => {
+    const isBlank =
+      !notes.trim() &&
+      !nextAction.trim() &&
+      !followUpAt &&
+      stageId === contact.pipelineStageId &&
+      assignedUserId === (contact.assignedUserId ?? "") &&
+      channel === CHANNEL_OPTIONS[0].value;
+    if (isBlank) {
+      clearDraft("classify", userId, contact.companyId, contact.id);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs a warning banner to an external system (localStorage write outcome), not a reactive cascade
+      setDraftWarning(undefined);
+      return;
+    }
+    const ok = saveDraft("classify", userId, contact.companyId, contact.id, {
+      channel,
+      stageId,
+      nextAction,
+      assignedUserId,
+      notes,
+      followUpAt,
+    });
+    setDraftWarning(
+      ok
+        ? undefined
+        : t(
+            "Your changes couldn't be saved locally — save your classification before switching contacts.",
+            "No se pudieron guardar tus cambios localmente: guarda la clasificación antes de cambiar de contacto."
+          )
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- contact.pipelineStageId/assignedUserId are the "blank" baseline, not reactive inputs to re-save on
+  }, [channel, stageId, nextAction, assignedUserId, notes, followUpAt, userId, contact.companyId, contact.id, t]);
+
   async function handleSave() {
     const channelOpt = CHANNEL_OPTIONS.find((c) => c.value === channel)!;
-    const stage = stages.find((s) => s.id === stageId);
+    const stage = classifyStages.find((s) => s.id === stageId);
     if (!stage) {
       setError(t("Select a stage.", "Selecciona una etapa."));
       return;
@@ -983,9 +1103,12 @@ function ClassifyPanel({
     });
     setSaving(false);
     if (result.error || !result.activity) {
+      // Save failed — leave the draft (and the autosave effect) exactly as
+      // they are so the user's changes survive a retry.
       setError(result.error ?? t("Something went wrong.", "Algo salió mal."));
       return;
     }
+    clearDraft("classify", userId, contact.companyId, contact.id);
     onSaved(result.activity);
     setNotes("");
     setFollowUpAt("");
@@ -1010,7 +1133,7 @@ function ClassifyPanel({
 
       <Field label={t("CONTACT RESULT", "RESULTADO DE CONTACTO")}>
         <Select value={stageId} onChange={(e) => setStageId(e.target.value)}>
-          {stages.map((s) => (
+          {classifyStages.map((s) => (
             <option key={s.id} value={s.id}>
               {STAGE_LABEL[s.key as Stage] ?? s.key}
             </option>
@@ -1053,6 +1176,7 @@ function ClassifyPanel({
         />
       </Field>
 
+      {draftWarning && <p className="text-[12px] text-warning-700">{draftWarning}</p>}
       {error && <p className="text-[13px] text-danger">{error}</p>}
 
       <Button className="mt-1 w-full" disabled={saving} onClick={handleSave}>
@@ -1163,11 +1287,13 @@ function ImportContactsPanel({
   const { t } = useLanguage();
   const [companyId, setCompanyId] = useState(defaultCompanyId ?? "");
   const [fileName, setFileName] = useState("");
+  const [workbook, setWorkbook] = useState<SpreadsheetWorkbook | null>(null);
+  const [sheetName, setSheetName] = useState("");
   const [rows, setRows] = useState<ImportRow[] | null>(null);
   const [fileError, setFileError] = useState<string | undefined>();
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | undefined>();
-  const [result, setResult] = useState<number | null>(null);
+  const [result, setResult] = useState<ImportResultSummary | null>(null);
 
   const validRows = rows?.filter((r) => r.valid) ?? [];
   const invalidCount = (rows?.length ?? 0) - validRows.length;
@@ -1177,28 +1303,43 @@ function ImportContactsPanel({
     downloadTextFile(CONTACTS_IMPORT_TEMPLATE_CSV, "contacts-template.csv");
   }
 
-  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+  function applySheet(wb: SpreadsheetWorkbook, sheet: string) {
+    const { rows: parsed, error: parseError } = mapTableToContactRows(wb.getRows(sheet), t);
+    if (parseError) {
+      setFileError(parseError);
+      setRows(null);
+      return;
+    }
+    setFileError(undefined);
+    setRows(parsed);
+  }
+
+  function handleSheetChange(next: string) {
+    setSheetName(next);
+    if (workbook) applySheet(workbook, next);
+  }
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
     setFileName(file.name);
     setRows(null);
+    setWorkbook(null);
+    setSheetName("");
     setFileError(undefined);
     setError(undefined);
     setResult(null);
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = typeof reader.result === "string" ? reader.result : "";
-      const { rows: parsed, error: parseError } = parseContactImportRows(text, t);
-      if (parseError) {
-        setFileError(parseError);
-        return;
-      }
-      setRows(parsed);
-    };
-    reader.onerror = () => setFileError(t("Could not read that file.", "No se pudo leer el archivo."));
-    reader.readAsText(file);
+    const { workbook: wb, error: readError } = await readSpreadsheetFile(file, t);
+    if (readError || !wb) {
+      setFileError(readError ?? t("Could not read that file.", "No se pudo leer el archivo."));
+      return;
+    }
+    setWorkbook(wb);
+    const firstSheet = wb.sheetNames[0];
+    setSheetName(firstSheet);
+    applySheet(wb, firstSheet);
   }
 
   async function handleImport() {
@@ -1225,32 +1366,26 @@ function ImportContactsPanel({
       setError(res.error);
       return;
     }
-    setResult(res.created ?? 0);
+    setResult({
+      totalRows: res.totalRows ?? rowsToSend.length,
+      created: res.created ?? 0,
+      duplicatesInFile: res.duplicatesInFile ?? 0,
+      duplicatesExisting: res.duplicatesExisting ?? 0,
+    });
   }
 
   function handleReset() {
     setFileName("");
     setRows(null);
+    setWorkbook(null);
+    setSheetName("");
     setFileError(undefined);
     setError(undefined);
     setResult(null);
   }
 
   if (result !== null) {
-    return (
-      <div className="flex flex-col items-center gap-4 py-6 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success/10 text-success">
-          <CheckCircle2 className="h-6 w-6" />
-        </div>
-        <p className="text-[15px] font-semibold text-text-primary">
-          {t(
-            `${result} contact${result === 1 ? "" : "s"} imported.`,
-            `${result} contacto${result === 1 ? "" : "s"} importado${result === 1 ? "" : "s"}.`
-          )}
-        </p>
-        <Button onClick={onImported}>{t("Done", "Listo")}</Button>
-      </div>
-    );
+    return <ImportResultSummaryView result={result} invalidCount={invalidCount} onDone={onImported} />;
   }
 
   return (
@@ -1288,9 +1423,14 @@ function ImportContactsPanel({
         <label className="flex cursor-pointer flex-col items-center gap-2 rounded-xl border border-dashed border-border px-6 py-8 text-center hover:bg-surface-muted">
           <Upload className="h-6 w-6 text-text-tertiary" />
           <span className="text-[13.5px] font-medium text-text-primary">
-            {fileName || t("Click to choose a CSV file", "Haz clic para elegir un archivo CSV")}
+            {fileName || t("Click to choose a CSV or Excel file", "Haz clic para elegir un archivo CSV o Excel")}
           </span>
-          <input type="file" accept=".csv,text/csv" onChange={handleFile} className="hidden" />
+          <input
+            type="file"
+            accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+            onChange={handleFile}
+            className="hidden"
+          />
         </label>
       )}
 
@@ -1298,6 +1438,18 @@ function ImportContactsPanel({
         <p className="flex items-center gap-1.5 text-[13px] text-danger">
           <AlertCircle className="h-4 w-4 shrink-0" /> {fileError}
         </p>
+      )}
+
+      {workbook && workbook.sheetNames.length > 1 && (
+        <Field label={t("SHEET", "HOJA")}>
+          <Select value={sheetName} onChange={(e) => handleSheetChange(e.target.value)}>
+            {workbook.sheetNames.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </Select>
+        </Field>
       )}
 
       {rows && (

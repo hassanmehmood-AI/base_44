@@ -41,13 +41,26 @@ export function RedesSocialesClient({
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [search, setSearch] = useState("");
 
   const filtered = conversations.filter((c) => activeCompany === ALL_COMPANIES || c.companyName === activeCompany);
-  // Looked up from the company-scoped list (not raw `conversations`): a
-  // conversation selected before switching companies must stop showing once
-  // it's out of scope, falling back to the empty state instead of another
-  // company's data.
-  const selected = filtered.find((c) => c.id === selectedId);
+
+  // Searches the sender/subject text actually shown on each row — a social
+  // conversation doesn't carry its own phone/email (that lives on the linked
+  // contact, if any), so those aren't searchable here.
+  const searched = (() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return filtered;
+    return filtered.filter(
+      (c) => (c.contactName ?? "").toLowerCase().includes(q) || (c.subject ?? "").toLowerCase().includes(q)
+    );
+  })();
+
+  // Looked up from the searched/company-scoped list (not raw `conversations`):
+  // a conversation selected before switching companies or searching must stop
+  // showing once it's filtered out, falling back to the empty state instead
+  // of another, unrelated conversation.
+  const selected = searched.find((c) => c.id === selectedId);
 
   function applyConversationUpdate(updated: ConversationWithJoins) {
     setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
@@ -79,7 +92,14 @@ export function RedesSocialesClient({
       <PageHeader
         title={t("Social Media", "Redes Sociales")}
         subtitle={t("Social inbox and comment responses", "Bandeja social y respuesta a comentarios")}
-        actions={<SearchInput placeholder={t("Search client, phone or email...", "Buscar cliente, teléfono o correo...")} className="max-w-sm" />}
+        actions={
+          <SearchInput
+            placeholder={t("Search client, phone or email...", "Buscar cliente, teléfono o correo...")}
+            className="max-w-sm"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        }
       />
 
       <div className="w-[220px]">
@@ -97,11 +117,11 @@ export function RedesSocialesClient({
         <Card className="flex flex-col gap-3 p-5">
           <div className="flex items-center justify-between">
             <CardTitle>{t("Social inbox", "Bandeja social")}</CardTitle>
-            <Badge tone="green">{filtered.length}</Badge>
+            <Badge tone="green">{searched.length}</Badge>
           </div>
 
           <div className="flex flex-col gap-1">
-            {filtered.map((c) => (
+            {searched.map((c) => (
               <button
                 key={c.id}
                 onClick={() => selectConversation(c.id)}
@@ -123,9 +143,11 @@ export function RedesSocialesClient({
                 </div>
               </button>
             ))}
-            {filtered.length === 0 && (
+            {searched.length === 0 && (
               <p className="py-6 text-center text-[13px] text-text-tertiary">
-                {t("No social messages yet. They'll appear here once the channel is connected.", "Aún no hay mensajes. Aparecerán aquí cuando el canal esté conectado.")}
+                {filtered.length === 0
+                  ? t("No social messages yet. They'll appear here once the channel is connected.", "Aún no hay mensajes. Aparecerán aquí cuando el canal esté conectado.")
+                  : t("No conversations match your search.", "Ninguna conversación coincide con tu búsqueda.")}
               </p>
             )}
           </div>

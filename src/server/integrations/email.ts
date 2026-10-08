@@ -26,6 +26,13 @@ export function isEmailConfigured(): boolean {
   return Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM_ADDRESS);
 }
 
+/** The sender address only — never the API key. Safe to send to the client
+ * (it's the address recipients see in their inbox anyway), unlike
+ * RESEND_API_KEY which must never leave the server. */
+export function getEmailSenderAddress(): string | null {
+  return process.env.EMAIL_FROM_ADDRESS ?? null;
+}
+
 export async function sendEmail(input: { to: string; subject: string; body: string }): Promise<{ externalId: string | null }> {
   const { apiKey, from } = getConfig();
 

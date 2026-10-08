@@ -141,6 +141,16 @@ export async function createContact(input: {
 
 const MAX_IMPORT_ROWS = 500;
 
+function normalizeEmail(email: string | null | undefined): string | null {
+  const trimmed = (email ?? "").trim().toLowerCase();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizePhone(phone: string | null | undefined): string | null {
+  const digits = (phone ?? "").replace(/\D/g, "");
+  return digits.length > 0 ? digits : null;
+}
+
 /** CSV/Excel import (CRM "Import Excel/CSV"): the client already parsed and
  * previewed the file, so this only re-validates (never trust client input)
  * and bulk-inserts. Every row lands in the same company/stage — one row's
@@ -155,6 +165,14 @@ const MAX_IMPORT_ROWS = 500;
  * every newly created row gets it (same per-company cursor as createContact —
  * one lock acquisition for the whole batch, so a 20-row import distributes
  * fairly across agents in one atomic pass, not 20 separate races). */
+export type ImportContactsResult = {
+  totalRows: number;
+  created: number;
+  duplicatesInFile: number;
+  duplicatesExisting: number;
+  contactIds: string[];
+};
+
 export async function importContacts(
   companyId: string,
   pipelineStageId: string,
@@ -166,21 +184,67 @@ export async function importContacts(
     leadSource?: string | null;
   }>,
   options?: { skipRoundRobin?: boolean }
-) {
+): Promise<ImportContactsResult> {
   const session = await assertCompanyAccess(companyId);
-  if (rows.length === 0) return { created: 0, contactIds: [] };
+  const totalRows = rows.length;
+  const empty = { totalRows, created: 0, duplicatesInFile: 0, duplicatesExisting: 0, contactIds: [] };
+  if (rows.length === 0) return empty;
   if (rows.length > MAX_IMPORT_ROWS) throw new Error(`Can't import more than ${MAX_IMPORT_ROWS} contacts at once.`);
 
+  // Client already re-validates/previews before calling this (never trust
+  // client input), so this is a defensive re-check, not the primary filter.
   const validRows = rows.filter((r) => r.name.trim().length > 0);
-  if (validRows.length === 0) return { created: 0, contactIds: [] };
+  if (validRows.length === 0) return empty;
+
+  // Duplicate check, scoped to this company only (never compared across
+  // companies — a shared email/phone in a different company is not a
+  // duplicate under current business rules): first collapse repeats within
+  // the file itself, then drop anything matching a contact that already
+  // exists here. Matching is by normalized email OR phone; a row with
+  // neither never matches anything, since there's nothing reliable to
+  // compare. Existing contacts are only ever skipped, never overwritten.
+  const existing = await contactsRepo.findEmailsAndPhonesByCompanyId(companyId);
+  const existingEmails = new Set(existing.map((c) => normalizeEmail(c.email)).filter((v): v is string => v !== null));
+  const existingPhones = new Set(existing.map((c) => normalizePhone(c.phone)).filter((v): v is string => v !== null));
+
+  const seenEmails = new Set<string>();
+  const seenPhones = new Set<string>();
+  let duplicatesInFile = 0;
+  let duplicatesExisting = 0;
+  const dedupedRows: typeof validRows = [];
+
+  for (const r of validRows) {
+    const email = normalizeEmail(r.email);
+    const phone = normalizePhone(r.phone);
+
+    if (email || phone) {
+      const inFile = (email !== null && seenEmails.has(email)) || (phone !== null && seenPhones.has(phone));
+      if (inFile) {
+        duplicatesInFile++;
+        continue;
+      }
+      const inDb = (email !== null && existingEmails.has(email)) || (phone !== null && existingPhones.has(phone));
+      if (inDb) {
+        duplicatesExisting++;
+        continue;
+      }
+      if (email) seenEmails.add(email);
+      if (phone) seenPhones.add(phone);
+    }
+    dedupedRows.push(r);
+  }
+
+  if (dedupedRows.length === 0) {
+    return { totalRows, created: 0, duplicatesInFile, duplicatesExisting, contactIds: [] };
+  }
 
   return contactsRepo.withTransaction(async (tx) => {
     const assignments = options?.skipRoundRobin
       ? []
-      : await roundRobinService.pickNextAgents(tx, companyId, validRows.length);
+      : await roundRobinService.pickNextAgents(tx, companyId, dedupedRows.length);
 
     const created = await contactsRepo.createMany(
-      validRows.map((r, i) => ({
+      dedupedRows.map((r, i) => ({
         companyId,
         pipelineStageId,
         name: r.name.trim(),
@@ -212,7 +276,13 @@ export async function importContacts(
       );
     }
 
-    return { created: created.length, contactIds: created.map((c) => c.id) };
+    return {
+      totalRows,
+      created: created.length,
+      duplicatesInFile,
+      duplicatesExisting,
+      contactIds: created.map((c) => c.id),
+    };
   });
 }
 

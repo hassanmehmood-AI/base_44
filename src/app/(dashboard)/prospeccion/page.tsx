@@ -50,13 +50,14 @@ export default function ProspeccionPage() {
 
   const activeCampaign = campaigns.find((c) => c.id === selectedCampaign) ?? campaigns[0];
 
-  const filteredRows = useMemo(
-    () =>
-      prospects.filter((p) =>
-        p.empresa.toLowerCase().includes(tableSearch.toLowerCase())
-      ),
-    [tableSearch]
-  );
+  const filteredRows = useMemo(() => {
+    const q = tableSearch.trim().toLowerCase();
+    if (!q) return prospects;
+    // `contacto` is this mock dataset's phone number field — there's no
+    // separate customer-name or email field on a prospect, only the company
+    // name (`empresa`) and phone, so those are what's actually searchable.
+    return prospects.filter((p) => p.empresa.toLowerCase().includes(q) || p.contacto.toLowerCase().includes(q));
+  }, [tableSearch]);
 
   function toggleRow(id: string) {
     setChecked((prev) => {
@@ -85,7 +86,15 @@ export default function ProspeccionPage() {
       />
 
       <div className="flex flex-col gap-3 sm:flex-row">
-        <SearchInput placeholder={t("Search client, phone or email...", "Buscar cliente, teléfono o correo...")} />
+        {/* Same `tableSearch` state as the Results table's own search box
+            below — this mock dataset has one list of prospects, so both
+            inputs drive the one real filter rather than two disconnected
+            ones. */}
+        <SearchInput
+          placeholder={t("Search client, phone or email...", "Buscar cliente, teléfono o correo...")}
+          value={tableSearch}
+          onChange={(e) => setTableSearch(e.target.value)}
+        />
         <Button className="sm:w-auto">
           <Plus className="h-4 w-4" /> {t("New search", "Nueva búsqueda")}
         </Button>
