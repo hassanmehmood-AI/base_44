@@ -92,7 +92,10 @@ export function SoporteClient({
   const companyScoped =
     activeCompany === ALL_COMPANIES ? tickets : tickets.filter((tk) => tk.companyName === activeCompany);
   const list = tab === "all" ? companyScoped : companyScoped.filter((tk) => tk.createdBy === currentUserId);
-  const selected = tickets.find((tk) => tk.id === selectedId);
+  // Looked up from the company-scoped list (not raw `tickets`): a ticket
+  // selected before switching companies must stop showing once it's out of
+  // scope, falling back to the empty state instead of another company's data.
+  const selected = companyScoped.find((tk) => tk.id === selectedId);
 
   async function selectTicket(id: string) {
     setSelectedId(id);

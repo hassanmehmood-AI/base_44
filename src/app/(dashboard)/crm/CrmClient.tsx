@@ -31,7 +31,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { Modal } from "@/components/ui/Modal";
 import { StageBadge } from "@/components/StageBadge";
 import { useLanguage } from "@/context/LanguageContext";
-import { useCompany } from "@/context/CompanyContext";
+import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { STAGE_TONE, STAGE_LABEL, STAGE_LABEL_ES, Stage } from "@/lib/pipeline";
 import { formatRelativeTime, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -146,8 +146,6 @@ export function CrmClient({
     [t("Social Media", "Redes Sociales")]: "SOCIAL",
   };
 
-  const selected = contacts.find((c) => c.id === selectedId) ?? contacts[0];
-
   // Fetches the "Manual Leads" / specific-campaign member list whenever one
   // of those is selected. "All Contacts" needs no fetch — it's just the
   // already-loaded `contacts` prop, used directly below. Also re-fetches
@@ -171,11 +169,27 @@ export function CrmClient({
 
   const scopedContacts = filterKey === "ALL" ? contacts : rawScopedContacts;
 
+  // Narrows the already-fetched (all-allowed-companies) list down to the
+  // company selected in the switcher — same pattern as every other
+  // CompanyContext consumer (Soporte, Campañas, KPIs, Canales/*). Contacts
+  // are fetched server-side scoped to every company the session is allowed
+  // to see, not to this one selection, so this client-side pass is what
+  // actually makes the switcher affect what's shown here.
+  const companyScopedContacts = useMemo(
+    () => (activeCompany === ALL_COMPANIES ? scopedContacts : scopedContacts.filter((c) => c.companyName === activeCompany)),
+    [scopedContacts, activeCompany]
+  );
+
   const filteredContacts = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return scopedContacts;
-    return scopedContacts.filter((c) => c.name.toLowerCase().includes(q));
-  }, [scopedContacts, search]);
+    if (!q) return companyScopedContacts;
+    return companyScopedContacts.filter((c) => c.name.toLowerCase().includes(q));
+  }, [companyScopedContacts, search]);
+
+  // Looked up from the company-scoped list, not the raw `contacts` prop: a
+  // contact selected before switching companies must stop showing once it's
+  // out of scope, falling back to the first in-scope contact instead.
+  const selected = companyScopedContacts.find((c) => c.id === selectedId) ?? companyScopedContacts[0];
 
   const classifyStages = useMemo(
     () => CLASSIFY_STAGE_KEYS.map((key) => stages.find((s) => s.key === key)).filter((s): s is PipelineStage => !!s),
@@ -313,7 +327,7 @@ export function CrmClient({
                 ))}
                 {filteredContacts.length === 0 && (
                   <p className="px-3 py-6 text-center text-[13px] text-text-tertiary">
-                    {scopedContacts.length === 0
+                    {companyScopedContacts.length === 0
                       ? t("No contacts for this filter.", "No hay contactos para este filtro.")
                       : t("No contacts match your search.", "Ningún contacto coincide con tu búsqueda.")}
                   </p>

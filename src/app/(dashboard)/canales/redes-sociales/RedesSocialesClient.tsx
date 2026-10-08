@@ -43,7 +43,11 @@ export function RedesSocialesClient({
   const [loadingDetail, setLoadingDetail] = useState(false);
 
   const filtered = conversations.filter((c) => activeCompany === ALL_COMPANIES || c.companyName === activeCompany);
-  const selected = conversations.find((c) => c.id === selectedId);
+  // Looked up from the company-scoped list (not raw `conversations`): a
+  // conversation selected before switching companies must stop showing once
+  // it's out of scope, falling back to the empty state instead of another
+  // company's data.
+  const selected = filtered.find((c) => c.id === selectedId);
 
   function applyConversationUpdate(updated: ConversationWithJoins) {
     setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));

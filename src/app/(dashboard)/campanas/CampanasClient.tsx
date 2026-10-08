@@ -105,7 +105,26 @@ export function CampanasClient({
     );
   }, [stats, activeCompany]);
 
-  const selectedCampaign = campaigns.find((c) => c.id === selectedCampaignId);
+  // Looked up from the company-scoped list (not raw `campaigns`): a campaign
+  // selected before switching companies must stop showing once it's out of
+  // scope, falling back to the empty state instead of another company's data.
+  const selectedCampaign = filteredCampaigns.find((c) => c.id === selectedCampaignId);
+
+  // Clears the members table (and its filters) once the selected campaign
+  // falls outside the active company — otherwise the "members" badge count
+  // and filter chips would keep showing stale data for a campaign that's no
+  // longer even visible above.
+  useEffect(() => {
+    if (selectedCampaignId && !filteredCampaigns.some((c) => c.id === selectedCampaignId)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- resets derived selection state when the active company changes it out from under us, not a reactive cascade
+      setSelectedCampaignId(null);
+      setMembers([]);
+      setCanalChecked(new Set());
+      setAgenteChecked(new Set());
+      setStatusFilter("");
+      setMemberSearch("");
+    }
+  }, [filteredCampaigns, selectedCampaignId]);
 
   async function selectCampaign(id: string) {
     setSelectedCampaignId(id);

@@ -54,7 +54,10 @@ export function LlamadasClient({
   const [loadingDetail, setLoadingDetail] = useState(false);
 
   const filteredQueue = queue.filter((c) => activeCompany === ALL_COMPANIES || c.companyName === activeCompany);
-  const selected = queue.find((c) => c.id === selectedId);
+  // Looked up from the company-scoped queue (not raw `queue`): a contact
+  // selected before switching companies must stop showing once it's out of
+  // scope, falling back to the empty state instead of another company's data.
+  const selected = filteredQueue.find((c) => c.id === selectedId);
 
   async function selectContact(id: string) {
     setSelectedId(id);
