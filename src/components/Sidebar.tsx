@@ -27,6 +27,8 @@ import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 import { cn } from "@/lib/cn";
 import { Avatar } from "@/components/ui/Avatar";
+import { Button } from "@/components/ui/Button";
+import { Modal } from "@/components/ui/Modal";
 import { useCompanyLabel } from "@/components/CompanySwitcher";
 import { UserSwitcherMenu, type ImpersonatableUser } from "@/components/UserSwitcher";
 import { signOutAction, stopImpersonationAction } from "@/app/(dashboard)/actions";
@@ -39,6 +41,11 @@ import { useLanguage } from "@/context/LanguageContext";
 
 const REVEAL =
   "whitespace-nowrap lg:opacity-0 lg:-translate-x-1 transition-all duration-[650ms] ease-[cubic-bezier(0.16,1,0.3,1)] delay-0 lg:group-hover:delay-200 lg:group-hover:opacity-100 lg:group-hover:translate-x-0";
+
+// The confirm button lives inside a portal-rendered Modal, outside this
+// form's DOM subtree — the HTML `form` attribute (by id) is what still lets
+// it submit this exact form regardless of where it's rendered.
+const SIGN_OUT_FORM_ID = "sidebar-sign-out-form";
 
 function NavItem({
   href,
@@ -106,6 +113,7 @@ export function Sidebar({
   const channelsActive = pathname.startsWith("/canales");
   const [channelsOpen, setChannelsOpen] = useState(true);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [returnPending, startReturnTransition] = useTransition();
   const switchUserRef = useRef<HTMLButtonElement>(null);
   const companyLabel = useCompanyLabel();
@@ -221,10 +229,17 @@ export function Sidebar({
           </p>
         </div>
         {isImpersonating ? (
+          // Distinct amber pill (not just a hover color, unlike Switch
+          // user/Sign out) so this is never mistaken for the adjacent
+          // Sign out button — same warning tone already used for the
+          // "Viewing as ..." impersonation banner above the page.
           <button
             onClick={handleReturn}
             disabled={returnPending}
-            className={cn("shrink-0 text-sidebar-text-dim hover:text-sidebar-heading disabled:opacity-60", REVEAL)}
+            className={cn(
+              "flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-warning-50 text-warning-700 hover:bg-warning-100 disabled:opacity-60",
+              REVEAL
+            )}
             aria-label={t("Return to my account", "Volver a mi cuenta")}
             title={t("Return to my account", "Volver a mi cuenta")}
           >
@@ -247,10 +262,13 @@ export function Sidebar({
         )}
         {/* Scrubs this user's locally-saved drafts before the sign-out
             request fires, so unsent email/classification text doesn't linger
-            in localStorage for the next person on a shared machine. */}
-        <form action={signOutAction} onSubmit={() => clearAllDraftsForUser(userId)}>
+            in localStorage for the next person on a shared machine. The
+            actual submit button lives in the confirmation Modal below (see
+            SIGN_OUT_FORM_ID) — this button only opens that dialog. */}
+        <form id={SIGN_OUT_FORM_ID} action={signOutAction} onSubmit={() => clearAllDraftsForUser(userId)}>
           <button
-            type="submit"
+            type="button"
+            onClick={() => setLogoutConfirmOpen(true)}
             className={cn("shrink-0 text-sidebar-text-dim hover:text-danger", REVEAL)}
             aria-label={t("Sign out", "Cerrar sesión")}
             title={t("Sign out", "Cerrar sesión")}
@@ -259,6 +277,26 @@ export function Sidebar({
           </button>
         </form>
       </div>
+
+      <Modal
+        open={logoutConfirmOpen}
+        onClose={() => setLogoutConfirmOpen(false)}
+        title={t("Sign out?", "¿Cerrar sesión?")}
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-[13.5px] leading-6 text-text-secondary">
+            {t("Are you sure you want to sign out?", "¿Seguro que quieres cerrar sesión?")}
+          </p>
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={() => setLogoutConfirmOpen(false)}>
+              {t("Cancel", "Cancelar")}
+            </Button>
+            <Button type="submit" form={SIGN_OUT_FORM_ID} variant="dark">
+              {t("Confirm", "Confirmar")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       {canSwitchUser && (
         <UserSwitcherMenu
