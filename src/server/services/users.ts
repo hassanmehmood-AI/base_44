@@ -4,7 +4,8 @@ import * as accessRepo from "@/server/repositories/access";
 import * as companiesRepo from "@/server/repositories/companies";
 import * as managerAgentRepo from "@/server/repositories/managerAgentAssignments";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
-import type { RoleKey, ModuleKey } from "@/server/constants";
+import { DEFAULT_MODULES_BY_ROLE, type RoleKey, type ModuleKey } from "@/server/constants";
+import type { UserWithRole } from "@/server/repositories/users";
 
 export async function getAssignableUsersForCompany(companyId: string) {
   await assertCompanyAccess(companyId);
@@ -130,13 +131,44 @@ export async function listUsersForDirector() {
   return usersRepo.findUsersByRolesForCompanies(session.user.companyIds, ["CALL_CENTER_LEAD", "CALL_CENTER_AGENT"]);
 }
 
-export async function getUserAccess(userId: string) {
+/** Authorization boundary shared by getUserAccess/updateUserPermissions/
+ * resetUserPermissionsToRoleDefault: who may view or edit a target user's
+ * company/module access.
+ *  - Superuser: any target.
+ *  - Director: only a CALL_CENTER_LEAD or CALL_CENTER_AGENT who already has
+ *    access to one of the Director's own companies — never a peer Director,
+ *    a Superuser, a Marketing user, or a user scoped to a company the
+ *    Director doesn't have. Mirrors the same role pair createUser already
+ *    lets a Director create.
+ *  - Everyone else: no access.
+ * `callerIsDirector` tells the caller whether company access may be touched
+ * — only a Superuser may change which companies a user can reach; a
+ * Director's own scope is itself company-bound, so they manage module
+ * access only.
+ */
+async function assertCanManagePermissionsFor(userId: string): Promise<{ target: UserWithRole; callerIsDirector: boolean }> {
   const session = await requireSession();
-  if (session.user.roleKey !== "SUPERUSER") throw new UnauthorizedError("Only Superusers can view user permissions.");
+  const target = await usersRepo.findById(userId);
+  if (!target) throw new Error("User not found.");
 
-  const user = await usersRepo.findById(userId);
-  if (!user) throw new Error("User not found.");
-  if (user.roleKey === "SUPERUSER") return { companyIds: [], modules: [] as ModuleKey[], isSuperuser: true };
+  if (session.user.roleKey === "SUPERUSER") return { target, callerIsDirector: false };
+
+  if (session.user.roleKey === "DIRECTOR") {
+    if (target.roleKey !== "CALL_CENTER_LEAD" && target.roleKey !== "CALL_CENTER_AGENT") {
+      throw new UnauthorizedError("Directors can only manage permissions for Call Center Managers or Agents.");
+    }
+    const targetCompanyIds = await accessRepo.findCompanyIdsForUser(userId);
+    const sharesCompany = targetCompanyIds.some((id) => session.user.companyIds.includes(id));
+    if (!sharesCompany) throw new UnauthorizedError("You can only manage permissions for users in your own company.");
+    return { target, callerIsDirector: true };
+  }
+
+  throw new UnauthorizedError("Only Superusers and Directors can manage permissions.");
+}
+
+export async function getUserAccess(userId: string) {
+  const { target } = await assertCanManagePermissionsFor(userId);
+  if (target.roleKey === "SUPERUSER") return { companyIds: [], modules: [] as ModuleKey[], isSuperuser: true };
 
   const [companyIds, modules] = await Promise.all([
     accessRepo.findCompanyIdsForUser(userId),
@@ -152,20 +184,37 @@ export type UpdateUserPermissionsInput = {
 };
 
 export async function updateUserPermissions(input: UpdateUserPermissionsInput) {
-  const session = await requireSession();
-  if (session.user.roleKey !== "SUPERUSER") throw new UnauthorizedError("Only Superusers can edit permissions.");
-
-  const user = await usersRepo.findById(input.userId);
-  if (!user) throw new Error("User not found.");
-  if (user.roleKey === "SUPERUSER") {
+  const { target, callerIsDirector } = await assertCanManagePermissionsFor(input.userId);
+  if (target.roleKey === "SUPERUSER") {
     throw new Error("Superusers have implicit access to every company and module and cannot be edited.");
   }
 
-  const validCompanyIds = input.companyIds.length
-    ? (await companiesRepo.findByIds(input.companyIds)).map((c) => c.id)
-    : [];
-  await accessRepo.replaceCompanyAccess(input.userId, validCompanyIds);
   await accessRepo.replaceModuleAccess(input.userId, input.modules);
+
+  if (!callerIsDirector) {
+    const validCompanyIds = input.companyIds.length
+      ? (await companiesRepo.findByIds(input.companyIds)).map((c) => c.id)
+      : [];
+    await accessRepo.replaceCompanyAccess(input.userId, validCompanyIds);
+  }
+}
+
+/** "Reset by role" — overwrites the target's module grants with the
+ * approved baseline for their role (see DEFAULT_MODULES_BY_ROLE). Deliberately
+ * leaves company access, assigned contacts, and every other record
+ * untouched — this resets what they can SEE inside a company they already
+ * have, not which companies or clients they have. Same authorization
+ * boundary as updateUserPermissions (Superuser: anyone; Director: their own
+ * company's Managers/Agents only). Returns the applied module list so the
+ * caller can update its UI without a second round trip. */
+export async function resetUserPermissionsToRoleDefault(userId: string): Promise<ModuleKey[]> {
+  const { target } = await assertCanManagePermissionsFor(userId);
+  if (target.roleKey === "SUPERUSER") {
+    throw new Error("Superusers have implicit access to every company and module and cannot be edited.");
+  }
+  const defaults = DEFAULT_MODULES_BY_ROLE[target.roleKey];
+  await accessRepo.replaceModuleAccess(userId, defaults);
+  return defaults;
 }
 
 export async function deactivateUser(userId: string) {
@@ -176,6 +225,55 @@ export async function deactivateUser(userId: string) {
   const user = await usersRepo.findById(userId);
   if (!user) throw new Error("User not found.");
   await usersRepo.setActive(userId, false);
+}
+
+/** Changes an existing user's role. Mirrors the other admin-on-user actions
+ * above (Superuser-only, can't target yourself — same restriction and same
+ * error-message style as deactivateUser).
+ *
+ * Deliberate scope, resolved here rather than left open:
+ *  - Company/module access is left untouched. A role change doesn't imply
+ *    the admin wants access re-scoped, and guessing new defaults risks
+ *    silently granting or revoking access nobody asked for — if access
+ *    needs to change too, that's still a separate, explicit step via
+ *    updateUserPermissions.
+ *  - manager_agent_assignments rows ARE cleaned up (link removed, never the
+ *    agent's assigned contacts/history) when a user stops being a
+ *    CALL_CENTER_AGENT or CALL_CENTER_LEAD: unlike company/module access,
+ *    those rows aren't a standing grant the admin configured — they only
+ *    mean anything while both ends still hold the role they had when
+ *    linked. findTeamForManager/findManyByManagerScope read this table
+ *    directly without re-checking either side's current role, so a stale
+ *    row would keep surfacing a demoted agent in a team/CRM scope, or keep
+ *    a demoted manager's old team pointed at them.
+ *  - Blocks demoting the very last active Superuser, so this can't be used
+ *    to lock everyone out of admin access.
+ */
+export async function updateUserRole(userId: string, newRoleKey: RoleKey): Promise<void> {
+  const session = await requireSession();
+  if (session.user.roleKey !== "SUPERUSER") throw new UnauthorizedError("Only Superusers can change roles.");
+  if (session.user.id === userId) throw new Error("You cannot change your own role.");
+
+  const user = await usersRepo.findById(userId);
+  if (!user) throw new Error("User not found.");
+  if (user.roleKey === newRoleKey) return;
+
+  if (user.roleKey === "SUPERUSER") {
+    const allUsers = await usersRepo.findAll();
+    const activeSuperusers = allUsers.filter((u) => u.roleKey === "SUPERUSER" && u.isActive);
+    if (activeSuperusers.length <= 1) throw new Error("Cannot change the role of the last Superuser.");
+  }
+
+  const roleId = await usersRepo.findRoleIdByKey(newRoleKey);
+  if (!roleId) throw new Error("Unknown role.");
+  await usersRepo.setRole(userId, roleId);
+
+  if (user.roleKey === "CALL_CENTER_AGENT" && newRoleKey !== "CALL_CENTER_AGENT") {
+    await managerAgentRepo.removeAllAssignmentsForAgent(userId);
+  }
+  if (user.roleKey === "CALL_CENTER_LEAD" && newRoleKey !== "CALL_CENTER_LEAD") {
+    await managerAgentRepo.removeAllAssignmentsForManager(userId);
+  }
 }
 
 export type CreateUserInput = {

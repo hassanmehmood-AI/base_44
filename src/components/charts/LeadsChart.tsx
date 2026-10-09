@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
+import { useLanguage } from "@/context/LanguageContext";
 
 const WIDTH = 900;
 const HEIGHT = 300;
@@ -17,8 +18,11 @@ function niceTicks(max: number): number[] {
 }
 
 export function LeadsChart({ data }: { data: LeadsChartPoint[] }) {
+  const { t } = useLanguage();
   const gradientId = useId();
   const [hover, setHover] = useState<number | null>(null);
+  const leadsLabel = t("Leads", "Leads");
+  const conversionsLabel = t("Conversions", "Conversiones");
 
   const maxLeads = Math.max(...data.map((d) => d.leads), 1);
   const ticks = niceTicks(maxLeads);
@@ -38,10 +42,10 @@ export function LeadsChart({ data }: { data: LeadsChartPoint[] }) {
     <div>
       <div className="flex items-center gap-5 text-[13px] text-text-secondary">
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-brand" /> Leads
+          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-brand" /> {leadsLabel}
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-text-primary" /> Conversions
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-text-primary" /> {conversionsLabel}
         </span>
       </div>
 
@@ -49,7 +53,7 @@ export function LeadsChart({ data }: { data: LeadsChartPoint[] }) {
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         className="mt-3 w-full"
         role="img"
-        aria-label="Monthly leads and conversions chart"
+        aria-label={t("Monthly leads and conversions chart", "Gráfico mensual de leads y conversiones")}
       >
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
@@ -124,10 +128,10 @@ export function LeadsChart({ data }: { data: LeadsChartPoint[] }) {
                     fill="var(--text-primary)"
                   />
                   <text x={xFor(i)} y={y - 30} textAnchor="middle" fontSize={11} fill="white">
-                    {d.leads} leads
+                    {d.leads} {leadsLabel.toLowerCase()}
                   </text>
                   <text x={xFor(i)} y={y - 16} textAnchor="middle" fontSize={11} fill="var(--brand-light)">
-                    {d.conversiones} conversions
+                    {d.conversiones} {conversionsLabel.toLowerCase()}
                   </text>
                 </g>
               )}

@@ -39,3 +39,20 @@ export async function removeManagerForAgent(agentUserId: string, companyId: stri
     .delete(managerAgentAssignments)
     .where(and(eq(managerAgentAssignments.agentUserId, agentUserId), eq(managerAgentAssignments.companyId, companyId)));
 }
+
+/** Every (agent, company) link for this user, across all companies — used
+ * when a user stops being a CALL_CENTER_AGENT (role change), since this
+ * table's rows only make sense while both ends hold their expected role.
+ * Deletes the link only, never the agent's assigned contacts or history. */
+export async function removeAllAssignmentsForAgent(agentUserId: string): Promise<void> {
+  await getDb().delete(managerAgentAssignments).where(eq(managerAgentAssignments.agentUserId, agentUserId));
+}
+
+/** Every (agent, company) link where this user is the manager, across all
+ * companies — used when a user stops being a CALL_CENTER_LEAD (role
+ * change): unlinks their whole team rather than leaving agents pointed at a
+ * manager who no longer holds that role. Deletes the link only, never the
+ * agents themselves or their assigned contacts. */
+export async function removeAllAssignmentsForManager(managerUserId: string): Promise<void> {
+  await getDb().delete(managerAgentAssignments).where(eq(managerAgentAssignments.managerUserId, managerUserId));
+}

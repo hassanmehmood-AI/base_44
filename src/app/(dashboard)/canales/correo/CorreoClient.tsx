@@ -14,6 +14,7 @@ import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { loadDraft, saveDraft, clearDraft } from "@/lib/drafts";
 import { isValidEmailFormat } from "@/lib/email";
+import { contactSecondaryLine, disambiguationSuffixes } from "@/lib/contactIdentity";
 import type { ContactWithJoins } from "@/server/repositories/contacts";
 import type { Conversation } from "@/server/repositories/conversations";
 import type { Message } from "@/server/repositories/messages";
@@ -55,6 +56,11 @@ export function CorreoClient({
         (c.email ?? "").toLowerCase().includes(q)
     );
   })();
+
+  // Only kicks in for contacts that are still indistinguishable after name +
+  // company + business + email are all shown (see the row below) — the
+  // common case gets no suffix at all.
+  const dupeSuffixes = disambiguationSuffixes(searchedQueue, (c) => [c.name, c.companyName, c.businessName, c.email]);
 
   // Looked up from the searched/company-scoped queue (not raw `queue`): a
   // contact selected before switching companies or searching must stop
@@ -120,7 +126,13 @@ export function CorreoClient({
                   selectedId === c.id ? "bg-brand-50" : "hover:bg-surface-muted"
                 )}
               >
-                <p className="text-[14px] font-semibold text-text-primary">{c.name}</p>
+                <p className="truncate text-[14px] font-semibold text-text-primary">
+                  {c.name}
+                  {dupeSuffixes.has(c.id) && <span className="text-text-tertiary"> {dupeSuffixes.get(c.id)}</span>}
+                </p>
+                <p className="mt-0.5 truncate text-[12px] text-text-secondary">
+                  {contactSecondaryLine(c.companyName, c.businessName)}
+                </p>
                 <p className="mt-0.5 truncate text-[12.5px] text-text-secondary">{c.email}</p>
               </button>
             ))}
@@ -246,6 +258,14 @@ function EmailPanel({
     <Card className="flex flex-col gap-4 p-6">
       <div>
         <h2 className="text-[18px] font-semibold text-text-primary">{contact.name}</h2>
+        <p className="mt-1 text-[13px] text-text-secondary">
+          {t("Company:", "Empresa:")} {contact.companyName}
+        </p>
+        {contact.businessName && (
+          <p className="text-[13px] text-text-secondary">
+            {t("Business:", "Negocio:")} {contact.businessName}
+          </p>
+        )}
         <p className="mt-1 text-[13px] text-text-secondary">
           {t("To:", "Para:")} {contact.email || t("— (no email on file)", "— (sin correo registrado)")}
         </p>

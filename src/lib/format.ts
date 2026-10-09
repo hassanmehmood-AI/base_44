@@ -34,3 +34,15 @@ export function formatDateTime(date: Date | string | null | undefined, language:
     minute: "2-digit",
   }).format(d);
 }
+
+/** Compact date (no time) — e.g. for disambiguating same-named options in a
+ * dropdown, where a full timestamp would be too wide. */
+export function formatShortDate(date: Date | string | null | undefined, language: "en" | "es" = "en") {
+  if (!date) return "—";
+  const d = typeof date === "string" ? new Date(date) : date;
+  return new Intl.DateTimeFormat(language === "es" ? "es-ES" : "en-US", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(d);
+}

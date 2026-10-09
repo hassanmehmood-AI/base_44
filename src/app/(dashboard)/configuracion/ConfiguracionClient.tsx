@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Plus, CheckCircle2, Trash2, RotateCcw, ArrowUp, ArrowDown, Power, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -23,6 +24,8 @@ import {
   createUserAction,
   getUserAccessAction,
   updateUserPermissionsAction,
+  resetUserPermissionsToRoleDefaultAction,
+  updateUserRoleAction,
   deactivateUserAction,
   getManagersForCompanyAction,
   getAgentManagerAction,
@@ -78,6 +81,7 @@ export function ConfiguracionClient({
   companies: realCompanies,
   canManageAdmin,
   canAddUsers,
+  canManagePermissions,
   viewerRoleKey,
   viewerCompanyId,
   users,
@@ -88,6 +92,11 @@ export function ConfiguracionClient({
   companies: Company[];
   canManageAdmin: boolean;
   canAddUsers: boolean;
+  /** Superuser (any user) or Director (their own company's Managers/Agents
+   * only) — see usersService.assertCanManagePermissionsFor for the real,
+   * server-enforced boundary. Gates the Allowed companies/modules panel and
+   * "Reset by role". */
+  canManagePermissions: boolean;
   viewerRoleKey: RoleKey;
   viewerCompanyId: string | null;
   users: UserRow[];
@@ -95,6 +104,7 @@ export function ConfiguracionClient({
 }) {
   const isSuperuser = viewerRoleKey === "SUPERUSER";
   const { t, language } = useLanguage();
+  const router = useRouter();
   const roleLabels = language === "es" ? ROLE_LABEL_ES : ROLE_LABEL;
   const moduleLabels = language === "es" ? MODULE_LABEL_ES : MODULE_LABEL;
   const [tab, setTab] = useState<"users" | "roles" | "companies" | "pipeline">("users");
@@ -109,6 +119,11 @@ export function ConfiguracionClient({
   const [addCompanyOpen, setAddCompanyOpen] = useState(false);
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [userSearch, setUserSearch] = useState("");
+  const [pendingRoleKey, setPendingRoleKey] = useState<RoleKey | null>(null);
+  const [roleSavePending, setRoleSavePending] = useState(false);
+  const [roleError, setRoleError] = useState<string | undefined>();
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [resetPending, setResetPending] = useState(false);
 
   const filteredUsers = useMemo(() => {
     const q = userSearch.trim().toLowerCase();
@@ -128,10 +143,11 @@ export function ConfiguracionClient({
   const selected = users.find((u) => u.id === selectedId);
 
   useEffect(() => {
-    // Only a Superuser can actually use getUserAccessAction (server-gated) —
-    // skip the call entirely for other viewers rather than firing a request
-    // that will just come back empty.
-    if (!selectedId || !isSuperuser) return;
+    // getUserAccessAction is server-gated to Superuser (any target) or
+    // Director (their own company's Managers/Agents only) — skip the call
+    // entirely for a viewer who can never pass that check rather than
+    // firing a request that will just come back empty.
+    if (!selectedId || !canManagePermissions) return;
     let active = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- kicks off a loading flag for the fetch this effect triggers, not a synchronous derived-state mirror
     setLoadingAccess(true);
@@ -146,7 +162,38 @@ export function ConfiguracionClient({
     return () => {
       active = false;
     };
-  }, [selectedId, isSuperuser]);
+  }, [selectedId, canManagePermissions]);
+
+  // Local role selection only tracks the currently-selected user — reset
+  // whenever a different user is picked, not on every `users` prop refresh
+  // (a successful save below sets it directly instead, so it stays correct
+  // through the revalidation round-trip without this effect needing to see it).
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resets local role selection to match the newly-picked user, not a reactive cascade
+    setPendingRoleKey(null);
+    setRoleError(undefined);
+    setResetConfirmOpen(false);
+  }, [selectedId]);
+
+  const canEditRole = isSuperuser && !!selected && selected.id !== currentUserId;
+  const roleDisabledReason = !selected
+    ? undefined
+    : selected.id === currentUserId
+      ? t("You cannot change your own role.", "No puedes cambiar tu propio rol.")
+      : t("Only Superusers can change roles.", "Solo los superusuarios pueden cambiar roles.");
+
+  async function handleSaveRole() {
+    if (!selected || pendingRoleKey === null || pendingRoleKey === selected.roleKey) return;
+    setRoleSavePending(true);
+    setRoleError(undefined);
+    const result = await updateUserRoleAction(selected.id, pendingRoleKey);
+    setRoleSavePending(false);
+    if (result.error) {
+      setRoleError(result.error);
+      return;
+    }
+    router.refresh();
+  }
 
   function toggle<T>(set: Set<T>, setter: (s: Set<T>) => void, v: T) {
     const next = new Set(set);
@@ -166,6 +213,24 @@ export function ConfiguracionClient({
     });
     setSavePending(false);
     if (result.error) setAccessError(result.error);
+  }
+
+  /** "Reset by role" — overwrites module access only; company access,
+   * assigned contacts, and every other record are untouched (see
+   * usersService.resetUserPermissionsToRoleDefault). The confirmation step
+   * lives in the modal below; this only runs once the user has confirmed. */
+  async function handleResetToRoleDefault() {
+    if (!selected) return;
+    setResetPending(true);
+    setAccessError(undefined);
+    const result = await resetUserPermissionsToRoleDefaultAction(selected.id);
+    setResetPending(false);
+    setResetConfirmOpen(false);
+    if (result.error) {
+      setAccessError(result.error);
+      return;
+    }
+    if (result.modules) setModuleKeys(new Set(result.modules));
   }
 
   async function handleDeleteUser() {
@@ -306,8 +371,18 @@ export function ConfiguracionClient({
                       <Badge tone={selected.isActive ? "green" : "gray"}>
                         {selected.isActive ? t("Active user", "Usuario activo") : t("Deactivated", "Desactivado")}
                       </Badge>
+                      {/* Superuser-only, never on your own account — see
+                       * usersService.updateUserRole for the full rationale
+                       * (company/module access is intentionally left as-is;
+                       * stale manager_agent_assignments rows are cleaned up;
+                       * the last active Superuser can't be demoted). */}
                       <div className="w-[180px]">
-                        <Select value={selected.roleKey} disabled title={t("Role changes aren't available yet.", "El cambio de rol todavía no está disponible.")}>
+                        <Select
+                          value={pendingRoleKey ?? selected.roleKey}
+                          disabled={!canEditRole || roleSavePending}
+                          title={canEditRole ? undefined : roleDisabledReason}
+                          onChange={(e) => setPendingRoleKey(e.target.value as RoleKey)}
+                        >
                           {roles.map((r) => (
                             <option key={r.key} value={r.key}>
                               {r.name}
@@ -315,11 +390,17 @@ export function ConfiguracionClient({
                           ))}
                         </Select>
                       </div>
+                      {canEditRole && pendingRoleKey !== null && pendingRoleKey !== selected.roleKey && (
+                        <Button size="sm" onClick={handleSaveRole} disabled={roleSavePending}>
+                          {roleSavePending ? t("Saving...", "Guardando...") : t("Save role", "Guardar rol")}
+                        </Button>
+                      )}
                     </div>
                   </div>
+                  {roleError && <p className="mt-2 text-[13px] text-danger">{roleError}</p>}
                 </Card>
 
-                {!isSuperuser ? null : isSuperuserSelected ? (
+                {!canManagePermissions ? null : isSuperuserSelected ? (
                   <Card className="p-6">
                     <p className="text-[13px] text-text-secondary">
                       {t(
@@ -332,13 +413,25 @@ export function ConfiguracionClient({
                   <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
                     <Card className="p-6">
                       <CardTitle>{t("Allowed companies", "Empresas permitidas")}</CardTitle>
+                      {/* A Director's own scope is itself company-bound — they
+                       * manage module access for their team, never which
+                       * companies a user can reach (see
+                       * usersService.updateUserPermissions: a Director's
+                       * companyIds input is ignored server-side regardless of
+                       * what this renders, but disabling it here avoids
+                       * implying a toggle that silently wouldn't apply). */}
+                      {!isSuperuser && (
+                        <p className="mt-1 text-[12px] text-text-tertiary">
+                          {t("Only a Superuser can change company access.", "Solo un superusuario puede cambiar el acceso a empresas.")}
+                        </p>
+                      )}
                       <div className="mt-4 flex flex-col gap-2.5">
                         {realCompanies.map((c) => (
                           <PermissionPill
                             key={c.id}
                             label={c.name}
                             active={companyIds.has(c.id)}
-                            disabled={loadingAccess}
+                            disabled={loadingAccess || !isSuperuser}
                             onClick={() => toggle(companyIds, setCompanyIds, c.id)}
                           />
                         ))}
@@ -391,7 +484,18 @@ export function ConfiguracionClient({
                     {deletePending ? t("Deleting...", "Eliminando...") : t("Delete user", "Eliminar usuario")}
                   </button>
                   <div className="flex gap-3">
-                    <Button variant="outline" disabled title={t("Coming soon", "Próximamente")}>
+                    <Button
+                      variant="outline"
+                      onClick={() => setResetConfirmOpen(true)}
+                      disabled={!canManagePermissions || isSuperuserSelected || loadingAccess}
+                      title={
+                        !canManagePermissions
+                          ? t("Only Superusers and Directors can reset permissions.", "Solo los superusuarios y directores pueden restablecer permisos.")
+                          : isSuperuserSelected
+                            ? t("Superusers have implicit access and cannot be reset.", "Los superusuarios tienen acceso implícito y no se pueden restablecer.")
+                            : undefined
+                      }
+                    >
                       <RotateCcw className="h-4 w-4" /> {t("Reset by role", "Restablecer por rol")}
                     </Button>
                     <Button onClick={handleSavePermissions} disabled={savePending || loadingAccess || isSuperuserSelected}>
@@ -399,6 +503,32 @@ export function ConfiguracionClient({
                     </Button>
                   </div>
                 </Card>
+
+                {selected && (
+                  <Modal
+                    open={resetConfirmOpen}
+                    onClose={() => (resetPending ? undefined : setResetConfirmOpen(false))}
+                    title={t("Reset permissions by role?", "¿Restablecer permisos por rol?")}
+                  >
+                    <div className="flex flex-col gap-4">
+                      <p className="text-[13.5px] leading-6 text-text-secondary">
+                        {t(
+                          `This replaces ${selected.fullName}'s module access with the approved default for ${roleLabels[selected.roleKey]}. Company access, assigned contacts, and all other data stay exactly as they are.`,
+                          `Esto reemplaza el acceso a módulos de ${selected.fullName} con el valor predeterminado aprobado para ${roleLabels[selected.roleKey]}. El acceso a empresas, los contactos asignados y el resto de los datos permanecen exactamente igual.`
+                        )}
+                      </p>
+                      {accessError && <p className="text-[13px] text-danger">{accessError}</p>}
+                      <div className="flex justify-end gap-3">
+                        <Button variant="outline" onClick={() => setResetConfirmOpen(false)} disabled={resetPending}>
+                          {t("Cancel", "Cancelar")}
+                        </Button>
+                        <Button onClick={handleResetToRoleDefault} disabled={resetPending}>
+                          {resetPending ? t("Resetting...", "Restableciendo...") : t("Reset permissions", "Restablecer permisos")}
+                        </Button>
+                      </div>
+                    </div>
+                  </Modal>
+                )}
               </>
             )}
           </div>

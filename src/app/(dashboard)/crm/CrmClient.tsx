@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useId, useMemo, useState, useTransition, isValidElement, cloneElement } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus,
@@ -34,7 +34,8 @@ import { useLanguage } from "@/context/LanguageContext";
 import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { useCurrentUserId } from "@/context/CurrentUserContext";
 import { STAGE_TONE, STAGE_LABEL, STAGE_LABEL_ES, Stage } from "@/lib/pipeline";
-import { formatRelativeTime, formatDateTime } from "@/lib/format";
+import { formatRelativeTime, formatDateTime, formatShortDate } from "@/lib/format";
+import { getActivityLabel } from "@/lib/activities";
 import { cn } from "@/lib/cn";
 import { downloadTextFile } from "@/lib/csv";
 import { loadDraft, saveDraft, clearDraft } from "@/lib/drafts";
@@ -81,6 +82,12 @@ const channelIcon: Record<string, React.ElementType> = {
   AUTO_ASSIGNMENT: UserCog,
 };
 
+// Same browser-local persistence tier/pattern as CompanyContext's
+// "crm-active-company" — the restored value is always re-validated against
+// the current (authorization-scoped) `campaigns` list before use, so a stale
+// or no-longer-accessible campaign id can never silently stick around.
+const CAMPAIGN_FILTER_STORAGE_KEY = "crm-campaign-filter";
+
 const CHANNEL_OPTIONS: { value: string; type: string; channel: string; labelEn: string; labelEs: string }[] = [
   { value: "CALL", type: "CALL", channel: "CALL", labelEn: "Call", labelEs: "Llamada" },
   { value: "WHATSAPP", type: "SOCIAL", channel: "WHATSAPP", labelEn: "WhatsApp", labelEs: "WhatsApp" },
@@ -89,7 +96,11 @@ const CHANNEL_OPTIONS: { value: string; type: string; channel: string; labelEn: 
 ];
 
 type CompanyOption = { id: string; name: string };
-type CampaignOption = { id: string; name: string; companyName: string };
+/** Matches the fields CrmClient actually reads off the richer
+ * CampaignWithJoins the server passes down (see server/repositories/campaigns.ts) —
+ * createdAt is only here to disambiguate same-name-same-company campaigns in
+ * the filter dropdown below. */
+type CampaignOption = { id: string; name: string; companyName: string; createdAt: string | Date };
 
 /** Everything the Classify panel's fields hold, excluding the activity-only
  * `outcome` (derived from stageId at save time, not a separate input). */
@@ -140,7 +151,7 @@ export function CrmClient({
   const [manualSelectionMade, setManualSelectionMade] = useState(false);
   const [historyTab, setHistoryTab] = useState("All");
   const [search, setSearch] = useState("");
-  const [filterKey, setFilterKey] = useState("ALL"); // "ALL" | "MANUAL" | a campaign id
+  const [filterKey, setFilterKeyState] = useState("ALL"); // "ALL" | "MANUAL" | a campaign id
   const [rawScopedContacts, setScopedContacts] = useState<ContactWithJoins[]>([]);
   const [scopeLoading, setScopeLoading] = useState(false);
   const [activities, setActivities] = useState<ActivityWithAuthor[]>(initialActivities);
@@ -171,6 +182,56 @@ export function CrmClient({
     [t("Email", "Correo")]: "EMAIL",
     [t("Social Media", "Redes Sociales")]: "SOCIAL",
   };
+
+  // Restores the last-used Campaign filter after a reload — same
+  // localStorage tier/pattern as CompanyContext's "crm-active-company" (see
+  // CAMPAIGN_FILTER_STORAGE_KEY above). Only applied if it's still a valid
+  // choice for this session: "ALL"/"MANUAL" are always valid, and a campaign
+  // id must still be present in the (already authorization-scoped) list the
+  // server sent down — otherwise a since-reassigned or deleted campaign
+  // could silently keep scoping the view. Runs once on mount, after
+  // `campaigns` is already known, so there's no flash of an invalid value.
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(CAMPAIGN_FILTER_STORAGE_KEY);
+      if (stored && (stored === "ALL" || stored === "MANUAL" || campaigns.some((c) => c.id === stored))) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time mount sync from an external store (localStorage), not a reactive cascade
+        setFilterKeyState(stored);
+      }
+    } catch {
+      // localStorage unavailable (e.g. privacy mode) — fall back to "ALL"
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally mount-only; `campaigns` is read just to validate the restored value, not to re-run this restore on every refresh
+  }, []);
+
+  function setFilterKey(next: string) {
+    setFilterKeyState(next);
+    try {
+      localStorage.setItem(CAMPAIGN_FILTER_STORAGE_KEY, next);
+    } catch {
+      // ignore write failures
+    }
+  }
+
+  // Disambiguates same-named campaigns in the filter dropdown below —
+  // "Name – Company", with a short creation date appended only for the rare
+  // case of two campaigns sharing both name AND company (same-name-different-
+  // company is already unambiguous via the company suffix alone).
+  const campaignLabels = useMemo(() => {
+    const dupeKeyCount = new Map<string, number>();
+    for (const c of campaigns) {
+      const key = JSON.stringify([c.name, c.companyName]);
+      dupeKeyCount.set(key, (dupeKeyCount.get(key) ?? 0) + 1);
+    }
+    const labels = new Map<string, string>();
+    for (const c of campaigns) {
+      const key = JSON.stringify([c.name, c.companyName]);
+      const base = c.companyName ? `${c.name} – ${c.companyName}` : c.name;
+      const label = (dupeKeyCount.get(key) ?? 0) > 1 ? `${base} (${formatShortDate(c.createdAt, language)})` : base;
+      labels.set(c.id, label);
+    }
+    return labels;
+  }, [campaigns, language]);
 
   // Fetches the "Manual Leads" / specific-campaign member list whenever one
   // of those is selected. "All Contacts" needs no fetch — it's just the
@@ -342,7 +403,7 @@ export function CrmClient({
               <option value="MANUAL">{t("Manual Leads", "Leads manuales")}</option>
               {campaigns.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.name}
+                  {campaignLabels.get(c.id) ?? c.name}
                 </option>
               ))}
             </Select>
@@ -431,7 +492,7 @@ export function CrmClient({
 
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               <InfoField icon={Phone} label={t("PHONE", "TELÉFONO")} value={selected.phone || "—"} />
-              <InfoField icon={Mail} label={t("EMAIL", "EMAIL")} value={selected.email || "—"} />
+              <InfoField icon={Mail} label={t("EMAIL", "CORREO ELECTRÓNICO")} value={selected.email || "—"} />
               <InfoField
                 icon={MessageCircle}
                 label={t("AGENT", "AGENTE")}
@@ -501,18 +562,7 @@ export function CrmClient({
                 {!activitiesLoading &&
                   filteredActivities.map((a) => {
                     const Icon = channelIcon[a.channel ?? a.type] ?? MessageCircle;
-                    const channelLabel = CHANNEL_OPTIONS.find((c) => c.channel === a.channel);
-                    const typeLabel = channelLabel
-                      ? language === "es"
-                        ? channelLabel.labelEs
-                        : channelLabel.labelEn
-                      : a.type === "NOTE"
-                        ? t("Note", "Nota")
-                        : a.type === "ASSIGNMENT"
-                          ? t("Assigned", "Asignado")
-                          : a.type === "AUTO_ASSIGNMENT"
-                            ? t("Auto Assigned", "Asignado automáticamente")
-                            : a.type;
+                    const typeLabel = getActivityLabel(a, language);
                     const outcomeLabel = a.outcome ? stageLabels[a.outcome as Stage] ?? a.outcome : null;
                     return (
                       <div key={a.id} className="flex items-center gap-3 rounded-xl border border-border p-3.5">
@@ -665,11 +715,20 @@ function InfoField({ icon: Icon, label, value }: { icon: React.ElementType; labe
   );
 }
 
+// Associates the visible label with its field via htmlFor/id (not aria-label,
+// which would work for screen readers but strip the visible text) — every
+// call site just renders a single Input/Select/Textarea child as before,
+// this generates and wires the id for them so no call site has to repeat it.
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  const generatedId = useId();
+  const isElement = isValidElement<{ id?: string }>(children);
+  const fieldId = isElement && children.props.id ? children.props.id : generatedId;
   return (
     <div>
-      <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{label}</label>
-      {children}
+      <label htmlFor={fieldId} className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+        {label}
+      </label>
+      {isElement ? cloneElement(children, { id: fieldId }) : children}
     </div>
   );
 }
@@ -819,7 +878,7 @@ function NoteComposer({ contactId, onAdded }: { contactId: string; onAdded: (act
 const PRIORITY_OPTIONS = [
   { value: "LOW", labelEn: "Low", labelEs: "Baja" },
   { value: "MEDIUM", labelEn: "Medium", labelEs: "Media" },
-  { value: "HIGH", labelEn: "High", labelEs: "High" },
+  { value: "HIGH", labelEn: "High", labelEs: "Alta" },
   { value: "URGENT", labelEn: "Urgent", labelEs: "Urgente" },
 ];
 
@@ -882,7 +941,7 @@ function TaskForm({
   users: UserWithRole[];
   onSubmit: (values: { title: string; assignedUserId: string; priority: string; dueAt: string }) => Promise<{ error?: string; ok?: true }>;
 }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const [title, setTitle] = useState("");
   const [assignedUserId, setAssignedUserId] = useState("");
   const [priority, setPriority] = useState("MEDIUM");
@@ -918,7 +977,7 @@ function TaskForm({
         <Select value={priority} onChange={(e) => setPriority(e.target.value)}>
           {PRIORITY_OPTIONS.map((p) => (
             <option key={p.value} value={p.value}>
-              {p.labelEn}
+              {language === "es" ? p.labelEs : p.labelEn}
             </option>
           ))}
         </Select>
@@ -1006,7 +1065,8 @@ function ClassifyPanel({
   users: UserWithRole[];
   onSaved: (activity: ActivityWithAuthor) => void;
 }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  const stageLabels = language === "es" ? STAGE_LABEL_ES : STAGE_LABEL;
   const userId = useCurrentUserId();
   // Restored once per contact (this panel remounts on every contact switch
   // via its `key={selected.id}` in CrmClient — see below), never copied from
@@ -1125,7 +1185,7 @@ function ClassifyPanel({
         <Select value={channel} onChange={(e) => setChannel(e.target.value)}>
           {CHANNEL_OPTIONS.map((c) => (
             <option key={c.value} value={c.value}>
-              {c.labelEn}
+              {language === "es" ? c.labelEs : c.labelEn}
             </option>
           ))}
         </Select>
@@ -1135,7 +1195,7 @@ function ClassifyPanel({
         <Select value={stageId} onChange={(e) => setStageId(e.target.value)}>
           {classifyStages.map((s) => (
             <option key={s.id} value={s.id}>
-              {STAGE_LABEL[s.key as Stage] ?? s.key}
+              {stageLabels[s.key as Stage] ?? s.key}
             </option>
           ))}
         </Select>
@@ -1249,7 +1309,7 @@ function ContactForm({
       <Field label={t("PHONE", "TELÉFONO")}>
         <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
       </Field>
-      <Field label={t("EMAIL", "EMAIL")}>
+      <Field label={t("EMAIL", "CORREO ELECTRÓNICO")}>
         <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
       </Field>
       <Field label={t("SOURCE", "ORIGEN")}>
@@ -1486,7 +1546,7 @@ function ImportContactsPanel({
                   <th className="px-3 py-2 font-semibold">{t("Name", "Nombre")}</th>
                   <th className="px-3 py-2 font-semibold">{t("Business", "Empresa")}</th>
                   <th className="px-3 py-2 font-semibold">{t("Phone", "Teléfono")}</th>
-                  <th className="px-3 py-2 font-semibold">{t("Email", "Email")}</th>
+                  <th className="px-3 py-2 font-semibold">{t("Email", "Correo electrónico")}</th>
                   <th className="px-3 py-2 font-semibold">{t("Status", "Estado")}</th>
                 </tr>
               </thead>

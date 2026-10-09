@@ -17,6 +17,12 @@ export default async function ConfiguracionPage() {
   // (Managers/Agents, own company), Manager (Agents, own company) — see
   // usersService.createUser's matrix for the real, server-enforced rules.
   const canAddUsers = isSuperuser || isDirector || isManager;
+  // Who may view/edit a user's company+module permissions (incl. "Reset by
+  // role"): Superuser for anyone, Director for their own company's Managers
+  // and Agents only — see usersService.assertCanManagePermissionsFor for the
+  // actual enforced boundary; this flag only toggles the UI, the server call
+  // is re-checked regardless.
+  const canManagePermissions = isSuperuser || isDirector;
 
   let users: UserRow[];
   if (isSuperuser) {
@@ -60,6 +66,7 @@ export default async function ConfiguracionPage() {
       companies={companies}
       canManageAdmin={isSuperuser}
       canAddUsers={canAddUsers}
+      canManagePermissions={canManagePermissions}
       viewerRoleKey={session?.user.roleKey ?? "CALL_CENTER_AGENT"}
       // Director/Manager's own company, for the Manager/Team panels — a
       // Superuser viewer doesn't use this (they scope by the SELECTED

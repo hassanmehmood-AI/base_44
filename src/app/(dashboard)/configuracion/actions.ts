@@ -89,12 +89,28 @@ export async function updateUserPermissionsAction(input: {
   try {
     await usersService.updateUserPermissions(input);
   } catch (e) {
-    if (e instanceof UnauthorizedError) return { error: "Only Superusers can edit permissions." };
-    if (e instanceof Error) return { error: e.message };
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
     throw e;
   }
   revalidatePath("/configuracion");
   return { ok: true };
+}
+
+/** "Reset by role" — see usersService.resetUserPermissionsToRoleDefault for
+ * the authorization boundary and what it does/doesn't touch. Returns the
+ * applied module list so the client can update its checkboxes without a
+ * second getUserAccessAction round trip. */
+export async function resetUserPermissionsToRoleDefaultAction(
+  userId: string
+): Promise<ActionResult & { modules?: ModuleKey[] }> {
+  try {
+    const modules = await usersService.resetUserPermissionsToRoleDefault(userId);
+    revalidatePath("/configuracion");
+    return { ok: true, modules };
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
+    throw e;
+  }
 }
 
 export async function deactivateUserAction(userId: string): Promise<ActionResult> {
@@ -106,6 +122,23 @@ export async function deactivateUserAction(userId: string): Promise<ActionResult
     throw e;
   }
   revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+/** Role changes stay Superuser-only — see usersService.updateUserRole.
+ * Unlike permissions (company/module access), Directors are never granted
+ * role-change rights: identity/role is a stronger privilege boundary than
+ * what modules someone can see inside a company they already belong to. */
+export async function updateUserRoleAction(userId: string, roleKey: RoleKey): Promise<ActionResult> {
+  try {
+    await usersService.updateUserRole(userId, roleKey);
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "Only Superusers can change roles." };
+    if (e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  revalidatePath("/crm");
   return { ok: true };
 }
 

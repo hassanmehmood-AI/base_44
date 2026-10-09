@@ -42,3 +42,33 @@ export type CallStatus = (typeof CALL_STATUSES)[number];
 
 export const KPI_PERIODS = ["ALL", "MONTH", "QUARTER", "YEAR"] as const;
 export type KpiPeriod = (typeof KPI_PERIODS)[number];
+
+// KPI "Department" filter — there's no department column anywhere in the
+// schema, so a contact's department is derived from the role of its
+// assigned agent. SALES covers both Call Center roles (the only roles that
+// actually work leads day to day); MARKETING is the dedicated Marketing
+// role. A contact with no assigned agent matches neither.
+export const KPI_DEPARTMENTS = ["SALES", "MARKETING"] as const;
+export type KpiDepartment = (typeof KPI_DEPARTMENTS)[number];
+export const DEFAULT_KPI_DEPARTMENT: KpiDepartment = "SALES";
+export const KPI_DEPARTMENT_ROLE_KEYS: Record<KpiDepartment, RoleKey[]> = {
+  SALES: ["CALL_CENTER_LEAD", "CALL_CENTER_AGENT"],
+  MARKETING: ["MARKETING"],
+};
+
+// "Reset by role" baseline module grants — there's no prior stored or
+// enforced default anywhere else in the codebase (every non-Superuser
+// role requires fully explicit per-user module grants today, see
+// authorization.ts's assertModuleAccess); these are a product decision,
+// not something inferred from existing code. Derived from the role
+// descriptions already shown on the Roles tab (src/app/(dashboard)/
+// configuracion/ConfiguracionClient.tsx's roleDescByKey) and confirmed as
+// the approved baseline before use. SUPERUSER is intentionally absent —
+// it has implicit access to everything and "Reset by role" never applies
+// to a Superuser target (same guard as the rest of the permissions panel).
+export const DEFAULT_MODULES_BY_ROLE: Record<Exclude<RoleKey, "SUPERUSER">, ModuleKey[]> = {
+  DIRECTOR: ["KPIS", "MANAGE_CAMPAIGNS", "ACTIVE_CAMPAIGNS"],
+  CALL_CENTER_LEAD: ["CHANNELS", "MANAGE_CAMPAIGNS", "ACTIVE_CAMPAIGNS"],
+  CALL_CENTER_AGENT: ["CRM", "CHANNELS"],
+  MARKETING: ["PROSPECTING", "MANAGE_CAMPAIGNS", "KPIS"],
+};

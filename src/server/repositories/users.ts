@@ -44,6 +44,10 @@ export async function setActive(userId: string, isActive: boolean): Promise<void
   await getDb().update(users).set({ isActive, updatedAt: new Date() }).where(eq(users.id, userId));
 }
 
+export async function setRole(userId: string, roleId: string): Promise<void> {
+  await getDb().update(users).set({ roleId, updatedAt: new Date() }).where(eq(users.id, userId));
+}
+
 export async function findRoleIdByKey(roleKey: RoleKey): Promise<string | undefined> {
   const [row] = await getDb().select({ id: roles.id }).from(roles).where(eq(roles.key, roleKey)).limit(1);
   return row?.id;

@@ -63,11 +63,13 @@ export async function findDistinctChannelsByContactIds(contactIds: string[]): Pr
     .where(and(inArray(activities.contactId, contactIds), isNotNull(activities.channel))) as Promise<{ contactId: string; channel: string }[]>;
 }
 
-export type StageChangeRow = { companyId: string; createdAt: Date };
+export type StageChangeRow = { companyId: string; contactId: string; createdAt: Date };
 
 /** KPIs §15 monthly trend: STATUS_CHANGE activities recording a move into the
  * given stage, used as the "became a customer on this date" signal since
- * contacts only store their current stage, not stage history. */
+ * contacts only store their current stage, not stage history. Includes
+ * contactId so callers can attribute each conversion back to the contact's
+ * assigned agent (e.g. for department filtering). */
 export async function findStatusChangesToStage(
   companyIds: string[],
   stageKey: string,
@@ -75,7 +77,7 @@ export async function findStatusChangesToStage(
 ): Promise<StageChangeRow[]> {
   if (companyIds.length === 0) return [];
   return getDb()
-    .select({ companyId: activities.companyId, createdAt: activities.createdAt })
+    .select({ companyId: activities.companyId, contactId: activities.contactId, createdAt: activities.createdAt })
     .from(activities)
     .where(
       and(

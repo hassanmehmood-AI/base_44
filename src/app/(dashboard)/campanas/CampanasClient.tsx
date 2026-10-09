@@ -10,11 +10,12 @@ import { SearchInput, Select, Input, Textarea } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { StatCard } from "@/components/StatCard";
 import { StageBadge } from "@/components/StageBadge";
-import { STAGE_LABEL, type Stage } from "@/lib/pipeline";
+import { STAGE_LABEL, STAGE_LABEL_ES, type Stage } from "@/lib/pipeline";
 import { Avatar } from "@/components/ui/Avatar";
 import { useLanguage } from "@/context/LanguageContext";
 import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { formatRelativeTime } from "@/lib/format";
+import { getActivityChannelLabel } from "@/lib/activities";
 import { downloadTextFile } from "@/lib/csv";
 import { mapTableToContactRows, CONTACTS_IMPORT_TEMPLATE_CSV, MAX_CONTACTS_IMPORT_ROWS, type ContactImportRow } from "@/lib/contactsImport";
 import { readSpreadsheetFile, type SpreadsheetWorkbook } from "@/lib/spreadsheetFile";
@@ -79,7 +80,8 @@ export function CampanasClient({
   canAssignAgent: boolean;
   isManager: boolean;
 }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  const stageLabels = language === "es" ? STAGE_LABEL_ES : STAGE_LABEL;
   const { activeCompany } = useCompany();
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(initialSelectedCampaignId);
@@ -293,11 +295,13 @@ export function CampanasClient({
                               m.assignedUserName ?? t("Unassigned", "Sin asignar")
                             )}
                           </td>
-                          <td className="py-3.5 pr-4 text-text-secondary">{m.channels.length > 0 ? m.channels.join(", ") : "—"}</td>
+                          <td className="py-3.5 pr-4 text-text-secondary">
+                            {m.channels.length > 0 ? m.channels.map((ch) => getActivityChannelLabel(ch, language)).join(", ") : "—"}
+                          </td>
                           <td className="py-3.5 pr-4">
                             <StageBadge stage={m.stageKey} />
                           </td>
-                          <td className="py-3.5 text-text-secondary">{formatRelativeTime(m.lastContactAt, "en")}</td>
+                          <td className="py-3.5 text-text-secondary">{formatRelativeTime(m.lastContactAt, language)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -342,7 +346,7 @@ export function CampanasClient({
                         checked={canalChecked.has(channel)}
                         onChange={() => toggle(canalChecked, setCanalChecked, channel)}
                       />
-                      {channel}
+                      {getActivityChannelLabel(channel, language)}
                     </span>
                     <span className="text-text-tertiary">{count}</span>
                   </label>
@@ -385,7 +389,7 @@ export function CampanasClient({
               <option value="">{t("All statuses", "Todos los estados")}</option>
               {statusOptions.map((key) => (
                 <option key={key} value={key}>
-                  {STAGE_LABEL[key as Stage] ?? key}
+                  {stageLabels[key as Stage] ?? key}
                 </option>
               ))}
             </Select>

@@ -11,6 +11,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { useLanguage } from "@/context/LanguageContext";
 import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { cn } from "@/lib/cn";
+import { contactSecondaryLine, disambiguationSuffixes } from "@/lib/contactIdentity";
+import { STAGE_LABEL, STAGE_LABEL_ES, type Stage } from "@/lib/pipeline";
 import type { AssignedClient, ChannelSummaryByCompany } from "@/server/services/activeCampaigns";
 import { createAssignedContactAction } from "./actions";
 
@@ -32,7 +34,8 @@ export function CampanasActivasClient({
   entryStageId: string | null;
   currentUserName: string | null;
 }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  const stageLabels = language === "es" ? STAGE_LABEL_ES : STAGE_LABEL;
   const { activeCompany } = useCompany();
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -56,6 +59,13 @@ export function CampanasActivasClient({
     if (selectedAgent === UNASSIGNED) return companyFilteredClients.filter((c) => !c.assignedUserName);
     return companyFilteredClients.filter((c) => c.assignedUserName === selectedAgent);
   }, [companyFilteredClients, selectedAgent]);
+
+  // Only kicks in for clients still indistinguishable after name + company +
+  // business + status are all shown (see the row below).
+  const dupeSuffixes = useMemo(
+    () => disambiguationSuffixes(filteredClients, (c) => [c.name, c.companyName, c.businessName, c.stageKey]),
+    [filteredClients]
+  );
 
   const totals = useMemo(() => {
     const scoped = channelSummary.filter((s) => activeCompany === ALL_COMPANIES || s.companyName === activeCompany);
@@ -128,17 +138,27 @@ export function CampanasActivasClient({
                   href={`/crm?contact=${c.id}`}
                   onClick={() => setSelectedClientId(c.id)}
                   className={cn(
-                    "flex items-center justify-between rounded-lg px-3.5 py-2.5 text-left text-[14px] font-medium transition-colors",
+                    "flex items-start justify-between gap-2 rounded-lg px-3.5 py-2.5 text-left text-[14px] font-medium transition-colors",
                     selectedClientId === c.id
                       ? "bg-brand-50 text-text-primary"
                       : "text-text-secondary hover:bg-surface-muted"
                   )}
                 >
-                  <span className="min-w-0 truncate">{c.name}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate">
+                      {c.name}
+                      {dupeSuffixes.has(c.id) && <span className="text-text-tertiary"> {dupeSuffixes.get(c.id)}</span>}
+                    </p>
+                    <p className="truncate text-[12px] font-normal text-text-tertiary">
+                      {[contactSecondaryLine(c.companyName, c.businessName), stageLabels[c.stageKey as Stage] ?? c.stageKey]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </p>
+                  </div>
                   {c.needsFollowUp && (
                     <span
                       title={t("Follow-up due", "Seguimiento pendiente")}
-                      className="h-2 w-2 shrink-0 rounded-full bg-brand"
+                      className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand"
                     />
                   )}
                 </a>
@@ -272,10 +292,13 @@ function NewContactForm({
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <div>
-        <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+        <label
+          htmlFor="new-contact-company"
+          className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary"
+        >
           {t("COMPANY", "EMPRESA")}
         </label>
-        <Select value={companyId} onChange={(e) => setCompanyId(e.target.value)} required>
+        <Select id="new-contact-company" value={companyId} onChange={(e) => setCompanyId(e.target.value)} required>
           {companies.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
@@ -284,28 +307,40 @@ function NewContactForm({
         </Select>
       </div>
       <div>
-        <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+        <label
+          htmlFor="new-contact-name"
+          className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary"
+        >
           {t("NAME", "NOMBRE")}
         </label>
-        <Input value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+        <Input id="new-contact-name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
       </div>
       <div>
-        <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+        <label
+          htmlFor="new-contact-business"
+          className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary"
+        >
           {t("BUSINESS NAME", "NOMBRE DE EMPRESA")}
         </label>
-        <Input value={businessName} onChange={(e) => setBusinessName(e.target.value)} />
+        <Input id="new-contact-business" value={businessName} onChange={(e) => setBusinessName(e.target.value)} />
       </div>
       <div>
-        <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+        <label
+          htmlFor="new-contact-phone"
+          className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary"
+        >
           {t("PHONE", "TELÉFONO")}
         </label>
-        <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
+        <Input id="new-contact-phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
       </div>
       <div>
-        <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+        <label
+          htmlFor="new-contact-email"
+          className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary"
+        >
           {t("EMAIL", "EMAIL")}
         </label>
-        <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <Input id="new-contact-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
       </div>
 
       {error && <p className="text-[13px] text-danger">{error}</p>}

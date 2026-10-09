@@ -25,16 +25,22 @@ export function LoginForm() {
 
         <form action={formAction} className="flex flex-col gap-4">
           <div>
-            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+            <label
+              htmlFor="login-email"
+              className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary"
+            >
               {t("EMAIL", "CORREO")}
             </label>
-            <Input type="email" name="email" required autoComplete="email" />
+            <Input id="login-email" type="email" name="email" required autoComplete="email" />
           </div>
           <div>
-            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+            <label
+              htmlFor="login-password"
+              className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary"
+            >
               {t("PASSWORD", "CONTRASEÑA")}
             </label>
-            <Input type="password" name="password" required autoComplete="current-password" />
+            <Input id="login-password" type="password" name="password" required autoComplete="current-password" />
           </div>
 
           {error && <p className="text-[13px] text-danger">{error}</p>}

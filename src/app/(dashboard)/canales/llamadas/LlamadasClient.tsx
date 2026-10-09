@@ -13,6 +13,8 @@ import { useLanguage } from "@/context/LanguageContext";
 import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
 import { cn } from "@/lib/cn";
 import { formatRelativeTime } from "@/lib/format";
+import { getActivityLabel } from "@/lib/activities";
+import { STAGE_LABEL, STAGE_LABEL_ES, type Stage } from "@/lib/pipeline";
 import type { ContactWithJoins } from "@/server/repositories/contacts";
 import type { ActivityWithAuthor } from "@/server/repositories/activities";
 import type { Call } from "@/server/repositories/calls";
@@ -184,6 +186,7 @@ function CallPanel({
 }) {
   const { t, language } = useLanguage();
   const statusLabels = language === "es" ? STATUS_LABEL_ES : STATUS_LABEL;
+  const stageLabels = language === "es" ? STAGE_LABEL_ES : STAGE_LABEL;
 
   const [callPending, setCallPending] = useState(false);
   const [callMessage, setCallMessage] = useState<string | undefined>();
@@ -262,8 +265,8 @@ function CallPanel({
                 <div key={a.id} className="flex items-center justify-between rounded-xl border border-border p-3.5">
                   <div>
                     <p className="text-[13.5px] font-semibold text-text-primary">
-                      {a.type}
-                      {a.outcome ? ` · ${a.outcome}` : ""}
+                      {getActivityLabel(a, language)}
+                      {a.outcome ? ` · ${a.type === "STATUS_CHANGE" ? stageLabels[a.outcome as Stage] ?? a.outcome : a.outcome}` : ""}
                     </p>
                     <p className="text-[12px] text-text-secondary">{a.authorName}</p>
                   </div>
