@@ -247,6 +247,7 @@ function CallPanel({
         <button
           onClick={handleStartCall}
           disabled={callPending}
+          aria-label={t("Call", "Llamar")}
           className="flex h-16 w-16 items-center justify-center rounded-full bg-sidebar-active text-white shadow-lg shadow-brand/30 transition-transform hover:scale-105 hover:bg-[color-mix(in_srgb,var(--sidebar-active)_82%,black)] disabled:opacity-60"
         >
           <PhoneCall className="h-6 w-6" />
