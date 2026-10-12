@@ -6,10 +6,11 @@ import { cn } from "@/lib/cn";
 import { CompanySwitcherMenu, useCompanyLabel } from "@/components/CompanySwitcher";
 import { useLanguage } from "@/context/LanguageContext";
 
-/** Persistent desktop top bar. Hosts the primary, global company selector
- * (see CompanySwitcher.tsx) so it's reachable without opening the sidebar
- * footer. The sidebar's own switcher stays in place as secondary access to
- * the same CompanyContext state. */
+/** Global company selector (see CompanySwitcher.tsx), rendered inline as
+ * part of each page's scrollable content — not a fixed/sticky header bar —
+ * so it's reachable without opening the sidebar footer. The sidebar's own
+ * switcher stays in place as secondary access to the same CompanyContext
+ * state. Rendered once, from DashboardShell, above `{children}`. */
 export function TopBar() {
   const { t } = useLanguage();
   const [open, setOpen] = useState(false);
@@ -17,7 +18,7 @@ export function TopBar() {
   const companyLabel = useCompanyLabel();
 
   return (
-    <header className="hidden shrink-0 items-center justify-end bg-transparent px-6 py-3 lg:flex">
+    <div className="flex items-center justify-end">
       <button
         ref={triggerRef}
         type="button"
@@ -35,6 +36,6 @@ export function TopBar() {
       </button>
 
       <CompanySwitcherMenu open={open} onClose={() => setOpen(false)} anchorRef={triggerRef} placement="down" />
-    </header>
+    </div>
   );
 }

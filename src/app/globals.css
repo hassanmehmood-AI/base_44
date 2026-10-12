@@ -341,6 +341,34 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator {
   }
 }
 
+/* Custom dropdown-menu enter animation — for portal-rendered panels like
+   CompanySwitcherMenu/UserSwitcherMenu (NOT native <select> elements: a
+   native select's open popup is rendered by the OS/browser and can't be
+   animated by any web CSS or JS). Applied to an inner wrapper, never the
+   outer positioned/portal div, so it never fights that div's own inline
+   `transform` (used for fixed-position placement, e.g. flipping the panel
+   above its trigger) — this is opacity + its own independent transform,
+   compositor-only. `--dropdown-offset` lets each trigger direction (opens
+   above vs. below) slide in from the right side. */
+@keyframes dropdown-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--dropdown-offset, -6px)) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.dropdown-menu-in {
+  animation: dropdown-menu-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dropdown-menu-in {
+    animation: none;
+  }
+}
+
 /* ==========================================================================
    DASHBOARD SHELL — atmospheric background per design system
    ========================================================================== */

@@ -99,9 +99,6 @@ export function UserSwitcherMenu({
 
   return createPortal(
     <div
-      ref={panelRef}
-      role="listbox"
-      aria-label={t("Switch user", "Cambiar de usuario")}
       style={{
         position: "fixed",
         top: coords.top,
@@ -109,39 +106,47 @@ export function UserSwitcherMenu({
         width: coords.width,
         transform: "translateY(-100%)",
       }}
-      className="z-[60] max-h-[60vh] overflow-y-auto rounded-xl border border-border bg-white py-1.5 shadow-[0_12px_32px_-8px_rgba(16,24,40,0.28)]"
+      className="z-[60]"
     >
-      <p className="px-3 pb-1.5 pt-1 text-[11px] font-semibold tracking-wide text-text-tertiary">
-        {t("SWITCH USER", "CAMBIAR DE USUARIO")}
-      </p>
-
-      {users.length === 0 && (
-        <p className="px-3 py-2 text-[13px] text-text-tertiary">
-          {t("No users available.", "No hay usuarios disponibles.")}
+      <div
+        ref={panelRef}
+        role="listbox"
+        aria-label={t("Switch user", "Cambiar de usuario")}
+        style={{ "--dropdown-offset": "6px" } as React.CSSProperties}
+        className="dropdown-menu-in max-h-[60vh] overflow-y-auto rounded-xl border border-border bg-white py-1.5 shadow-[0_12px_32px_-8px_rgba(16,24,40,0.28)]"
+      >
+        <p className="px-3 pb-1.5 pt-1 text-[11px] font-semibold tracking-wide text-text-tertiary">
+          {t("SWITCH USER", "CAMBIAR DE USUARIO")}
         </p>
-      )}
 
-      {users.map((u) => (
-        <button
-          key={u.id}
-          role="option"
-          aria-selected={false}
-          disabled={pendingId !== null}
-          onClick={() => choose(u.id)}
-          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13.5px] font-medium text-text-primary transition-colors hover:bg-surface-muted disabled:opacity-60"
-        >
-          <Avatar name={u.fullName} size={24} />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate">{u.fullName}</span>
-            <span className="block truncate text-[11.5px] font-normal text-text-tertiary">
-              {roleLabels[u.roleKey]}
+        {users.length === 0 && (
+          <p className="px-3 py-2 text-[13px] text-text-tertiary">
+            {t("No users available.", "No hay usuarios disponibles.")}
+          </p>
+        )}
+
+        {users.map((u) => (
+          <button
+            key={u.id}
+            role="option"
+            aria-selected={false}
+            disabled={pendingId !== null}
+            onClick={() => choose(u.id)}
+            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13.5px] font-medium text-text-primary transition-colors hover:bg-surface-muted disabled:opacity-60"
+          >
+            <Avatar name={u.fullName} size={24} />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">{u.fullName}</span>
+              <span className="block truncate text-[11.5px] font-normal text-text-tertiary">
+                {roleLabels[u.roleKey]}
+              </span>
             </span>
-          </span>
-          {pendingId === u.id && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-brand" />}
-        </button>
-      ))}
+            {pendingId === u.id && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-brand" />}
+          </button>
+        ))}
 
-      {error && <p className={cn("px-3 pb-1 pt-1.5 text-[12px] text-danger")}>{error}</p>}
+        {error && <p className={cn("px-3 pb-1 pt-1.5 text-[12px] text-danger")}>{error}</p>}
+      </div>
     </div>,
     document.body
   );

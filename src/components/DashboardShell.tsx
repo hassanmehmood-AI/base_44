@@ -4,7 +4,6 @@ import { useState, useTransition } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { Menu, Undo2 } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
-import { TopBar } from "@/components/TopBar";
 import { LanguageProvider } from "@/context/LanguageContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { CompanyProvider } from "@/context/CompanyContext";
@@ -67,8 +66,8 @@ export function DashboardShell({
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   // Keys the page-content wrapper so each route change remounts just that
-  // div (never Sidebar/TopBar/ImpersonationBanner, which live outside it) —
-  // this is what retriggers the `.page-content-in` enter animation below.
+  // div (never Sidebar/ImpersonationBanner, which live outside it) — this is
+  // what retriggers the `.page-content-in` enter animation below.
   // Query-param-only navigation (e.g. /crm?contact=<id>) doesn't change
   // pathname, so switching contacts/filters in-page never replays it.
   const pathname = usePathname();
@@ -108,9 +107,10 @@ export function DashboardShell({
                     <span className="text-[15px] font-bold tracking-tight text-text-primary">GROWTH-ON</span>
                   </header>
 
-                  <TopBar />
-
                   <main className="flex-1 overflow-y-auto">
+                    {/* The global company filter is rendered inside PageHeader
+                        (title row), not here — keeping a single integration
+                        point avoids a duplicate selector on every page. */}
                     <div
                       key={pathname}
                       className="page-content-in mx-auto max-w-[1600px] px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8"
