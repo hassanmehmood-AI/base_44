@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState, useTransition, isValidElement, cloneElement } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useTransition, isValidElement, cloneElement } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus,
@@ -21,6 +21,8 @@ import {
   Download,
   AlertCircle,
   UserCog,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -87,6 +89,12 @@ const channelIcon: Record<string, React.ElementType> = {
 // the current (authorization-scoped) `campaigns` list before use, so a stale
 // or no-longer-accessible campaign id can never silently stick around.
 const CAMPAIGN_FILTER_STORAGE_KEY = "crm-campaign-filter";
+
+// Contacts are already fetched in full for client-side search/filtering (see
+// CrmPage), so this list is paginated client-side rather than round-tripping
+// to the server per page — keeps the contact panel from growing unbounded
+// without reworking search into a server-driven query.
+const CONTACTS_PAGE_SIZE = 20;
 
 const CHANNEL_OPTIONS: { value: string; type: string; channel: string; labelEn: string; labelEs: string }[] = [
   { value: "CALL", type: "CALL", channel: "CALL", labelEn: "Call", labelEs: "Llamada" },
@@ -273,6 +281,39 @@ export function CrmClient({
     return companyScopedContacts.filter((c) => c.name.toLowerCase().includes(q));
   }, [companyScopedContacts, search]);
 
+  const [contactsPage, setContactsPage] = useState(1);
+  const totalContactsPages = Math.max(1, Math.ceil(filteredContacts.length / CONTACTS_PAGE_SIZE));
+  const currentContactsPage = Math.min(contactsPage, totalContactsPages);
+  const pagedContacts = useMemo(
+    () => filteredContacts.slice((currentContactsPage - 1) * CONTACTS_PAGE_SIZE, currentContactsPage * CONTACTS_PAGE_SIZE),
+    [filteredContacts, currentContactsPage]
+  );
+
+  // Jumps to whichever page contains the selected contact (so it stays
+  // visible/highlighted in the list, matching the pre-pagination behavior
+  // where the selection was always somewhere in the single scrollable list)
+  // whenever selection, search, campaign filter, or company scope changes.
+  // Falls back to page 1 if the selected contact isn't in the current
+  // filtered set at all (e.g. hidden by an unrelated search).
+  useEffect(() => {
+    const idx = selectedId ? filteredContacts.findIndex((c) => c.id === selectedId) : -1;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- derives the page from the just-changed selection/filter deps, not a synchronous mirror of render state
+    setContactsPage(idx === -1 ? 1 : Math.floor(idx / CONTACTS_PAGE_SIZE) + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- filteredContacts is recomputed fresh from these same deps each render; omitted so a contacts refresh (router.refresh) doesn't reset the page on its own
+  }, [selectedId, search, filterKey, activeCompany]);
+
+  // Scrolls the selected row fully into view within the (now viewport-capped)
+  // list whenever it changes — otherwise the highlighted row can land
+  // partially behind the scroll boundary, which reads as a card with a
+  // different size/shape than its fully-visible siblings. Re-runs once the
+  // page-correction effect above has settled `currentContactsPage` on the
+  // page that actually contains the selected row, so the ref is already
+  // attached to the right DOM node by the time this fires.
+  const selectedRowRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedId, currentContactsPage]);
+
   // A /crm?contact= link that failed to resolve (not found, no access, or
   // excluded by role-scoping) or that points at a contact outside the
   // currently active company filter. In either case we must not silently
@@ -387,14 +428,16 @@ export function CrmClient({
       )}
 
       <div className={cn("grid grid-cols-1 gap-6 lg:grid-cols-[280px_minmax(0,1fr)_300px]", view === "board" && "hidden")}>
-        {/* Contacts list */}
-        <Card className="flex flex-col gap-4 p-5">
-          <div className="flex items-center justify-between">
+        {/* Contacts list — height capped to the viewport so a growing contact
+            count scrolls inside this panel instead of lengthening the whole
+            page; header/filter/search stay outside the scrollable region. */}
+        <Card className="flex max-h-[calc(100vh-280px)] min-h-[520px] flex-col gap-4 p-5">
+          <div className="flex shrink-0 items-center justify-between">
             <CardTitle>{t("Contacts", "Contactos")}</CardTitle>
             <Badge tone="green">{filteredContacts.length}</Badge>
           </div>
 
-          <div>
+          <div className="shrink-0">
             <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-tertiary">
               {t("CAMPAIGN", "CAMPAÑA")}
             </label>
@@ -409,7 +452,7 @@ export function CrmClient({
             </Select>
           </div>
 
-          <div>
+          <div className="shrink-0">
             <SearchInput
               placeholder={t("Search client, phone", "Buscar cliente, teléfono")}
               value={search}
@@ -417,36 +460,40 @@ export function CrmClient({
             />
           </div>
 
-          <div className="flex flex-col gap-1.5 -mx-1">
+          <div className="-mx-1 flex min-h-0 flex-1 snap-y snap-mandatory flex-col gap-1.5 overflow-y-auto">
             {scopeLoading ? (
               <p className="px-3 py-6 text-center text-[13px] text-text-tertiary">{t("Loading...", "Cargando...")}</p>
             ) : (
               <>
-                {filteredContacts.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => selectContact(c.id)}
-                    className={cn(
-                      "flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
-                      selectedId === c.id || (!selectedId && selected?.id === c.id) ? "bg-brand-50" : "hover:bg-surface-muted"
-                    )}
-                  >
-                    <Avatar name={c.name} size={34} />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-[13.5px] font-semibold text-text-primary">{c.name}</p>
-                      <p className="truncate text-[12px] text-text-secondary">{c.companyName}</p>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end gap-1">
-                      <span
-                        className={cn("h-1.5 w-1.5 rounded-full", toneDot[STAGE_TONE[c.stageKey as Stage] ?? "gray"])}
-                        aria-hidden
-                      />
-                      <span className="text-[11px] text-text-tertiary" suppressHydrationWarning>
-                        {formatRelativeTime(c.lastContactAt, language)}
-                      </span>
-                    </div>
-                  </button>
-                ))}
+                {pagedContacts.map((c) => {
+                  const isSelected = selectedId === c.id || (!selectedId && selected?.id === c.id);
+                  return (
+                    <button
+                      key={c.id}
+                      ref={isSelected ? selectedRowRef : undefined}
+                      onClick={() => selectContact(c.id)}
+                      className={cn(
+                        "flex min-h-[58px] shrink-0 snap-start items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
+                        isSelected ? "bg-brand-50" : "hover:bg-surface-muted"
+                      )}
+                    >
+                      <Avatar name={c.name} size={34} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[13.5px] font-semibold text-text-primary">{c.name}</p>
+                        <p className="truncate text-[12px] text-text-secondary">{c.companyName}</p>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        <span
+                          className={cn("h-1.5 w-1.5 rounded-full", toneDot[STAGE_TONE[c.stageKey as Stage] ?? "gray"])}
+                          aria-hidden
+                        />
+                        <span className="text-[11px] text-text-tertiary" suppressHydrationWarning>
+                          {formatRelativeTime(c.lastContactAt, language)}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
                 {filteredContacts.length === 0 && (
                   <p className="px-3 py-6 text-center text-[13px] text-text-tertiary">
                     {companyScopedContacts.length === 0
@@ -457,6 +504,40 @@ export function CrmClient({
               </>
             )}
           </div>
+
+          {totalContactsPages > 1 && (
+            <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border pt-3">
+              <span className="text-[11.5px] text-text-tertiary">
+                {t(
+                  `${(currentContactsPage - 1) * CONTACTS_PAGE_SIZE + 1}–${Math.min(currentContactsPage * CONTACTS_PAGE_SIZE, filteredContacts.length)} of ${filteredContacts.length}`,
+                  `${(currentContactsPage - 1) * CONTACTS_PAGE_SIZE + 1}–${Math.min(currentContactsPage * CONTACTS_PAGE_SIZE, filteredContacts.length)} de ${filteredContacts.length}`
+                )}
+              </span>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={currentContactsPage <= 1}
+                  onClick={() => setContactsPage(currentContactsPage - 1)}
+                  aria-label={t("Previous page", "Página anterior")}
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </Button>
+                <span className="text-[11.5px] text-text-tertiary">
+                  {currentContactsPage} / {totalContactsPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={currentContactsPage >= totalContactsPages}
+                  onClick={() => setContactsPage(currentContactsPage + 1)}
+                  aria-label={t("Next page", "Página siguiente")}
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
         </Card>
 
         {/* Contact detail */}
@@ -465,7 +546,10 @@ export function CrmClient({
             {t("Select or create a contact to see details.", "Selecciona o crea un contacto para ver los detalles.")}
           </Card>
         ) : (
-          <Card className="flex flex-col gap-6 p-6">
+          <Card
+            key={`detail-${selected.id}`}
+            className="page-content-in flex max-h-[calc(100vh-280px)] min-h-[520px] flex-col gap-6 overflow-y-auto p-6"
+          >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="flex items-start gap-4">
                 <Avatar name={selected.name} size={52} />
@@ -526,68 +610,66 @@ export function CrmClient({
               </div>
             </div>
 
-            <div>
-              <p className="mb-3 text-[15px] font-semibold text-text-primary">{t("Omnichannel history", "Historial omnicanal")}</p>
+            <p className="text-[15px] font-semibold text-text-primary">{t("Omnichannel history", "Historial omnicanal")}</p>
 
-              <NoteComposer
-                key={selected.id}
-                contactId={selected.id}
-                onAdded={(newActivity) => {
-                  startTransition(() => setActivities((prev) => [newActivity, ...prev]));
-                  router.refresh();
-                }}
-              />
+            <NoteComposer
+              key={selected.id}
+              contactId={selected.id}
+              onAdded={(newActivity) => {
+                startTransition(() => setActivities((prev) => [newActivity, ...prev]));
+                router.refresh();
+              }}
+            />
 
-              <div className="mt-4 flex flex-wrap gap-2">
-                {historyTabs.map((tab) => (
-                  <button
-                    key={tab}
-                    onClick={() => setHistoryTab(tab)}
-                    className={cn(
-                      "rounded-full px-3.5 py-1.5 text-[12.5px] font-medium transition-colors",
-                      historyTab === tab
-                        ? "bg-text-primary text-white"
-                        : "bg-white border border-border text-text-secondary hover:bg-surface-muted"
-                    )}
-                  >
-                    {tab}
-                  </button>
-                ))}
-              </div>
+            <div className="flex flex-wrap gap-2">
+              {historyTabs.map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setHistoryTab(tab)}
+                  className={cn(
+                    "rounded-full px-3.5 py-1.5 text-[12.5px] font-medium transition-colors",
+                    historyTab === tab
+                      ? "bg-text-primary text-white"
+                      : "bg-white border border-border text-text-secondary hover:bg-surface-muted"
+                  )}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
 
-              <div className="mt-4 flex flex-col gap-2">
-                {activitiesLoading && (
-                  <p className="py-4 text-center text-[13px] text-text-tertiary">{t("Loading...", "Cargando...")}</p>
-                )}
-                {!activitiesLoading &&
-                  filteredActivities.map((a) => {
-                    const Icon = channelIcon[a.channel ?? a.type] ?? MessageCircle;
-                    const typeLabel = getActivityLabel(a, language);
-                    const outcomeLabel = a.outcome ? stageLabels[a.outcome as Stage] ?? a.outcome : null;
-                    return (
-                      <div key={a.id} className="flex items-center gap-3 rounded-xl border border-border p-3.5">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand">
-                          <Icon className="h-4 w-4" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-[13.5px] font-semibold text-text-primary">
-                            {typeLabel}
-                            {outcomeLabel ? ` · ${outcomeLabel}` : ""}
-                          </p>
-                          <p className="truncate text-[12px] text-text-secondary">{a.notes || a.authorName}</p>
-                        </div>
-                        <span className="shrink-0 text-[12px] text-text-tertiary" suppressHydrationWarning>
-                          {formatRelativeTime(a.createdAt, language)}
-                        </span>
+            <div className="flex flex-col gap-2">
+              {activitiesLoading && (
+                <p className="py-4 text-center text-[13px] text-text-tertiary">{t("Loading...", "Cargando...")}</p>
+              )}
+              {!activitiesLoading &&
+                filteredActivities.map((a) => {
+                  const Icon = channelIcon[a.channel ?? a.type] ?? MessageCircle;
+                  const typeLabel = getActivityLabel(a, language);
+                  const outcomeLabel = a.outcome ? stageLabels[a.outcome as Stage] ?? a.outcome : null;
+                  return (
+                    <div key={a.id} className="flex items-center gap-3 rounded-xl border border-border p-3.5">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand">
+                        <Icon className="h-4 w-4" />
                       </div>
-                    );
-                  })}
-                {!activitiesLoading && filteredActivities.length === 0 && (
-                  <p className="rounded-xl border border-dashed border-border py-6 text-center text-[13px] text-text-tertiary">
-                    {t("No activity recorded for this contact.", "No hay actividad registrada para este contacto.")}
-                  </p>
-                )}
-              </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[13.5px] font-semibold text-text-primary">
+                          {typeLabel}
+                          {outcomeLabel ? ` · ${outcomeLabel}` : ""}
+                        </p>
+                        <p className="truncate text-[12px] text-text-secondary">{a.notes || a.authorName}</p>
+                      </div>
+                      <span className="shrink-0 text-[12px] text-text-tertiary" suppressHydrationWarning>
+                        {formatRelativeTime(a.createdAt, language)}
+                      </span>
+                    </div>
+                  );
+                })}
+              {!activitiesLoading && filteredActivities.length === 0 && (
+                <p className="rounded-xl border border-dashed border-border py-6 text-center text-[13px] text-text-tertiary">
+                  {t("No activity recorded for this contact.", "No hay actividad registrada para este contacto.")}
+                </p>
+              )}
             </div>
           </Card>
         )}
@@ -595,7 +677,7 @@ export function CrmClient({
         {/* Classify panel */}
         {selected && (
           <ClassifyPanel
-            key={selected.id}
+            key={`classify-${selected.id}`}
             contact={selected}
             stages={stages}
             users={assignableUsers}
@@ -903,7 +985,7 @@ function TaskList({ tasks, onCompleted }: { tasks: TaskWithAssignee[]; onComplet
   if (tasks.length === 0) return null;
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex shrink-0 flex-col gap-2">
       <p className="text-[13px] font-semibold text-text-primary">{t("Open tasks", "Tareas abiertas")}</p>
       {tasks.map((tk) => (
         <div key={tk.id} className="flex items-center gap-3 rounded-xl border border-border p-3">
@@ -1175,7 +1257,7 @@ function ClassifyPanel({
   }
 
   return (
-    <Card className="flex flex-col gap-4 p-6">
+    <Card className="page-content-in flex max-h-[calc(100vh-280px)] min-h-[520px] flex-col gap-4 overflow-y-auto p-6">
       <Badge tone="green" className="w-fit">
         {t("New interaction", "Nueva interacción")}
       </Badge>

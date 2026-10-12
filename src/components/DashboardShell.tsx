@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { Menu, Undo2 } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
@@ -66,6 +66,12 @@ export function DashboardShell({
   children: React.ReactNode;
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  // Keys the page-content wrapper so each route change remounts just that
+  // div (never Sidebar/TopBar/ImpersonationBanner, which live outside it) —
+  // this is what retriggers the `.page-content-in` enter animation below.
+  // Query-param-only navigation (e.g. /crm?contact=<id>) doesn't change
+  // pathname, so switching contacts/filters in-page never replays it.
+  const pathname = usePathname();
 
   return (
     <CurrentUserProvider userId={user.id}>
@@ -105,7 +111,12 @@ export function DashboardShell({
                   <TopBar />
 
                   <main className="flex-1 overflow-y-auto">
-                    <div className="mx-auto max-w-[1600px] px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8">{children}</div>
+                    <div
+                      key={pathname}
+                      className="page-content-in mx-auto max-w-[1600px] px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8"
+                    >
+                      {children}
+                    </div>
                   </main>
                 </div>
               </div>

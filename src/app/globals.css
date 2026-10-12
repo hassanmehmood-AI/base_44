@@ -296,11 +296,49 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator {
 .ds-card,
 .ds-button,
 .ds-input,
-.ds-sidebar,
 .ds-nav-item,
 .ds-shell {
   transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease,
     border-radius 200ms ease, color 200ms ease;
+}
+
+/* Same theme-swap transitions as above, plus the mobile open/close slide
+   (`translate`) and the desktop hover expand/collapse (`width`). Kept as its
+   own rule (rather than folded into the shared selector list) because this
+   file's rules are unlayered CSS, which always wins the cascade over
+   Tailwind's `@layer utilities` — so a `transition-transform` or
+   `transition-[width]` utility on the sidebar in JSX can never take effect
+   here; it has to be declared in this plain stylesheet instead. */
+.ds-sidebar {
+  transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease,
+    border-radius 200ms ease, color 200ms ease, translate 300ms ease-out,
+    width 500ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Page-content enter animation — applied to the single wrapper div inside
+   DashboardShell's <main> (keyed by pathname) so switching between CRM
+   pages (sidebar/top bar stay mounted, untouched) gets a subtle fade +
+   slide-up instead of popping in instantly. Reused as-is (no new keyframes)
+   wherever a panel wants the same subtle re-entrance, e.g. the CRM contact
+   detail/classify panels when switching contacts. Opacity + transform only,
+   so it's compositor-only and never triggers layout/scroll. */
+@keyframes page-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.page-content-in {
+  animation: page-content-in 350ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-content-in {
+    animation: none;
+  }
 }
 
 /* ==========================================================================

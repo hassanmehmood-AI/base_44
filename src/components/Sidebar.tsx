@@ -40,7 +40,7 @@ import { useCurrentUserId } from "@/context/CurrentUserContext";
 import { useLanguage } from "@/context/LanguageContext";
 
 const REVEAL =
-  "whitespace-nowrap lg:opacity-0 lg:-translate-x-1 transition-all duration-[650ms] ease-[cubic-bezier(0.16,1,0.3,1)] delay-0 lg:group-hover:delay-200 lg:group-hover:opacity-100 lg:group-hover:translate-x-0";
+  "whitespace-nowrap lg:opacity-0 lg:group-hover:opacity-100";
 
 // The confirm button lives inside a portal-rendered Modal, outside this
 // form's DOM subtree — the HTML `form` attribute (by id) is what still lets
@@ -149,9 +149,9 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        "ds-sidebar group peer fixed inset-y-0 left-0 z-50 flex w-72 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar shadow-2xl transition-transform duration-300 ease-out",
+        "ds-sidebar group peer fixed inset-y-0 left-0 z-50 flex w-72 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar shadow-2xl",
         mobileOpen ? "translate-x-0" : "-translate-x-full",
-        "lg:translate-x-0 lg:top-3 lg:left-3 lg:inset-y-auto lg:z-40 lg:max-h-[calc(100vh-1.5rem)] lg:w-[72px] lg:rounded-2xl lg:border lg:shadow-[0_2px_16px_rgba(0,0,0,0.12)] lg:transition-[width,box-shadow] lg:duration-[850ms] lg:ease-[cubic-bezier(0.16,1,0.3,1)] lg:hover:w-[260px] lg:hover:shadow-[8px_8px_32px_rgba(0,0,0,0.22)]"
+        "lg:translate-x-0 lg:inset-y-3 lg:left-3 lg:z-40 lg:w-[72px] lg:rounded-2xl lg:border lg:shadow-[0_2px_16px_rgba(0,0,0,0.12)] lg:hover:w-[260px] lg:hover:shadow-[8px_8px_32px_rgba(0,0,0,0.22)]"
       )}
     >
       <div className="flex items-center gap-2.5 px-5 pt-4 pb-1">
@@ -196,7 +196,7 @@ export function Sidebar({
           </button>
 
           {channelsOpen && (
-            <div className="flex flex-col gap-1 border-l border-sidebar-border ml-[22px] pl-2 lg:opacity-0 lg:pointer-events-none transition-opacity duration-[650ms] ease-[cubic-bezier(0.16,1,0.3,1)] delay-0 lg:group-hover:delay-200 lg:group-hover:opacity-100 lg:group-hover:pointer-events-auto">
+            <div className="flex flex-col gap-1 border-l border-sidebar-border ml-[22px] pl-2 lg:opacity-0 lg:pointer-events-none lg:group-hover:opacity-100 lg:group-hover:pointer-events-auto">
               {channelLinks.map((l) => (
                 <NavItem key={l.href} {...l} active={pathname === l.href} indent onNavigate={onClose} />
               ))}
