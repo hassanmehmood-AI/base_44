@@ -142,6 +142,13 @@ export async function getLiveConnectionStatus(companyId: string): Promise<LiveCo
 
   try {
     const brand = await metricoolProvider.getBrand(blogId);
+    // TEMPORARY diagnostic — Metricool's spec never gave example
+    // availableConnectors values, and a real connected brand (Web Nova,
+    // Facebook) isn't being detected by the guessed "contains 'facebook'"
+    // match below. Logs the full brand response (no secrets in it — just
+    // label/connectors/network metadata) so the real shape can be read from
+    // Railway's logs and the match fixed for real. Remove once confirmed.
+    console.log(`[metricoolOnboarding] getBrand(${blogId}) raw response:`, JSON.stringify(brand));
     // Exact connector string values aren't confirmed from the spec alone —
     // match case-insensitively by substring rather than an exact literal.
     const connectors = (brand.availableConnectors ?? []).map((c) => c.toLowerCase());
