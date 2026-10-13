@@ -50,6 +50,13 @@
       "when": 1791273219444,
       "tag": "0006_cold_bug",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791875004791,
+      "tag": "0007_add_conversation_social_account_link",
+      "breakpoints": true
     }
   ]
 }

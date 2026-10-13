@@ -1,5 +1,6 @@
 import * as companiesRepo from "@/server/repositories/companies";
 import { requireSession, UnauthorizedError } from "@/server/services/authorization";
+import { autoProvisionMetricoolBrand } from "@/server/services/metricoolOnboarding";
 
 const slugify = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 
@@ -16,7 +17,20 @@ export async function createCompany(name: string) {
   if (!slug) throw new Error("Company name must contain at least one letter or number.");
   if (await companiesRepo.existsByName(trimmed)) throw new Error("A company with that name already exists.");
 
-  return companiesRepo.create({ name: trimmed, slug });
+  const company = await companiesRepo.create({ name: trimmed, slug });
+
+  // Best-effort — autoProvisionMetricoolBrand never throws (see
+  // metricoolOnboarding.ts), but a defensive catch here too means a Metricool
+  // outage can never take down company creation even if that contract
+  // changes later. Failure just leaves the company unprovisioned, visible
+  // and retryable from the Configuración UI.
+  try {
+    await autoProvisionMetricoolBrand(company.id, company.name);
+  } catch (e) {
+    console.error(`[companies] Metricool auto-provisioning failed for company ${company.id}:`, e);
+  }
+
+  return company;
 }
 
 /** Companies the signed-in user is allowed to see — SUPERUSER gets every

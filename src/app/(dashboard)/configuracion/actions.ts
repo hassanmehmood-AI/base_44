@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import * as pipelineStagesService from "@/server/services/pipelineStages";
 import * as companiesService from "@/server/services/companies";
 import * as usersService from "@/server/services/users";
+import * as metricoolOnboardingService from "@/server/services/metricoolOnboarding";
 import { UnauthorizedError } from "@/server/services/authorization";
 import type { RoleKey, ModuleKey } from "@/server/constants";
 
@@ -15,6 +16,71 @@ export async function createCompanyAction(name: string): Promise<ActionResult> {
   } catch (e) {
     if (e instanceof UnauthorizedError) return { error: "Only Superusers can add companies." };
     if (e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+/** DB-only status (no Metricool call) for every given company at once —
+ * safe to call on every Configuración page load. */
+export async function getMetricoolProvisioningStatusAction(companyIds: string[]) {
+  try {
+    return { statuses: await metricoolOnboardingService.getProvisioningStatusForCompanies(companyIds) };
+  } catch {
+    return { statuses: [] as metricoolOnboardingService.CompanyProvisioningStatus[] };
+  }
+}
+
+/** Live Metricool call — only invoked when the user explicitly asks (e.g. a
+ * "Check status" button), never on page load. */
+export async function getLiveMetricoolConnectionStatusAction(companyId: string) {
+  try {
+    return await metricoolOnboardingService.getLiveConnectionStatus(companyId);
+  } catch (e) {
+    const error = e instanceof UnauthorizedError || e instanceof Error ? e.message : "Unknown error.";
+    return { provisioned: false as const, error };
+  }
+}
+
+export async function retryMetricoolProvisioningAction(
+  companyId: string
+): Promise<ActionResult & { blogId?: string }> {
+  const result = await metricoolOnboardingService.retryProvisioning(companyId).catch((e) => {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { ok: false as const, reason: "error" as const, message: e.message };
+    throw e;
+  });
+  if (!result.ok) return { error: result.message };
+  revalidatePath("/configuracion");
+  return { ok: true, blogId: result.blogId };
+}
+
+export async function generateMetricoolConnectionLinkAction(
+  companyId: string
+): Promise<ActionResult & { link?: string; expiresAt?: string | null }> {
+  try {
+    const result = await metricoolOnboardingService.generateConnectionLink(companyId);
+    return { ok: true, link: result.link, expiresAt: result.expiresAt };
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
+    throw e;
+  }
+}
+
+export async function listLinkableMetricoolBrandsAction() {
+  try {
+    return { brands: await metricoolOnboardingService.listLinkableBrands() };
+  } catch (e) {
+    const error = e instanceof UnauthorizedError || e instanceof Error ? e.message : "Unknown error.";
+    return { brands: [] as metricoolOnboardingService.LinkableBrand[], error };
+  }
+}
+
+export async function linkExistingMetricoolBrandAction(companyId: string, blogId: string): Promise<ActionResult> {
+  try {
+    await metricoolOnboardingService.linkExistingBrand(companyId, blogId);
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
     throw e;
   }
   revalidatePath("/configuracion");

@@ -7,8 +7,16 @@ import * as activitiesRepo from "@/server/repositories/activities";
 import * as companiesService from "@/server/services/companies";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import * as metaProvider from "@/server/integrations/meta";
+import * as metricoolProvider from "@/server/integrations/metricool";
+import type { CompanySocialAccount } from "@/server/repositories/companySocialAccounts";
 
 const CHANNEL = "SOCIAL";
+
+const METRICOOL_PLATFORMS = ["METRICOOL_INSTAGRAM", "METRICOOL_FACEBOOK"] as const;
+
+function metricoolProviderForPlatform(platform: string): metricoolProvider.MetricoolProvider {
+  return platform === "METRICOOL_FACEBOOK" ? "FACEBOOK" : "INSTAGRAM";
+}
 
 export async function listSocialConversationsForCurrentUser() {
   await requireSession();
@@ -31,7 +39,20 @@ export async function replyToConversation(conversationId: string, body: string) 
   await assertCompanyAccess(conversation.companyId);
   if (!conversation.externalThreadId) throw new Error("This conversation has no external sender id to reply to.");
 
-  await metaProvider.sendMessage(conversation.externalThreadId, body);
+  // Conversations created before companySocialAccountId existed (or created
+  // by the Meta webhook, which never sets it) fall through to the original
+  // direct-Meta-Graph-API send — existing Meta behavior is unchanged. Only
+  // conversations explicitly linked to a METRICOOL_* account route through
+  // Metricool instead.
+  const account = conversation.companySocialAccountId
+    ? await companySocialAccountsRepo.findById(conversation.companySocialAccountId)
+    : undefined;
+
+  if (account && (METRICOOL_PLATFORMS as readonly string[]).includes(account.platform)) {
+    await sendViaMetricool(account, conversation.externalThreadId, body);
+  } else {
+    await metaProvider.sendMessage(conversation.externalThreadId, body);
+  }
 
   const now = new Date();
   await messagesRepo.create({
@@ -55,6 +76,26 @@ export async function replyToConversation(conversationId: string, body: string) 
       createdBy: session.user.id,
     });
   }
+}
+
+/** Resolves who to reply to by re-fetching the conversation from Metricool
+ * rather than storing a participant id locally — avoids a schema change for
+ * one field only needed at send time. NOT yet verified against a live
+ * payload: which participant is "the contact" vs. the connected brand
+ * account itself isn't confirmed from the spec alone (Message.from/to exist,
+ * but their exact semantics need a real example to confirm). Test this
+ * specific path carefully with a low-stakes conversation before trusting it
+ * for real replies. */
+async function sendViaMetricool(account: CompanySocialAccount, externalThreadId: string, body: string): Promise<void> {
+  const provider = metricoolProviderForPlatform(account.platform);
+  const remoteConversations = await metricoolProvider.listConversations(account.externalPageId, provider);
+  const remote = remoteConversations.find((c) => c.id === externalThreadId);
+  if (!remote) throw new Error("Conversation not found in Metricool — it may have been removed or expired.");
+
+  const recipient = remote.participants[0]?.id;
+  if (!recipient) throw new Error("Could not determine who to reply to for this Metricool conversation.");
+
+  await metricoolProvider.sendMessage(account.externalPageId, provider, externalThreadId, recipient, body);
 }
 
 /** The "contact association" step from guide §16 — inbound social messages
@@ -118,4 +159,94 @@ export async function ingestInboundMessage(input: {
   await conversationsRepo.updateLastMessageAt(conversation.id, now);
 
   return conversation;
+}
+
+/** Metricool poll-sync entry point — Metricool's Inbox has no webhook (its
+ * own docs say messages must be checked manually/polled), so this is called
+ * on an interval per connected account by the cron route instead of being
+ * pushed to like ingestInboundMessage above. Same no-session model: trust
+ * comes from `account` being a row already registered in
+ * company_social_accounts, never from caller-supplied input.
+ *
+ * Mirrors ingestInboundMessage's scope exactly — find-or-create the
+ * conversation, append new messages, bump lastMessageAt — and deliberately
+ * does NOT log an activity per inbound message, matching how the Meta
+ * webhook path doesn't either (an activity is only ever logged when an
+ * agent replies, see replyToConversation above).
+ *
+ * Idempotent and safe to re-run on every poll tick: new messages are
+ * deduped against what's already stored via Metricool's own message id,
+ * kept in messages.metadata.externalId — including messages this same
+ * reply flow already wrote at send time, so a message sent through this CRM
+ * is never double-inserted when it shows back up in the next poll.
+ *
+ * Conversations are matched by (companyId, channel, externalThreadId =
+ * Metricool's conversation id) — a completely different id space from
+ * Meta's PSID-keyed conversations, so there's no possibility of a Metricool
+ * sync colliding with an existing Meta-sourced conversation row. */
+export async function syncMetricoolConversations(account: {
+  id: string;
+  companyId: string;
+  platform: string;
+  externalPageId: string;
+}): Promise<{ conversationsSeen: number; messagesAdded: number }> {
+  const provider = metricoolProviderForPlatform(account.platform);
+  const remoteConversations = await metricoolProvider.listConversations(account.externalPageId, provider);
+
+  let messagesAdded = 0;
+
+  for (const remote of remoteConversations) {
+    let conversation = await conversationsRepo.findByExternalThreadId(account.companyId, CHANNEL, remote.id);
+    if (!conversation) {
+      const otherParticipant = remote.participants.find((p) => p.name) ?? remote.participants[0];
+      conversation = await conversationsRepo.create({
+        companyId: account.companyId,
+        channel: CHANNEL,
+        externalThreadId: remote.id,
+        subject: otherParticipant?.name ?? null,
+        companySocialAccountId: account.id,
+      });
+    }
+
+    const existing = await messagesRepo.findByConversationId(conversation.id);
+    const seenExternalIds = new Set(
+      existing.map((m) => (m.metadata as { externalId?: string } | null)?.externalId).filter((id): id is string => Boolean(id))
+    );
+
+    const newRemoteMessages = remote.messages
+      .filter((m) => !seenExternalIds.has(m.id))
+      .sort((a, b) => new Date(a.publicationDateTime).getTime() - new Date(b.publicationDateTime).getTime());
+    if (newRemoteMessages.length === 0) continue;
+
+    let latestSentAt: Date | null = null;
+    for (const m of newRemoteMessages) {
+      const sentAt = new Date(m.publicationDateTime);
+      // Everything newly seen here defaults to INBOUND: genuine outbound
+      // replies sent through this CRM are already written (with their
+      // Metricool-assigned id) by sendViaMetricool/replyToConversation at
+      // send time, so they're already in seenExternalIds above and never
+      // reach this branch. Known gap: a reply sent from Metricool's own web
+      // UI (bypassing this CRM entirely) would show up here and be
+      // mis-labeled INBOUND, since Metricool's from/to fields aren't
+      // confirmed to reliably identify the connected brand account vs. the
+      // contact — verify against a live payload if that scenario matters.
+      const senderLabel = remote.participants.find((p) => p.id === m.from)?.name ?? null;
+      await messagesRepo.create({
+        conversationId: conversation.id,
+        direction: "INBOUND",
+        senderLabel,
+        body: m.text,
+        metadata: { externalId: m.id },
+        sentAt,
+      });
+      messagesAdded += 1;
+      latestSentAt = sentAt;
+    }
+
+    if (latestSentAt) {
+      await conversationsRepo.updateLastMessageAt(conversation.id, latestSentAt);
+    }
+  }
+
+  return { conversationsSeen: remoteConversations.length, messagesAdded };
 }

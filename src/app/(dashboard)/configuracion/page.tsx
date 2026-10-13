@@ -2,6 +2,7 @@ import { auth } from "@/auth";
 import { getDefaultPipelineStages } from "@/server/services/pipelineStages";
 import * as companiesRepo from "@/server/repositories/companies";
 import * as usersService from "@/server/services/users";
+import * as metricoolOnboardingService from "@/server/services/metricoolOnboarding";
 import { ConfiguracionClient, type UserRow } from "./ConfiguracionClient";
 
 export default async function ConfiguracionPage() {
@@ -11,6 +12,12 @@ export default async function ConfiguracionPage() {
     companiesRepo.findAllActive(),
   ]);
   const isSuperuser = session?.user.roleKey === "SUPERUSER";
+  // DB-only (no Metricool API call) — safe on every page load. Only fetched
+  // for Superusers since that's who can see/act on it in the UI; everyone
+  // else gets an empty list, same shape either way.
+  const metricoolStatuses = isSuperuser
+    ? await metricoolOnboardingService.getProvisioningStatusForCompanies(companies.map((c) => c.id))
+    : [];
   const isDirector = session?.user.roleKey === "DIRECTOR";
   const isManager = session?.user.roleKey === "CALL_CENTER_LEAD";
   // Can this viewer create new users at all? Superuser (any), Director
@@ -64,6 +71,7 @@ export default async function ConfiguracionPage() {
       stages={stages}
       canManageStages={isSuperuser}
       companies={companies}
+      metricoolStatuses={metricoolStatuses}
       canManageAdmin={isSuperuser}
       canAddUsers={canAddUsers}
       canManagePermissions={canManagePermissions}

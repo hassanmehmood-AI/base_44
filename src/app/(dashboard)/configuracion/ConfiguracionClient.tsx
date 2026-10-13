@@ -31,7 +31,13 @@ import {
   getAgentManagerAction,
   getManagerTeamAction,
   setAgentManagerAction,
+  retryMetricoolProvisioningAction,
+  generateMetricoolConnectionLinkAction,
+  listLinkableMetricoolBrandsAction,
+  linkExistingMetricoolBrandAction,
+  getLiveMetricoolConnectionStatusAction,
 } from "./actions";
+import type { CompanyProvisioningStatus, LinkableBrand } from "@/server/services/metricoolOnboarding";
 
 export type UserRow = {
   id: string;
@@ -79,6 +85,7 @@ export function ConfiguracionClient({
   stages,
   canManageStages,
   companies: realCompanies,
+  metricoolStatuses,
   canManageAdmin,
   canAddUsers,
   canManagePermissions,
@@ -90,6 +97,9 @@ export function ConfiguracionClient({
   stages: PipelineStage[];
   canManageStages: boolean;
   companies: Company[];
+  /** DB-only provisioning status per company (no Metricool call) — see
+   * configuracion/page.tsx. Empty for non-Superuser viewers. */
+  metricoolStatuses: CompanyProvisioningStatus[];
   canManageAdmin: boolean;
   canAddUsers: boolean;
   /** Superuser (any user) or Director (their own company's Managers/Agents
@@ -552,14 +562,23 @@ export function ConfiguracionClient({
       {tab === "companies" && (
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
           {realCompanies.map((c) => (
-            <Card key={c.id} className="flex items-center gap-3 p-5">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
-                <Building2 className="h-5 w-5" />
+            <Card key={c.id} className="flex flex-col gap-4 p-5">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
+                  <Building2 className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-[14.5px] font-semibold text-text-primary">{c.name}</p>
+                  <p className="truncate text-[12px] text-text-tertiary">{c.slug}</p>
+                </div>
               </div>
-              <div className="min-w-0">
-                <p className="truncate text-[14.5px] font-semibold text-text-primary">{c.name}</p>
-                <p className="truncate text-[12px] text-text-tertiary">{c.slug}</p>
-              </div>
+              {canManageAdmin && (
+                <CompanyMetricoolStatus
+                  companyId={c.id}
+                  companyName={c.name}
+                  initialBlogId={metricoolStatuses.find((s) => s.companyId === c.id)?.blogId ?? null}
+                />
+              )}
             </Card>
           ))}
           {realCompanies.length === 0 && (
@@ -578,6 +597,222 @@ export function ConfiguracionClient({
         viewerRoleKey={viewerRoleKey}
       />
     </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Metricool onboarding — per-company brand provisioning/connection status.
+// See src/server/services/metricoolOnboarding.ts for the full write-up of
+// why this is three separate calls (DB-only initial status from the page,
+// a live on-demand status check, and link generation) rather than one.
+// -----------------------------------------------------------------------------
+
+function CompanyMetricoolStatus({
+  companyId,
+  companyName,
+  initialBlogId,
+}: {
+  companyId: string;
+  companyName: string;
+  initialBlogId: string | null;
+}) {
+  const { t } = useLanguage();
+  const [blogId, setBlogId] = useState(initialBlogId);
+  const [retrying, setRetrying] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [live, setLive] = useState<{ instagramConnected: boolean; facebookConnected: boolean } | undefined>();
+
+  async function handleRetry() {
+    setRetrying(true);
+    setError(undefined);
+    const result = await retryMetricoolProvisioningAction(companyId);
+    setRetrying(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    if (result.blogId) setBlogId(result.blogId);
+  }
+
+  async function handleCheckStatus() {
+    setChecking(true);
+    setError(undefined);
+    const result = await getLiveMetricoolConnectionStatusAction(companyId);
+    setChecking(false);
+    if ("error" in result && result.error) {
+      setError(result.error);
+      return;
+    }
+    if (result.provisioned && "instagramConnected" in result) {
+      setLive({ instagramConnected: result.instagramConnected, facebookConnected: result.facebookConnected });
+    }
+  }
+
+  async function handleConnect() {
+    setConnecting(true);
+    setError(undefined);
+    const result = await generateMetricoolConnectionLinkAction(companyId);
+    setConnecting(false);
+    if (result.error || !result.link) {
+      setError(result.error ?? t("Something went wrong.", "Algo salió mal."));
+      return;
+    }
+    // Opens Metricool's own hosted connection panel — the authorized user
+    // completes Instagram/Facebook's real OAuth consent there. This CRM
+    // never collects or proxies that consent itself (see
+    // integrations/metricool.ts's createConnectionLink doc comment).
+    window.open(result.link, "_blank", "noopener,noreferrer");
+  }
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-semibold tracking-wide text-text-tertiary">METRICOOL</p>
+        {blogId && (
+          <Badge tone={live ? (live.instagramConnected || live.facebookConnected ? "green" : "amber") : "gray"}>
+            {live
+              ? live.instagramConnected && live.facebookConnected
+                ? t("IG + FB connected", "IG + FB conectados")
+                : live.instagramConnected
+                  ? t("Instagram connected", "Instagram conectado")
+                  : live.facebookConnected
+                    ? t("Facebook connected", "Facebook conectado")
+                    : t("Not connected yet", "Aún no conectado")
+              : t(`Brand #${blogId}`, `Marca #${blogId}`)}
+          </Badge>
+        )}
+      </div>
+
+      {!blogId ? (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={retrying} onClick={handleRetry}>
+            {retrying ? t("Creating...", "Creando...") : t("Create Metricool brand", "Crear marca en Metricool")}
+          </Button>
+          <Button type="button" size="sm" variant="outline" onClick={() => setLinkOpen(true)}>
+            {t("Link existing brand", "Vincular marca existente")}
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={connecting} onClick={handleConnect}>
+            {connecting
+              ? t("Generating link...", "Generando enlace...")
+              : t("Connect Instagram/Facebook", "Conectar Instagram/Facebook")}
+          </Button>
+          <Button type="button" size="sm" variant="outline" disabled={checking} onClick={handleCheckStatus}>
+            {checking ? t("Checking...", "Comprobando...") : t("Check status", "Comprobar estado")}
+          </Button>
+        </div>
+      )}
+      {error && <p className="text-[12px] text-danger">{error}</p>}
+
+      <LinkMetricoolBrandModal
+        open={linkOpen}
+        companyId={companyId}
+        companyName={companyName}
+        onClose={() => setLinkOpen(false)}
+        onLinked={(linkedBlogId) => {
+          setBlogId(linkedBlogId);
+          setLinkOpen(false);
+        }}
+      />
+    </div>
+  );
+}
+
+function LinkMetricoolBrandModal({
+  open,
+  companyId,
+  companyName,
+  onClose,
+  onLinked,
+}: {
+  open: boolean;
+  companyId: string;
+  companyName: string;
+  onClose: () => void;
+  onLinked: (blogId: string) => void;
+}) {
+  const { t } = useLanguage();
+  const [brands, setBrands] = useState<LinkableBrand[]>([]);
+  const [selectedBlogId, setSelectedBlogId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- kicks off a loading flag for the fetch this effect triggers, not a synchronous derived-state mirror
+    setLoading(true);
+    setError(undefined);
+    listLinkableMetricoolBrandsAction().then((r) => {
+      if (!active) return;
+      setLoading(false);
+      if (r.error) setError(r.error);
+      setBrands(r.brands);
+      setSelectedBlogId(r.brands.find((b) => !b.alreadyLinked)?.blogId ?? "");
+    });
+    return () => {
+      active = false;
+    };
+  }, [open]);
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!selectedBlogId) return;
+    setPending(true);
+    setError(undefined);
+    const result = await linkExistingMetricoolBrandAction(companyId, selectedBlogId);
+    setPending(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    onLinked(selectedBlogId);
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={t(`Link a Metricool brand to ${companyName}`, `Vincular una marca de Metricool a ${companyName}`)}
+    >
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        {loading ? (
+          <p className="text-[13.5px] text-text-tertiary">{t("Loading brands...", "Cargando marcas...")}</p>
+        ) : brands.length === 0 ? (
+          <p className="text-[13.5px] text-text-tertiary">
+            {t("No Metricool brands found on this account.", "No se encontraron marcas de Metricool en esta cuenta.")}
+          </p>
+        ) : (
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">
+              {t("METRICOOL BRAND", "MARCA DE METRICOOL")}
+            </label>
+            <Select value={selectedBlogId} onChange={(e) => setSelectedBlogId(e.target.value)}>
+              {brands.map((b) => (
+                <option key={b.blogId} value={b.blogId}>
+                  {b.label} {b.alreadyLinked ? t("(already linked)", "(ya vinculada)") : ""}
+                </option>
+              ))}
+            </Select>
+          </div>
+        )}
+        {error && <p className="text-[13px] text-danger">{error}</p>}
+        <div className="flex justify-end gap-3">
+          <Button type="button" variant="outline" onClick={onClose}>
+            {t("Cancel", "Cancelar")}
+          </Button>
+          <Button type="submit" disabled={pending || !selectedBlogId}>
+            {pending ? t("Linking...", "Vinculando...") : t("Link brand", "Vincular marca")}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

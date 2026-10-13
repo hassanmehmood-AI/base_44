@@ -297,6 +297,14 @@ export const conversations = pgTable("conversations", {
   externalThreadId: text("external_thread_id"),
   subject: text("subject"),
   assignedUserId: uuid("assigned_user_id").references(() => users.id, { onDelete: "set null" }),
+  // Which connected account (and therefore which provider — Meta's direct
+  // Graph API vs. Metricool — see company_social_accounts.platform below)
+  // this SOCIAL conversation came from. Null for existing conversations
+  // created before this column existed (legacy rows keep working — reply
+  // logic falls back to the direct Meta provider when this is null).
+  companySocialAccountId: uuid("company_social_account_id").references(() => companySocialAccounts.id, {
+    onDelete: "set null",
+  }),
   lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
   createdAt: createdAt(),
 }, (t) => [
@@ -322,11 +330,17 @@ export const messages = pgTable("messages", {
  * inbound Meta webhook (which only carries a Page ID) can resolve which
  * company's conversations table a message belongs to. One row per connected
  * page — added for guide §16 Social; populated when a company connects a
- * Facebook Page/Instagram account (no UI for that yet, see guide). */
+ * Facebook Page/Instagram account (no UI for that yet, see guide).
+ *
+ * Also doubles as the account mapping for the Metricool integration (one
+ * shared Metricool account managing every company's Instagram/Facebook —
+ * see src/server/integrations/metricool.ts): for those rows, externalPageId
+ * holds the Metricool `blogId` for that company's connected brand, not a
+ * Meta Page ID. */
 export const companySocialAccounts = pgTable("company_social_accounts", {
   id: id(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  // META_PAGE | META_INSTAGRAM
+  // META_PAGE | META_INSTAGRAM | METRICOOL_INSTAGRAM | METRICOOL_FACEBOOK
   platform: text("platform").notNull(),
   externalPageId: text("external_page_id").notNull(),
   createdAt: createdAt(),
