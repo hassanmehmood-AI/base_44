@@ -22,7 +22,106 @@ function metricoolProviderForPlatform(platform: string): metricoolProvider.Metri
 export async function listSocialConversationsForCurrentUser() {
   await requireSession();
   const allowed = await companiesService.getAllowedCompaniesForCurrentUser();
-  return conversationsRepo.findManyByCompanyIdsAndChannel(allowed.map((c) => c.id), CHANNEL);
+  const conversations = await conversationsRepo.findManyByCompanyIdsAndChannel(allowed.map((c) => c.id), CHANNEL);
+  return enrichWithFreshAvatars(conversations);
+}
+
+/** How long enrichment waits per connected account before giving up on that
+ * account and falling back to whatever's already stored. This is a "soft"
+ * timeout (Promise.race, not an AbortController) because listConversations/
+ * metricoolFetch (integrations/metricool.ts) don't accept a cancellation
+ * signal today, and threading one through would mean changing a function
+ * shared with the existing sync and reply flows — out of scope here. The
+ * already-in-flight fetch keeps running in the background either way; this
+ * only stops *this request's render* from waiting on it, which is what
+ * actually matters for page latency. 4s keeps worst case bounded (all
+ * accounts are queried in parallel, so this is the total added delay
+ * regardless of how many accounts there are) while comfortably exceeding the
+ * sub-second responses seen in normal operation. */
+const AVATAR_ENRICHMENT_TIMEOUT_MS = 4000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+/** Page-view-time avatar refresh — deliberately separate from (and never
+ * called by) syncMetricoolConversations/the cron route, so the message-sync
+ * flow and its schedule are completely untouched. Metricool's
+ * imageProfileUrl is a signed, short-lived Facebook Graph API URL (confirmed
+ * live: one expired within a few hours of being issued — see commit
+ * 8bde953's Avatar fix), so whatever value the regular 5-minute sync last
+ * persisted is frequently already dead by the time a person actually opens
+ * this page. This re-fetches a live value right when it's needed for
+ * display instead.
+ *
+ * Grouped by companySocialAccountId so each distinct connected account is
+ * queried at most once no matter how many of its conversations are being
+ * shown — never once per customer/row — and all accounts are queried in
+ * parallel, so this adds at most ~AVATAR_ENRICHMENT_TIMEOUT_MS to a page
+ * load regardless of how many connected accounts there are. Best-effort and
+ * side-effect-free: a Metricool failure OR timeout for one account is
+ * swallowed and that account's conversations are simply left on whatever
+ * customerAvatarUrl was already stored (itself already null-safe — the
+ * Avatar component already falls back to initials for a null or a dead URL).
+ * Nothing is written back to the database here; this only shapes what's
+ * returned to the caller for rendering. */
+async function enrichWithFreshAvatars<
+  T extends { id: string; customerAvatarUrl: string | null; companySocialAccountId: string | null; externalThreadId: string | null },
+>(conversations: T[]): Promise<T[]> {
+  const accountIds = [
+    ...new Set(conversations.map((c) => c.companySocialAccountId).filter((id): id is string => Boolean(id))),
+  ];
+  if (accountIds.length === 0) return conversations;
+
+  const freshAvatarByConversationId = new Map<string, string>();
+
+  await Promise.all(
+    accountIds.map(async (accountId) => {
+      try {
+        const account = await companySocialAccountsRepo.findById(accountId);
+        if (!account || !(METRICOOL_PLATFORMS as readonly string[]).includes(account.platform)) return;
+
+        const provider = metricoolProviderForPlatform(account.platform);
+        const remoteConversations = await withTimeout(
+          metricoolProvider.listConversations(account.externalPageId, provider),
+          AVATAR_ENRICHMENT_TIMEOUT_MS
+        );
+        const remoteByThreadId = new Map(remoteConversations.map((r) => [r.id, r]));
+
+        for (const c of conversations) {
+          if (c.companySocialAccountId !== accountId || !c.externalThreadId) continue;
+          const remote = remoteByThreadId.get(c.externalThreadId);
+          const otherParticipant = remote?.participants.find((p) => p.id !== remote.self);
+          if (otherParticipant?.imageProfileUrl) {
+            freshAvatarByConversationId.set(c.id, otherParticipant.imageProfileUrl);
+          }
+        }
+      } catch {
+        // Best-effort only — this account's conversations keep whatever
+        // customerAvatarUrl was already stored (or null, which the Avatar
+        // component already renders as initials).
+      }
+    })
+  );
+
+  if (freshAvatarByConversationId.size === 0) return conversations;
+  return conversations.map((c) =>
+    freshAvatarByConversationId.has(c.id)
+      ? { ...c, customerAvatarUrl: freshAvatarByConversationId.get(c.id)! }
+      : c
+  );
 }
 
 const FACEBOOK_PLATFORMS = ["META_PAGE", "METRICOOL_FACEBOOK"];
@@ -88,7 +187,12 @@ export async function getConversation(id: string) {
   if (!conversation) return undefined;
   await assertCompanyAccess(conversation.companyId);
   const messages = await messagesRepo.findByConversationId(id);
-  return { conversation, messages };
+  // Same page-view-time enrichment as the list (see enrichWithFreshAvatars) —
+  // without this, opening a conversation would revert its avatar from the
+  // freshly-enriched list value back to whatever's stored, since this reads
+  // straight from the DB above.
+  const [enriched] = await enrichWithFreshAvatars([conversation]);
+  return { conversation: enriched, messages };
 }
 
 export async function replyToConversation(conversationId: string, body: string) {
