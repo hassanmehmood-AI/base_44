@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Send, AtSign } from "lucide-react";
+import { Send } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -27,15 +27,43 @@ import {
 
 type SocialPlatform = "FACEBOOK" | "INSTAGRAM";
 
-function FacebookIcon({ className }: { className?: string }) {
+/** Platform-specific visual accents for the Social Media page only — purely
+ * presentational (colors/backgrounds), never affects which conversations
+ * load or how they're filtered (that's still platform/company state above).
+ * Applied via inline `style` rather than competing Tailwind background
+ * classes: this repo's `cn()` is a plain joiner (no tailwind-merge dedupe),
+ * so a utility class passed alongside a component's own variant class (e.g.
+ * Button's `bg-sidebar-active`) has no guaranteed override order — inline
+ * style always wins deterministically instead. Gradients (Instagram) also
+ * aren't expressible as a shared design-system token, so inline style is the
+ * one mechanism that covers both platforms uniformly. */
+const PLATFORM_THEME: Record<
+  SocialPlatform,
+  { accent: string; accentSoft: string; outgoingBubble: string; actionBackground: string }
+> = {
+  FACEBOOK: {
+    accent: "#1877F2",
+    accentSoft: "#EAF3FF",
+    outgoingBubble: "#0084FF",
+    actionBackground: "#0084FF",
+  },
+  INSTAGRAM: {
+    accent: "#C13584",
+    accentSoft: "#FDF2FA",
+    outgoingBubble: "linear-gradient(135deg, #833AB4 0%, #C13584 55%, #F77737 100%)",
+    actionBackground: "linear-gradient(135deg, #833AB4 0%, #C13584 55%, #F77737 100%)",
+  },
+};
+
+function FacebookIcon({ className, style }: { className?: string; style?: React.CSSProperties }) {
   return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} style={style} aria-hidden="true">
       <path d="M13.5 21v-7.5h2.52l.38-2.93h-2.9V8.73c0-.85.23-1.43 1.46-1.43h1.56V4.68c-.27-.04-1.2-.11-2.28-.11-2.26 0-3.8 1.38-3.8 3.91v2.18H8.1v2.93h2.44V21h2.96Z" />
     </svg>
   );
 }
 
-function InstagramIcon({ className }: { className?: string }) {
+function InstagramIcon({ className, style }: { className?: string; style?: React.CSSProperties }) {
   return (
     <svg
       viewBox="0 0 24 24"
@@ -45,6 +73,7 @@ function InstagramIcon({ className }: { className?: string }) {
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
+      style={style}
       aria-hidden="true"
     >
       <rect x="3.5" y="3.5" width="17" height="17" rx="4.5" />
@@ -107,6 +136,9 @@ export function RedesSocialesClient({
     activeCompany === ALL_COMPANIES
       ? true
       : (platformStatus[activeCompany]?.[platform === "FACEBOOK" ? "facebookConnected" : "instagramConnected"] ?? true);
+
+  const theme = PLATFORM_THEME[platform];
+  const PlatformIcon = platform === "FACEBOOK" ? FacebookIcon : InstagramIcon;
 
   function applyConversationUpdate(updated: ConversationWithJoins) {
     setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
@@ -184,7 +216,7 @@ export function RedesSocialesClient({
                   active ? "bg-white text-text-primary shadow-[var(--shadow-button)]" : "text-text-secondary hover:text-text-primary"
                 )}
               >
-                <Icon className="h-4 w-4" />
+                <Icon className="h-4 w-4" style={active ? { color: PLATFORM_THEME[key].accent } : undefined} />
                 {label}
               </button>
             );
@@ -196,32 +228,41 @@ export function RedesSocialesClient({
         <Card className="flex flex-col gap-3 p-5">
           <div className="flex items-center justify-between">
             <CardTitle>{t("Social inbox", "Bandeja social")}</CardTitle>
-            <Badge tone="green">{searched.length}</Badge>
+            <Badge tone="outline" style={{ backgroundColor: theme.accentSoft, color: theme.accent, borderColor: theme.accentSoft }}>
+              {searched.length}
+            </Badge>
           </div>
 
           <div className="flex flex-col gap-1">
-            {searched.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => selectConversation(c.id)}
-                className={cn(
-                  "flex items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-colors",
-                  selectedId === c.id ? "bg-brand-50" : "hover:bg-surface-muted"
-                )}
-              >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand">
-                  <AtSign className="h-4 w-4" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <span className="block truncate text-[13.5px] font-medium text-text-primary">
-                    {c.contactName ?? c.subject ?? t("Unknown sender", "Remitente desconocido")}
-                  </span>
-                  {!c.contactId && (
-                    <span className="text-[11px] text-warning-700">{t("Unmatched", "Sin asociar")}</span>
+            {searched.map((c) => {
+              const isSelected = selectedId === c.id;
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => selectConversation(c.id)}
+                  style={isSelected ? { backgroundColor: theme.accentSoft } : undefined}
+                  className={cn(
+                    "flex items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-colors",
+                    !isSelected && (platform === "FACEBOOK" ? "hover:bg-[#EAF3FF]" : "hover:bg-[#FDF2FA]")
                   )}
-                </div>
-              </button>
-            ))}
+                >
+                  <div
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
+                    style={{ backgroundColor: theme.accentSoft, color: theme.accent }}
+                  >
+                    <PlatformIcon className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate text-[13.5px] font-medium text-text-primary">
+                      {c.contactName ?? c.subject ?? t("Unknown sender", "Remitente desconocido")}
+                    </span>
+                    {!c.contactId && (
+                      <span className="text-[11px] text-warning-700">{t("Unmatched", "Sin asociar")}</span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
             {searched.length === 0 && (
               <p className="py-6 text-center text-[13px] text-text-tertiary">
                 {filtered.length > 0
@@ -244,8 +285,15 @@ export function RedesSocialesClient({
               messages={messages}
               loadingDetail={loadingDetail}
               onSent={refreshDetail}
+              platform={platform}
             />
-            <SidePanel key={`${selected.id}-side`} conversation={selected} contacts={contacts} onLinked={refreshDetail} />
+            <SidePanel
+              key={`${selected.id}-side`}
+              conversation={selected}
+              contacts={contacts}
+              onLinked={refreshDetail}
+              platform={platform}
+            />
           </>
         ) : (
           <Card className="flex items-center justify-center p-6 text-[13.5px] text-text-tertiary lg:col-span-2">
@@ -262,13 +310,16 @@ function ConversationPanel({
   messages,
   loadingDetail,
   onSent,
+  platform,
 }: {
   conversation: ConversationWithJoins;
   messages: Message[];
   loadingDetail: boolean;
   onSent: () => void;
+  platform: SocialPlatform;
 }) {
   const { t, language } = useLanguage();
+  const theme = PLATFORM_THEME[platform];
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -303,27 +354,36 @@ function ConversationPanel({
             {t("No messages in this conversation yet.", "Aún no hay mensajes en esta conversación.")}
           </p>
         ) : (
-          messages.map((m) => (
-            <div
-              key={m.id}
-              className={cn(
-                "max-w-[75%] rounded-2xl px-4 py-3 text-[14px]",
-                m.direction === "OUTBOUND" ? "ml-auto bg-brand text-white" : "bg-surface-muted text-text-primary"
-              )}
-            >
-              <p>{m.body}</p>
-              <p className={cn("mt-1 text-[11px]", m.direction === "OUTBOUND" ? "text-brand-light" : "text-text-tertiary")}>
-                {m.direction === "OUTBOUND" ? t("You", "Tú") : (m.senderLabel ?? "")} · {formatRelativeTime(m.sentAt, language)}
-              </p>
-            </div>
-          ))
+          messages.map((m) => {
+            const outbound = m.direction === "OUTBOUND";
+            return (
+              <div
+                key={m.id}
+                style={outbound ? { background: theme.outgoingBubble } : undefined}
+                className={cn(
+                  "max-w-[75%] rounded-2xl px-4 py-3 text-[14px]",
+                  outbound ? "ml-auto rounded-br-md text-white" : "rounded-bl-md bg-surface-muted text-text-primary"
+                )}
+              >
+                <p className="whitespace-pre-wrap break-words">{m.body}</p>
+                <p className={cn("mt-1 text-[11px]", outbound ? "text-white/80" : "text-text-tertiary")}>
+                  {outbound ? t("You", "Tú") : (m.senderLabel ?? "")} · {formatRelativeTime(m.sentAt, language)}
+                </p>
+              </div>
+            );
+          })
         )}
       </div>
 
       <div className="mt-auto flex flex-col gap-3 border-t border-border pt-4">
         <Textarea rows={3} placeholder={t("Write a reply...", "Escribe una respuesta...")} value={reply} onChange={(e) => setReply(e.target.value)} />
         {error && <p className="text-[13px] text-danger">{error}</p>}
-        <Button className="w-fit self-end" disabled={sending} onClick={handleSend}>
+        <Button
+          className="w-fit self-end transition-[filter] hover:brightness-95 active:brightness-90"
+          style={{ background: theme.actionBackground, color: "#fff" }}
+          disabled={sending}
+          onClick={handleSend}
+        >
           <Send className="h-4 w-4" /> {sending ? t("Sending...", "Enviando...") : t("Post reply", "Publicar respuesta")}
         </Button>
       </div>
@@ -335,12 +395,15 @@ function SidePanel({
   conversation,
   contacts,
   onLinked,
+  platform,
 }: {
   conversation: ConversationWithJoins;
   contacts: ContactWithJoins[];
   onLinked: () => void;
+  platform: SocialPlatform;
 }) {
   const { t } = useLanguage();
+  const theme = PLATFORM_THEME[platform];
   const [owners, setOwners] = useState<UserWithRole[]>([]);
   const [ownersLoaded, setOwnersLoaded] = useState(false);
   const [assigneeId, setAssigneeId] = useState(conversation.assignedUserId ?? "");
@@ -382,7 +445,9 @@ function SidePanel({
   return (
     <Card className="flex flex-col gap-4 p-5">
       <div className="flex items-center gap-3">
-        <Avatar name={conversation.contactName ?? conversation.subject ?? "?"} size={44} />
+        <div className="shrink-0 rounded-full" style={{ boxShadow: `0 0 0 2px ${theme.accent}` }}>
+          <Avatar name={conversation.contactName ?? conversation.subject ?? "?"} size={44} />
+        </div>
         <div>
           <p className="text-[14.5px] font-semibold text-text-primary">
             {conversation.contactName ?? t("Unknown sender", "Remitente desconocido")}
