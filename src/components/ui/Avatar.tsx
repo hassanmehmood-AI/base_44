@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import { cn } from "@/lib/cn";
 
 const palette = [
@@ -15,15 +18,24 @@ function hashOf(str: string) {
   return h;
 }
 
+/** `imageUrl` (e.g. Metricool's MetricoolParticipant.imageProfileUrl) is
+ * rendered when present; a load failure (expired signed URL, network error,
+ * etc.) falls back to the existing initials rendering via `onError` rather
+ * than showing a broken image — never a silent blank avatar. No external
+ * image library/config involved: a plain `<img>`, since this codebase has no
+ * existing next/image usage or configured remotePatterns to extend. */
 export function Avatar({
   name,
+  imageUrl,
   size = 36,
   className,
 }: {
   name: string;
+  imageUrl?: string | null;
   size?: number;
   className?: string;
 }) {
+  const [imageFailed, setImageFailed] = useState(false);
   const initials = name
     .split(" ")
     .filter(Boolean)
@@ -31,6 +43,19 @@ export function Avatar({
     .map((p) => p[0]?.toUpperCase())
     .join("");
   const color = palette[hashOf(name) % palette.length];
+
+  if (imageUrl && !imageFailed) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- external, unpredictable Metricool/Meta CDN URL; no next/image remotePatterns configured anywhere in this repo
+      <img
+        src={imageUrl}
+        alt={name}
+        onError={() => setImageFailed(true)}
+        className={cn("rounded-full object-cover shrink-0", className)}
+        style={{ width: size, height: size }}
+      />
+    );
+  }
 
   return (
     <div

@@ -1,0 +1,1 @@
+ALTER TABLE "conversations" ADD COLUMN "customer_avatar_url" text;

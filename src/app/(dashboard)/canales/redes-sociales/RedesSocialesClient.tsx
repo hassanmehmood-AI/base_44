@@ -96,7 +96,7 @@ export function RedesSocialesClient({
   initialSelectedId: string | null;
   initialMessages: Message[];
 }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const { activeCompany, setActiveCompany } = useCompany();
   const [conversations, setConversations] = useState(initialConversations);
   const [platform, setPlatform] = useState<SocialPlatform>("FACEBOOK");
@@ -139,6 +139,7 @@ export function RedesSocialesClient({
 
   const theme = PLATFORM_THEME[platform];
   const PlatformIcon = platform === "FACEBOOK" ? FacebookIcon : InstagramIcon;
+  const platformLabel = platform === "FACEBOOK" ? t("Facebook", "Facebook") : t("Instagram", "Instagram");
 
   function applyConversationUpdate(updated: ConversationWithJoins) {
     setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
@@ -236,6 +237,7 @@ export function RedesSocialesClient({
           <div className="flex flex-col gap-1">
             {searched.map((c) => {
               const isSelected = selectedId === c.id;
+              const customerName = c.contactName ?? c.subject ?? t("Unknown sender", "Remitente desconocido");
               return (
                 <button
                   key={c.id}
@@ -246,18 +248,21 @@ export function RedesSocialesClient({
                     !isSelected && (platform === "FACEBOOK" ? "hover:bg-[#EAF3FF]" : "hover:bg-[#FDF2FA]")
                   )}
                 >
-                  <div
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
-                    style={{ backgroundColor: theme.accentSoft, color: theme.accent }}
-                  >
-                    <PlatformIcon className="h-4 w-4" />
-                  </div>
+                  <Avatar name={customerName} imageUrl={c.customerAvatarUrl} size={36} />
                   <div className="min-w-0 flex-1">
-                    <span className="block truncate text-[13.5px] font-medium text-text-primary">
-                      {c.contactName ?? c.subject ?? t("Unknown sender", "Remitente desconocido")}
+                    <span className="block truncate text-[13.5px] font-medium text-text-primary">{customerName}</span>
+                    <span className="flex items-center gap-1 truncate text-[11.5px] text-text-secondary">
+                      <PlatformIcon className="h-3 w-3 shrink-0" style={{ color: theme.accent }} />
+                      <span className="truncate">{platformLabel} · {c.companyName}</span>
                     </span>
-                    {!c.contactId && (
-                      <span className="text-[11px] text-warning-700">{t("Unmatched", "Sin asociar")}</span>
+                    {(!c.contactId || c.lastMessageAt) && (
+                      <span className="flex items-center gap-1 text-[11px]">
+                        {!c.contactId && <span className="text-warning-700">{t("Unmatched", "Sin asociar")}</span>}
+                        {!c.contactId && c.lastMessageAt && <span className="text-text-tertiary">·</span>}
+                        {c.lastMessageAt && (
+                          <span className="text-text-tertiary">{formatRelativeTime(c.lastMessageAt, language)}</span>
+                        )}
+                      </span>
                     )}
                   </div>
                 </button>
@@ -320,6 +325,8 @@ function ConversationPanel({
 }) {
   const { t, language } = useLanguage();
   const theme = PLATFORM_THEME[platform];
+  const PlatformIcon = platform === "FACEBOOK" ? FacebookIcon : InstagramIcon;
+  const platformLabel = platform === "FACEBOOK" ? t("Facebook", "Facebook") : t("Instagram", "Instagram");
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -343,7 +350,10 @@ function ConversationPanel({
         <p className="text-[15px] font-semibold text-text-primary">
           {conversation.contactName ?? conversation.subject ?? t("Unknown sender", "Remitente desconocido")}
         </p>
-        <p className="text-[12.5px] text-text-secondary">{t("Social", "Red social")}</p>
+        <p className="flex items-center gap-1 text-[12.5px] text-text-secondary">
+          <PlatformIcon className="h-3.5 w-3.5" style={{ color: theme.accent }} />
+          {platformLabel} · {conversation.companyName}
+        </p>
       </div>
 
       <div className="flex max-h-[360px] flex-col gap-3 overflow-y-auto">
@@ -446,11 +456,15 @@ function SidePanel({
     <Card className="flex flex-col gap-4 p-5">
       <div className="flex items-center gap-3">
         <div className="shrink-0 rounded-full" style={{ boxShadow: `0 0 0 2px ${theme.accent}` }}>
-          <Avatar name={conversation.contactName ?? conversation.subject ?? "?"} size={44} />
+          <Avatar
+            name={conversation.contactName ?? conversation.subject ?? "?"}
+            imageUrl={conversation.customerAvatarUrl}
+            size={44}
+          />
         </div>
         <div>
           <p className="text-[14.5px] font-semibold text-text-primary">
-            {conversation.contactName ?? t("Unknown sender", "Remitente desconocido")}
+            {conversation.contactName ?? conversation.subject ?? t("Unknown sender", "Remitente desconocido")}
           </p>
           <p className="text-[12.5px] text-text-secondary">{conversation.companyName}</p>
         </div>

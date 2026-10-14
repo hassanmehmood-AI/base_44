@@ -296,6 +296,11 @@ export const conversations = pgTable("conversations", {
   channel: text("channel").notNull(),
   externalThreadId: text("external_thread_id"),
   subject: text("subject"),
+  // The external participant's profile picture (e.g. Metricool's
+  // MetricoolParticipant.imageProfileUrl) — null when unavailable (direct
+  // Meta webhook rows never set this; Metricool rows get it from
+  // syncMetricoolConversations). Never the connected brand's own picture.
+  customerAvatarUrl: text("customer_avatar_url"),
   assignedUserId: uuid("assigned_user_id").references(() => users.id, { onDelete: "set null" }),
   // Which connected account (and therefore which provider — Meta's direct
   // Graph API vs. Metricool — see company_social_accounts.platform below)

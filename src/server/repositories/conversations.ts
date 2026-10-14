@@ -113,3 +113,17 @@ export async function create(data: NewConversation): Promise<Conversation> {
 export async function updateLastMessageAt(id: string, date: Date): Promise<void> {
   await getDb().update(conversations).set({ lastMessageAt: date }).where(eq(conversations.id, id));
 }
+
+/** Reconciliation for syncMetricoolConversations: refreshes subject/avatar on
+ * a conversation that already exists (never called for a brand-new row,
+ * which sets both at create time instead) — used to correct conversations
+ * synced before the remote.self participant fix existed. Callers only pass
+ * values they've already confirmed are non-empty and different from what's
+ * stored, so this never blanks out a previously-good value. */
+export async function updateIdentity(
+  id: string,
+  data: { subject: string | null; customerAvatarUrl: string | null }
+): Promise<Conversation> {
+  const [row] = await getDb().update(conversations).set(data).where(eq(conversations.id, id)).returning();
+  return row;
+}

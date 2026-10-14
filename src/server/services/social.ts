@@ -243,7 +243,13 @@ export async function ingestInboundMessage(input: {
  * Conversations are matched by (companyId, channel, externalThreadId =
  * Metricool's conversation id) — a completely different id space from
  * Meta's PSID-keyed conversations, so there's no possibility of a Metricool
- * sync colliding with an existing Meta-sourced conversation row. */
+ * sync colliding with an existing Meta-sourced conversation row.
+ *
+ * Also reconciles subject/customerAvatarUrl on every poll (see the identity
+ * fix below) — this is how existing conversations synced before the
+ * remote.self fix get corrected, without a separate migration/backfill
+ * script: every connected account's conversations pass through here on the
+ * existing 5-minute schedule already. */
 export async function syncMetricoolConversations(account: {
   id: string;
   companyId: string;
@@ -270,16 +276,36 @@ export async function syncMetricoolConversations(account: {
   let messagesAdded = 0;
 
   for (const remote of remoteConversations) {
+    const otherParticipant = remote.participants.find((p) => p.id !== remote.self) ?? remote.participants[0];
+
     let conversation = await conversationsRepo.findByExternalThreadId(account.companyId, CHANNEL, remote.id);
     if (!conversation) {
-      const otherParticipant = remote.participants.find((p) => p.id !== remote.self) ?? remote.participants[0];
       conversation = await conversationsRepo.create({
         companyId: account.companyId,
         channel: CHANNEL,
         externalThreadId: remote.id,
         subject: otherParticipant?.name ?? null,
+        customerAvatarUrl: otherParticipant?.imageProfileUrl ?? null,
         companySocialAccountId: account.id,
       });
+    } else {
+      // Reconciliation for conversations synced before the remote.self
+      // participant fix existed (they were created with subject set to the
+      // connected brand's own name, e.g. "Web Nova", instead of the actual
+      // contact's). Safe to re-run every poll tick: only writes when the
+      // freshly-resolved value is non-empty AND different from what's
+      // already stored, so a transient/incomplete Metricool response can
+      // never blank out a previously-correct name or picture.
+      const nextSubject = otherParticipant?.name || null;
+      const nextAvatarUrl = otherParticipant?.imageProfileUrl || null;
+      const needsSubjectFix = Boolean(nextSubject) && nextSubject !== conversation.subject;
+      const needsAvatarFix = Boolean(nextAvatarUrl) && nextAvatarUrl !== conversation.customerAvatarUrl;
+      if (needsSubjectFix || needsAvatarFix) {
+        conversation = await conversationsRepo.updateIdentity(conversation.id, {
+          subject: needsSubjectFix ? nextSubject : conversation.subject,
+          customerAvatarUrl: needsAvatarFix ? nextAvatarUrl : conversation.customerAvatarUrl,
+        });
+      }
     }
 
     const existing = await messagesRepo.findByConversationId(conversation.id);
