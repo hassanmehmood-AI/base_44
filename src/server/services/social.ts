@@ -5,6 +5,7 @@ import * as companySocialAccountsRepo from "@/server/repositories/companySocialA
 import * as contactsRepo from "@/server/repositories/contacts";
 import * as activitiesRepo from "@/server/repositories/activities";
 import * as companiesService from "@/server/services/companies";
+import { assertAssignableUser } from "@/server/services/users";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import * as metaProvider from "@/server/integrations/meta";
 import * as metricoolProvider from "@/server/integrations/metricool";
@@ -176,6 +177,7 @@ export async function updateConversationAssignee(conversationId: string, assigne
   const conversation = await conversationsRepo.findById(conversationId);
   if (!conversation) throw new UnauthorizedError("Conversation not found.");
   await assertCompanyAccess(conversation.companyId);
+  await assertAssignableUser(assignedUserId);
   return conversationsRepo.updateAssignee(conversationId, assignedUserId);
 }
 

@@ -1,6 +1,7 @@
 import * as ticketsRepo from "@/server/repositories/tickets";
 import * as ticketMessagesRepo from "@/server/repositories/ticketMessages";
 import * as companiesService from "@/server/services/companies";
+import { assertAssignableUser } from "@/server/services/users";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import type { TicketStatus, TicketPriority } from "@/server/constants";
 
@@ -50,6 +51,7 @@ export async function updateTicketAssignee(id: string, assigneeId: string | null
   const companyId = await ticketsRepo.findCompanyIdById(id);
   if (!companyId) throw new UnauthorizedError("Ticket not found.");
   await assertCompanyAccess(companyId);
+  await assertAssignableUser(assigneeId);
   return ticketsRepo.updateAssignee(id, assigneeId);
 }
 

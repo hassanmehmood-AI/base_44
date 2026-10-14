@@ -1,5 +1,6 @@
 import * as tasksRepo from "@/server/repositories/tasks";
 import * as contactsRepo from "@/server/repositories/contacts";
+import { assertAssignableUser } from "@/server/services/users";
 import { assertCompanyAccess, requireSession } from "@/server/services/authorization";
 import { UnauthorizedError } from "@/server/services/authorization";
 
@@ -21,6 +22,7 @@ export async function createTask(input: {
   const companyId = await contactsRepo.findCompanyIdById(input.contactId);
   if (!companyId) throw new UnauthorizedError("Contact not found.");
   await assertCompanyAccess(companyId);
+  await assertAssignableUser(input.assignedUserId);
 
   const created = await tasksRepo.create({
     companyId,

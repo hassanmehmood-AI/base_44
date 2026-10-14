@@ -5,6 +5,7 @@ import * as pipelineStagesRepo from "@/server/repositories/pipelineStages";
 import * as usersRepo from "@/server/repositories/users";
 import * as managerAgentRepo from "@/server/repositories/managerAgentAssignments";
 import * as roundRobinService from "@/server/services/roundRobin";
+import { assertAssignableUser } from "@/server/services/users";
 import { assertCompanyAccess, requireSession } from "@/server/services/authorization";
 import { UnauthorizedError } from "@/server/services/authorization";
 
@@ -96,6 +97,7 @@ export async function createContact(input: {
   assignedUserId?: string | null;
 }) {
   const session = await assertCompanyAccess(input.companyId);
+  if (input.assignedUserId !== undefined) await assertAssignableUser(input.assignedUserId);
 
   return contactsRepo.withTransaction(async (tx) => {
     let assignedUserId = input.assignedUserId ?? null;
@@ -324,6 +326,7 @@ export async function classifyContact(
   if (!companyId) throw new UnauthorizedError("Contact not found.");
   await assertCompanyAccess(companyId);
   await assertManagerCanAssign(session, input.assignedUserId, companyId);
+  await assertAssignableUser(input.assignedUserId);
 
   return contactsRepo.withTransaction(async (tx) => {
     const now = new Date();
@@ -384,6 +387,7 @@ export async function assignContact(id: string, assignedUserId: string | null) {
   if (!companyId) throw new UnauthorizedError("Contact not found.");
   await assertCompanyAccess(companyId);
   await assertManagerCanAssign(session, assignedUserId, companyId);
+  await assertAssignableUser(assignedUserId);
 
   const agentName = assignedUserId ? (await usersRepo.findById(assignedUserId))?.fullName ?? null : null;
 

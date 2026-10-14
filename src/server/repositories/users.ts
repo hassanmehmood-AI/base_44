@@ -1,4 +1,4 @@
-import { eq, ne, or, exists, and, inArray } from "drizzle-orm";
+import { eq, ne, and, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { users, roles, userCompanyAccess, managerAgentAssignments } from "@/db/schema";
 import { ROUND_ROBIN_ELIGIBLE_ROLES, type RoleKey } from "@/server/constants";
@@ -174,28 +174,23 @@ export async function findEligibleForManagerRoundRobin(
     .orderBy(users.id);
 }
 
-/** Users a contact in this company could sensibly be assigned to: SUPERUSERs
- * (implicit access everywhere) plus anyone explicitly granted this company. */
+/** Users a contact in this company could sensibly be assigned to: anyone
+ * explicitly granted this company, excluding Superuser unconditionally — a
+ * Superuser's role is management/monitoring/assigning, never receiving
+ * leads, so they're excluded even in the (currently nonexistent, but not
+ * structurally prevented) case where one happens to hold a userCompanyAccess
+ * row for this company. Superuser's implicit everywhere-access (see
+ * authorization.ts's isSuperuser) is a separate mechanism for read/write
+ * authorization only and is untouched by this exclusion. Same exclusion
+ * convention already applied to findImpersonatableUsers,
+ * findEligibleForRoundRobin, and findUsersByRolesForCompanies. */
 export async function findAssignableForCompany(companyId: string): Promise<UserWithRole[]> {
-  const db = getDb();
-  const rows = await db
+  const rows = await getDb()
     .select({ user: users, roleKey: roles.key })
     .from(users)
     .innerJoin(roles, eq(users.roleId, roles.id))
-    .where(
-      and(
-        eq(users.isActive, true),
-        or(
-          eq(roles.key, "SUPERUSER"),
-          exists(
-            db
-              .select()
-              .from(userCompanyAccess)
-              .where(and(eq(userCompanyAccess.userId, users.id), eq(userCompanyAccess.companyId, companyId)))
-          )
-        )
-      )
-    )
+    .innerJoin(userCompanyAccess, eq(userCompanyAccess.userId, users.id))
+    .where(and(eq(users.isActive, true), eq(userCompanyAccess.companyId, companyId), ne(roles.key, "SUPERUSER")))
     .orderBy(users.fullName);
   return rows.map((r) => ({ ...r.user, roleKey: r.roleKey as RoleKey }));
 }

@@ -12,6 +12,21 @@ export async function getAssignableUsersForCompany(companyId: string) {
   return usersRepo.findAssignableForCompany(companyId);
 }
 
+/** Server-side guard for every "assign this lead/conversation/ticket to a
+ * user" write path (contacts.assignContact/classifyContact/createContact,
+ * social.updateConversationAssignee, tickets.updateTicketAssignee): a
+ * Superuser is for management/monitoring, never a lead owner, so a tampered
+ * client request can't assign to one even though findAssignableForCompany
+ * already keeps them out of the dropdown. No-op for null/undefined —
+ * unassigning is always fine. */
+export async function assertAssignableUser(userId: string | null | undefined): Promise<void> {
+  if (!userId) return;
+  const target = await usersRepo.findById(userId);
+  if (target?.roleKey === "SUPERUSER") {
+    throw new UnauthorizedError("Leads cannot be assigned to a Superuser account.");
+  }
+}
+
 /** CRM's "Assign Agent" dropdown specifically (hierarchy redesign phase 4)
  * — NOT a replacement for getAssignableUsersForCompany above, which Support
  * and Social Channels also call for their own assignee dropdowns and must
