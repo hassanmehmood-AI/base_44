@@ -62,6 +62,16 @@ export type MetricoolBrand = {
   title: string;
   image: string;
   availableConnectors: string[];
+  /** Per-network connection data — only present for networks that are
+   * actually connected (confirmed from a live response: a brand with
+   * Facebook connected has `facebookData` populated while
+   * `availableConnectors` stays `[]`). This, not `availableConnectors`, is
+   * the real "is X connected" signal — `availableConnectors` appears to list
+   * networks still available to add, not ones already connected. */
+  networksData?: {
+    facebookData?: unknown;
+    instagramData?: unknown;
+  };
 };
 
 export type MetricoolConnectionLink = {
