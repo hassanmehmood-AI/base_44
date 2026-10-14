@@ -19,11 +19,18 @@ function hashOf(str: string) {
 }
 
 /** `imageUrl` (e.g. Metricool's MetricoolParticipant.imageProfileUrl) is
- * rendered when present; a load failure (expired signed URL, network error,
- * etc.) falls back to the existing initials rendering via `onError` rather
- * than showing a broken image — never a silent blank avatar. No external
- * image library/config involved: a plain `<img>`, since this codebase has no
- * existing next/image usage or configured remotePatterns to extend. */
+ * layered over the initials, never swapped in for them — Metricool's picture
+ * URLs are signed, short-lived Facebook Graph API URLs (confirmed live: one
+ * stored a few hours returned "Invalid appsecret_time... has expired"), so
+ * persisting one and expecting it to still be valid whenever a user later
+ * views the page is unreliable by design, not just an edge case. Starting
+ * from "assume it won't load" and only revealing the `<img>` once `onLoad`
+ * actually confirms success means a dead/expired URL never shows the
+ * browser's broken-image glyph — it just silently stays on the initials
+ * underneath, which is the only state that's ever actually visible then.
+ * No external image library/config involved: a plain `<img>`, since this
+ * codebase has no existing next/image usage or configured remotePatterns to
+ * extend. */
 export function Avatar({
   name,
   imageUrl,
@@ -35,7 +42,8 @@ export function Avatar({
   size?: number;
   className?: string;
 }) {
-  const [imageFailed, setImageFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
   const initials = name
     .split(" ")
     .filter(Boolean)
@@ -44,29 +52,30 @@ export function Avatar({
     .join("");
   const color = palette[hashOf(name) % palette.length];
 
-  if (imageUrl && !imageFailed) {
-    return (
-      // eslint-disable-next-line @next/next/no-img-element -- external, unpredictable Metricool/Meta CDN URL; no next/image remotePatterns configured anywhere in this repo
-      <img
-        src={imageUrl}
-        alt={name}
-        onError={() => setImageFailed(true)}
-        className={cn("rounded-full object-cover shrink-0", className)}
-        style={{ width: size, height: size }}
-      />
-    );
-  }
-
   return (
     <div
-      className={cn(
-        "flex items-center justify-center rounded-full font-semibold text-white shrink-0",
-        color,
-        className
-      )}
-      style={{ width: size, height: size, fontSize: size * 0.38 }}
+      className={cn("relative shrink-0 overflow-hidden rounded-full", className)}
+      style={{ width: size, height: size }}
     >
-      {initials || "?"}
+      <div
+        className={cn("flex h-full w-full items-center justify-center font-semibold text-white", color)}
+        style={{ fontSize: size * 0.38 }}
+      >
+        {initials || "?"}
+      </div>
+      {imageUrl && !failed && (
+        // eslint-disable-next-line @next/next/no-img-element -- external, unpredictable Metricool/Meta CDN URL; no next/image remotePatterns configured anywhere in this repo
+        <img
+          src={imageUrl}
+          alt={name}
+          onLoad={() => setLoaded(true)}
+          onError={() => setFailed(true)}
+          className={cn(
+            "absolute inset-0 h-full w-full object-cover transition-opacity",
+            loaded ? "opacity-100" : "opacity-0"
+          )}
+        />
+      )}
     </div>
   );
 }
