@@ -189,8 +189,22 @@ export async function syncMetricoolConversations(account: {
   companyId: string;
   platform: string;
   externalPageId: string;
-}): Promise<{ conversationsSeen: number; messagesAdded: number }> {
+}): Promise<{ conversationsSeen: number; messagesAdded: number; skipped?: true }> {
   const provider = metricoolProviderForPlatform(account.platform);
+
+  // Both platform rows for a company share one Metricool brand (see
+  // linkBrandRows in metricoolOnboarding.ts), but a brand often only has one
+  // network actually connected — confirmed live: calling listConversations
+  // for a provider with no connection on the brand 500s instead of returning
+  // an empty list. Skip those up front rather than letting them error on
+  // every poll tick.
+  const brand = await metricoolProvider.getBrand(account.externalPageId);
+  const connected =
+    provider === "FACEBOOK" ? Boolean(brand.networksData?.facebookData) : Boolean(brand.networksData?.instagramData);
+  if (!connected) {
+    return { conversationsSeen: 0, messagesAdded: 0, skipped: true };
+  }
+
   const remoteConversations = await metricoolProvider.listConversations(account.externalPageId, provider);
 
   let messagesAdded = 0;
