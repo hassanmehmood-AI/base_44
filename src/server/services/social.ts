@@ -24,6 +24,64 @@ export async function listSocialConversationsForCurrentUser() {
   return conversationsRepo.findManyByCompanyIdsAndChannel(allowed.map((c) => c.id), CHANNEL);
 }
 
+const FACEBOOK_PLATFORMS = ["META_PAGE", "METRICOOL_FACEBOOK"];
+const INSTAGRAM_PLATFORMS_LIST = ["META_INSTAGRAM", "METRICOOL_INSTAGRAM"];
+
+export type PlatformConnectionStatus = { facebookConnected: boolean; instagramConnected: boolean };
+
+/** Per-company "is this platform tab actually usable" signal for the Social
+ * Media page — keyed by company name (matching the page's existing,
+ * name-keyed company filter, see RedesSocialesClient). A row existing in
+ * company_social_accounts isn't enough on its own for a Metricool-backed
+ * platform: a brand can have a network provisioned in this CRM's DB without
+ * ever actually being linked on Metricool's side (confirmed live — Web
+ * Nova's Instagram row exists but Metricool's own networksData shows it
+ * unconnected; see metricoolOnboarding.ts's identical check). Direct Meta
+ * accounts (META_PAGE/META_INSTAGRAM) have no such gap — their OAuth flow
+ * only ever creates the row once truly connected — so those are trusted from
+ * presence alone, no live call needed.
+ *
+ * Metricool lookups are deduped per distinct blogId (a brand's Facebook and
+ * Instagram rows share one) and degrade to "not connected" on any Metricool
+ * error (not configured, outage, etc.) rather than failing the page — this
+ * is a page-load nicety for the tab empty-state, not the authoritative
+ * provisioning check (that remains Configuración's live "check status"). */
+export async function getPlatformConnectionStatusForCurrentUser(): Promise<Record<string, PlatformConnectionStatus>> {
+  const allowed = await companiesService.getAllowedCompaniesForCurrentUser();
+  const accounts = await companySocialAccountsRepo.findByCompanyIds(allowed.map((c) => c.id));
+
+  const brandCache = new Map<string, Promise<metricoolProvider.MetricoolBrand | null>>();
+  function brandFor(blogId: string) {
+    let pending = brandCache.get(blogId);
+    if (!pending) {
+      pending = metricoolProvider.getBrand(blogId).catch(() => null);
+      brandCache.set(blogId, pending);
+    }
+    return pending;
+  }
+
+  const result: Record<string, PlatformConnectionStatus> = {};
+  for (const company of allowed) {
+    const rows = accounts.filter((a) => a.companyId === company.id);
+    const fb = rows.find((r) => FACEBOOK_PLATFORMS.includes(r.platform));
+    const ig = rows.find((r) => INSTAGRAM_PLATFORMS_LIST.includes(r.platform));
+
+    const facebookConnected = fb
+      ? fb.platform === "METRICOOL_FACEBOOK"
+        ? Boolean((await brandFor(fb.externalPageId))?.networksData?.facebookData)
+        : true
+      : false;
+    const instagramConnected = ig
+      ? ig.platform === "METRICOOL_INSTAGRAM"
+        ? Boolean((await brandFor(ig.externalPageId))?.networksData?.instagramData)
+        : true
+      : false;
+
+    result[company.name] = { facebookConnected, instagramConnected };
+  }
+  return result;
+}
+
 export async function getConversation(id: string) {
   const conversation = await conversationsRepo.findById(id);
   if (!conversation) return undefined;

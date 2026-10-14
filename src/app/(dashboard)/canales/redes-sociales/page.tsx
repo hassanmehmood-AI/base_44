@@ -3,9 +3,10 @@ import * as contactsService from "@/server/services/contacts";
 import { RedesSocialesClient } from "./RedesSocialesClient";
 
 export default async function RedesSocialesPage() {
-  const [conversations, contacts] = await Promise.all([
+  const [conversations, contacts, platformStatus] = await Promise.all([
     socialService.listSocialConversationsForCurrentUser(),
     contactsService.listContactsForCurrentUser(),
+    socialService.getPlatformConnectionStatusForCurrentUser(),
   ]);
 
   const initialSelectedId = conversations[0]?.id ?? null;
@@ -15,6 +16,7 @@ export default async function RedesSocialesPage() {
     <RedesSocialesClient
       conversations={conversations}
       contacts={contacts}
+      platformStatus={platformStatus}
       initialSelectedId={initialSelectedId}
       initialMessages={initialDetail?.messages ?? []}
     />

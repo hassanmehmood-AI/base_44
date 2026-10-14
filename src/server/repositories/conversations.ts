@@ -1,19 +1,45 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
-import { conversations, contacts, companies } from "@/db/schema";
+import { conversations, contacts, companies, companySocialAccounts } from "@/db/schema";
 
 export type Conversation = typeof conversations.$inferSelect;
 export type NewConversation = typeof conversations.$inferInsert;
-export type ConversationWithJoins = Conversation & { contactName: string | null; companyName: string };
+/** Only meaningful for channel === "SOCIAL" rows (the Social Media page) —
+ * derived from the linked company_social_accounts row's platform
+ * (META_PAGE/METRICOOL_FACEBOOK -> FACEBOOK, META_INSTAGRAM/METRICOOL_INSTAGRAM
+ * -> INSTAGRAM; see db/schema.ts's companySocialAccounts comment for the full
+ * platform list). Defaults to FACEBOOK for EMAIL/WHATSAPP rows and for
+ * legacy SOCIAL rows with no companySocialAccountId — every webhook-created
+ * SOCIAL conversation prior to this field existing came from the direct Meta
+ * (Facebook) integration only (see api/webhooks/meta/route.ts, which only
+ * ever ingests platform: "META_PAGE" today). */
+export type ConversationWithJoins = Conversation & { contactName: string | null; companyName: string; platform: "FACEBOOK" | "INSTAGRAM" };
+
+const INSTAGRAM_PLATFORMS = new Set(["META_INSTAGRAM", "METRICOOL_INSTAGRAM"]);
+
+function normalizeSocialPlatform(raw: string | null): "FACEBOOK" | "INSTAGRAM" {
+  return raw && INSTAGRAM_PLATFORMS.has(raw) ? "INSTAGRAM" : "FACEBOOK";
+}
 
 const baseSelect = {
   conversation: conversations,
   contactName: contacts.name,
   companyName: companies.name,
+  socialPlatform: companySocialAccounts.platform,
 };
 
-function toJoined(row: { conversation: Conversation; contactName: string | null; companyName: string }): ConversationWithJoins {
-  return { ...row.conversation, contactName: row.contactName, companyName: row.companyName };
+function toJoined(row: {
+  conversation: Conversation;
+  contactName: string | null;
+  companyName: string;
+  socialPlatform: string | null;
+}): ConversationWithJoins {
+  return {
+    ...row.conversation,
+    contactName: row.contactName,
+    companyName: row.companyName,
+    platform: normalizeSocialPlatform(row.socialPlatform),
+  };
 }
 
 function baseQuery() {
@@ -21,7 +47,8 @@ function baseQuery() {
     .select(baseSelect)
     .from(conversations)
     .innerJoin(companies, eq(conversations.companyId, companies.id))
-    .leftJoin(contacts, eq(conversations.contactId, contacts.id));
+    .leftJoin(contacts, eq(conversations.contactId, contacts.id))
+    .leftJoin(companySocialAccounts, eq(conversations.companySocialAccountId, companySocialAccounts.id));
 }
 
 export async function findManyByCompanyIdsAndChannel(companyIds: string[], channel: string): Promise<ConversationWithJoins[]> {

@@ -16,6 +16,7 @@ import type { ConversationWithJoins } from "@/server/repositories/conversations"
 import type { Message } from "@/server/repositories/messages";
 import type { ContactWithJoins } from "@/server/repositories/contacts";
 import type { UserWithRole } from "@/server/repositories/users";
+import type { PlatformConnectionStatus } from "@/server/services/social";
 import {
   getConversationDetailAction,
   replyToConversationAction,
@@ -24,26 +25,59 @@ import {
   getAssignableUsersAction,
 } from "./actions";
 
+type SocialPlatform = "FACEBOOK" | "INSTAGRAM";
+
+function FacebookIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M13.5 21v-7.5h2.52l.38-2.93h-2.9V8.73c0-.85.23-1.43 1.46-1.43h1.56V4.68c-.27-.04-1.2-.11-2.28-.11-2.26 0-3.8 1.38-3.8 3.91v2.18H8.1v2.93h2.44V21h2.96Z" />
+    </svg>
+  );
+}
+
+function InstagramIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="3.5" width="17" height="17" rx="4.5" />
+      <circle cx="12" cy="12" r="3.6" />
+      <circle cx="16.9" cy="7.1" r="0.55" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 export function RedesSocialesClient({
   conversations: initialConversations,
   contacts,
+  platformStatus,
   initialSelectedId,
   initialMessages,
 }: {
   conversations: ConversationWithJoins[];
   contacts: ContactWithJoins[];
+  platformStatus: Record<string, PlatformConnectionStatus>;
   initialSelectedId: string | null;
   initialMessages: Message[];
 }) {
   const { t } = useLanguage();
   const { activeCompany, setActiveCompany } = useCompany();
   const [conversations, setConversations] = useState(initialConversations);
+  const [platform, setPlatform] = useState<SocialPlatform>("FACEBOOK");
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [search, setSearch] = useState("");
 
-  const filtered = conversations.filter((c) => activeCompany === ALL_COMPANIES || c.companyName === activeCompany);
+  const companyScoped = conversations.filter((c) => activeCompany === ALL_COMPANIES || c.companyName === activeCompany);
+  const filtered = companyScoped.filter((c) => c.platform === platform);
 
   // Searches the sender/subject text actually shown on each row — a social
   // conversation doesn't carry its own phone/email (that lives on the linked
@@ -56,11 +90,23 @@ export function RedesSocialesClient({
     );
   })();
 
-  // Looked up from the searched/company-scoped list (not raw `conversations`):
-  // a conversation selected before switching companies or searching must stop
-  // showing once it's filtered out, falling back to the empty state instead
-  // of another, unrelated conversation.
+  // Looked up from the searched/company-and-platform-scoped list (not raw
+  // `conversations`): a conversation selected before switching companies,
+  // switching platform tabs, or searching must stop showing once it's
+  // filtered out, falling back to the empty state instead of another,
+  // unrelated conversation (e.g. an Instagram thread never shows while the
+  // Facebook tab is active).
   const selected = searched.find((c) => c.id === selectedId);
+
+  // Only meaningful for a single selected company — connection status isn't
+  // aggregated across companies, so "All companies" never claims a platform
+  // is disconnected (the generic empty state covers it instead). Missing
+  // status data (e.g. a company status failed to load) also falls back to
+  // the generic empty state rather than wrongly claiming "disconnected".
+  const activePlatformConnected =
+    activeCompany === ALL_COMPANIES
+      ? true
+      : (platformStatus[activeCompany]?.[platform === "FACEBOOK" ? "facebookConnected" : "instagramConnected"] ?? true);
 
   function applyConversationUpdate(updated: ConversationWithJoins) {
     setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
@@ -102,15 +148,48 @@ export function RedesSocialesClient({
         }
       />
 
-      <div className="w-[220px]">
-        <Select value={activeCompany} onChange={(e) => setActiveCompany(e.target.value)}>
-          <option value={ALL_COMPANIES}>{t("All companies", "Todas las empresas")}</option>
-          {[...new Set(conversations.map((c) => c.companyName))].map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </Select>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="w-[220px]">
+          <Select value={activeCompany} onChange={(e) => setActiveCompany(e.target.value)}>
+            <option value={ALL_COMPANIES}>{t("All companies", "Todas las empresas")}</option>
+            {[...new Set(conversations.map((c) => c.companyName))].map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        <div
+          role="tablist"
+          aria-label={t("Platform", "Plataforma")}
+          className="inline-flex gap-1 rounded-xl border border-border bg-surface-muted p-1"
+        >
+          {(
+            [
+              { key: "FACEBOOK", label: t("Facebook", "Facebook"), Icon: FacebookIcon },
+              { key: "INSTAGRAM", label: t("Instagram", "Instagram"), Icon: InstagramIcon },
+            ] as const
+          ).map(({ key, label, Icon }) => {
+            const active = platform === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setPlatform(key)}
+                className={cn(
+                  "flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-[13px] font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand",
+                  active ? "bg-white text-text-primary shadow-[var(--shadow-button)]" : "text-text-secondary hover:text-text-primary"
+                )}
+              >
+                <Icon className="h-4 w-4" />
+                {label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[300px_1fr_280px]">
@@ -145,9 +224,13 @@ export function RedesSocialesClient({
             ))}
             {searched.length === 0 && (
               <p className="py-6 text-center text-[13px] text-text-tertiary">
-                {filtered.length === 0
-                  ? t("No social messages yet. They'll appear here once the channel is connected.", "Aún no hay mensajes. Aparecerán aquí cuando el canal esté conectado.")
-                  : t("No conversations match your search.", "Ninguna conversación coincide con tu búsqueda.")}
+                {filtered.length > 0
+                  ? t("No conversations match your search.", "Ninguna conversación coincide con tu búsqueda.")
+                  : !activePlatformConnected
+                    ? platform === "FACEBOOK"
+                      ? t("Facebook isn't connected for this company yet.", "Facebook aún no está conectado para esta empresa.")
+                      : t("Instagram isn't connected for this company yet.", "Instagram aún no está conectado para esta empresa.")
+                    : t("No social messages yet. They'll appear here once the channel is connected.", "Aún no hay mensajes. Aparecerán aquí cuando el canal esté conectado.")}
               </p>
             )}
           </div>
