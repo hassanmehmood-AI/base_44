@@ -139,19 +139,19 @@ export async function replyToConversation(conversationId: string, body: string) 
 
 /** Resolves who to reply to by re-fetching the conversation from Metricool
  * rather than storing a participant id locally — avoids a schema change for
- * one field only needed at send time. NOT yet verified against a live
- * payload: which participant is "the contact" vs. the connected brand
- * account itself isn't confirmed from the spec alone (Message.from/to exist,
- * but their exact semantics need a real example to confirm). Test this
- * specific path carefully with a low-stakes conversation before trusting it
- * for real replies. */
+ * one field only needed at send time. Confirmed against a live payload:
+ * `participants` always includes the connected brand's own account alongside
+ * the contact (brand first in every observed conversation) — picking
+ * `participants[0]` unconditionally was sending every reply addressed to the
+ * brand's own account, which Metricool correctly rejects with a 400. The
+ * contact is whichever participant's id isn't the conversation's own `self`. */
 async function sendViaMetricool(account: CompanySocialAccount, externalThreadId: string, body: string): Promise<void> {
   const provider = metricoolProviderForPlatform(account.platform);
   const remoteConversations = await metricoolProvider.listConversations(account.externalPageId, provider);
   const remote = remoteConversations.find((c) => c.id === externalThreadId);
   if (!remote) throw new Error("Conversation not found in Metricool — it may have been removed or expired.");
 
-  const recipient = remote.participants[0]?.id;
+  const recipient = remote.participants.find((p) => p.id !== remote.self)?.id;
   if (!recipient) throw new Error("Could not determine who to reply to for this Metricool conversation.");
 
   await metricoolProvider.sendMessage(account.externalPageId, provider, externalThreadId, recipient, body);
@@ -272,7 +272,7 @@ export async function syncMetricoolConversations(account: {
   for (const remote of remoteConversations) {
     let conversation = await conversationsRepo.findByExternalThreadId(account.companyId, CHANNEL, remote.id);
     if (!conversation) {
-      const otherParticipant = remote.participants.find((p) => p.name) ?? remote.participants[0];
+      const otherParticipant = remote.participants.find((p) => p.id !== remote.self) ?? remote.participants[0];
       conversation = await conversationsRepo.create({
         companyId: account.companyId,
         channel: CHANNEL,

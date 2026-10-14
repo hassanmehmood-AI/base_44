@@ -47,6 +47,12 @@ export type MetricoolParticipant = {
 
 export type MetricoolConversation = {
   id: string;
+  /** The connected brand's OWN participant id in this conversation (confirmed
+   * live: equals the brand's Facebook page id) — not the contact. `participants`
+   * always includes this id too (brand first, contact second in every observed
+   * payload), so callers must filter it out via `self` rather than assuming
+   * array position to find "the contact". */
+  self: string;
   provider: string;
   status: "PENDING" | "READ" | "RESOLVED";
   creationDate: string;
