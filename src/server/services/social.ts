@@ -333,6 +333,59 @@ export async function ingestInboundMessage(input: {
   return conversation;
 }
 
+/** Arbitrary constant identifying this one job's advisory lock —
+ * pg_try_advisory_lock keys share one numeric namespace across the whole
+ * database, so any *other* lock this app ever takes must pick a different
+ * key. Session-level (not transaction-level): there's no single enclosing
+ * transaction here (the cron route runs a sequential loop of independent
+ * per-account syncs), and the lock needs to stay held across that entire
+ * loop, not just one query. */
+const METRICOOL_SYNC_LOCK_KEY = 72_94_51_990;
+
+/** Runs `run` exclusively — if another invocation already holds the lock,
+ * this one returns `{ ran: false }` immediately instead of racing it. This
+ * is what makes "no overlapping sync runs" a hard guarantee rather than a
+ * procedural one: `conversations` has no DB-level unique constraint on
+ * (companyId, channel, externalThreadId) today (only an app-level
+ * find-then-create), so two genuinely concurrent runs could otherwise both
+ * pass that check and insert a duplicate conversation row.
+ *
+ * pg_try_advisory_lock is session-scoped, so acquiring and releasing it must
+ * happen on the exact same underlying connection — `$client.reserve()`
+ * carves one dedicated connection out of the pool for exactly that. `run`
+ * itself still goes through the normal pooled getDb() via the repositories;
+ * only the lock's own acquire/release needs this one reserved connection,
+ * independent of which connection does the actual reads/writes.
+ *
+ * If the process is ever killed before the `finally` below runs (a crash,
+ * a forced redeploy mid-request), Postgres releases session-level advisory
+ * locks on its own once the dropped connection's session ends — so a crash
+ * can never leave this lock stuck held forever. */
+export async function withMetricoolSyncLock<T>(
+  run: () => Promise<T>
+): Promise<{ ran: true; result: T } | { ran: false }> {
+  const reserved = await getDb().$client.reserve();
+  let lockAcquired = false;
+  try {
+    const [lockRow] = await reserved<{ locked: boolean }[]>`
+      SELECT pg_try_advisory_lock(${METRICOOL_SYNC_LOCK_KEY}) AS locked
+    `;
+    lockAcquired = lockRow.locked;
+    if (!lockAcquired) return { ran: false };
+    return { ran: true, result: await run() };
+  } finally {
+    // Releasing a lock this session never held is a safe no-op in Postgres,
+    // but gating on `lockAcquired` here keeps that explicit rather than
+    // relied upon.
+    if (lockAcquired) {
+      await reserved`SELECT pg_advisory_unlock(${METRICOOL_SYNC_LOCK_KEY})`.catch((e) => {
+        console.error("[metricool sync] failed to release advisory lock:", e);
+      });
+    }
+    reserved.release();
+  }
+}
+
 /** Metricool poll-sync entry point — Metricool's Inbox has no webhook (its
  * own docs say messages must be checked manually/polled), so this is called
  * on an interval per connected account by the cron route instead of being
@@ -362,12 +415,15 @@ export async function ingestInboundMessage(input: {
  * remote.self fix get corrected, without a separate migration/backfill
  * script: every connected account's conversations pass through here on the
  * existing 5-minute schedule already. */
-export async function syncMetricoolConversations(account: {
-  id: string;
-  companyId: string;
-  platform: string;
-  externalPageId: string;
-}): Promise<{ conversationsSeen: number; messagesAdded: number; skipped?: true }> {
+export async function syncMetricoolConversations(
+  account: {
+    id: string;
+    companyId: string;
+    platform: string;
+    externalPageId: string;
+  },
+  brandCache: BrandCache = new Map()
+): Promise<{ conversationsSeen: number; messagesAdded: number; skipped?: true }> {
   const provider = metricoolProviderForPlatform(account.platform);
 
   // Both platform rows for a company share one Metricool brand (see
@@ -376,7 +432,16 @@ export async function syncMetricoolConversations(account: {
   // for a provider with no connection on the brand 500s instead of returning
   // an empty list. Skip those up front rather than letting them error on
   // every poll tick.
-  const brand = await metricoolProvider.getBrand(account.externalPageId);
+  //
+  // getBrand is cached per sync *run*, not across runs: the cron route
+  // creates one fresh, empty `brandCache` per request and passes it to every
+  // account's call here, so the two rows that share a blogId (one Facebook,
+  // one Instagram — see schema comment on company_social_accounts) hit
+  // Metricool once instead of twice within that one run. Because the cache
+  // never outlives a single request, a connection toggled in Metricool
+  // between one run and the next is always picked up fresh on the very next
+  // poll — there's no TTL to misjudge and nothing that can go stale.
+  const brand = await getCachedBrand(brandCache, account.externalPageId);
   const connected =
     provider === "FACEBOOK" ? Boolean(brand.networksData?.facebookData) : Boolean(brand.networksData?.instagramData);
   if (!connected) {
@@ -459,6 +524,33 @@ export async function syncMetricoolConversations(account: {
   }
 
   return { conversationsSeen: remoteConversations.length, messagesAdded };
+}
+
+/** Per-sync-run cache for getBrand, keyed by Metricool blogId — see the
+ * caching comment on syncMetricoolConversations above for why this is scoped
+ * to one run rather than given a TTL. Caches the in-flight Promise (not just
+ * the resolved value), matching the existing brandFor idiom in
+ * getPlatformConnectionStatusForCurrentUser above; a rejected entry is left
+ * as-is (not cleared/retried) since a second account hitting the same
+ * failing blogId within the same run would almost certainly fail identically
+ * anyway, and each caller's own try/catch (see the cron route) handles that
+ * independently. */
+export type BrandCache = Map<string, Promise<metricoolProvider.MetricoolBrand>>;
+
+/** `fetchBrand` defaults to the real Metricool call; the regression tests
+ * (social.test.ts) inject a fake one to assert dedup behavior without a
+ * network call. */
+export function getCachedBrand(
+  cache: BrandCache,
+  blogId: string,
+  fetchBrand: (blogId: string) => Promise<metricoolProvider.MetricoolBrand> = metricoolProvider.getBrand
+): Promise<metricoolProvider.MetricoolBrand> {
+  let pending = cache.get(blogId);
+  if (!pending) {
+    pending = fetchBrand(blogId);
+    cache.set(blogId, pending);
+  }
+  return pending;
 }
 
 /** Pure sync helpers, exported only so the regression tests (social.test.ts)

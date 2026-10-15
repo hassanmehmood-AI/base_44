@@ -101,6 +101,25 @@ export function isMetricoolConfigured(): boolean {
   return Boolean(process.env.METRICOOL_API_TOKEN && process.env.METRICOOL_USER_ID);
 }
 
+/** Retry policy for transient failures only — 429 (rate limited) and 5xx
+ * (Metricool-side error). Both mean Metricool itself responded and told us
+ * the request did not succeed, so retrying is safe; a genuine network
+ * timeout/no-response is deliberately NOT retried here, since for a
+ * non-idempotent call like sendMessage we can't tell whether that one
+ * already reached Metricool before the connection dropped — retrying it
+ * blindly could double-send a reply to a real customer. */
+const MAX_RETRY_ATTEMPTS = 3;
+const BASE_BACKOFF_MS = 500;
+const MAX_BACKOFF_MS = 10_000;
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status < 600);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** `blogId: null` for account-level calls that aren't scoped to one brand
  * yet (listing/creating brands) — every other call is scoped to a specific
  * brand. `body` as a `FormData` instance is sent as-is (multipart, its own
@@ -119,20 +138,36 @@ async function metricoolFetch<T>(
   }
 
   const isFormData = init?.body instanceof FormData;
-  const res = await fetch(url.toString(), {
+  const requestInit: RequestInit = {
     method: init?.method ?? "GET",
     headers: {
       "X-Mc-Auth": token,
       ...(init?.body && !isFormData ? { "Content-Type": "application/json" } : {}),
     },
     body: init?.body ? (isFormData ? (init.body as FormData) : JSON.stringify(init.body)) : undefined,
-  });
+  };
 
-  const data = await res.json().catch(() => null);
-  if (!res.ok) {
-    throw new Error(`Metricool API error (${res.status}): ${data?.message ?? res.statusText}`);
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url.toString(), requestInit);
+    const data = await res.json().catch(() => null);
+    if (res.ok) {
+      return data as T;
+    }
+
+    if (!isRetryableStatus(res.status) || attempt >= MAX_RETRY_ATTEMPTS) {
+      throw new Error(`Metricool API error (${res.status}): ${data?.message ?? res.statusText}`);
+    }
+
+    // Honor Metricool's own Retry-After if it sends one (standard for 429s),
+    // capped so a misbehaving/huge value can't stall a sync tick for minutes;
+    // otherwise fall back to exponential backoff with jitter to avoid every
+    // retrying account hammering Metricool again at the exact same instant.
+    const retryAfterHeader = res.headers.get("retry-after");
+    const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : NaN;
+    const backoffMs = Number.isFinite(retryAfterMs) ? retryAfterMs : BASE_BACKOFF_MS * 2 ** attempt;
+    const jitterMs = Math.random() * 250;
+    await sleep(Math.min(backoffMs, MAX_BACKOFF_MS) + jitterMs);
   }
-  return data as T;
 }
 
 /** GET /v2/inbox/conversations — full conversation list for one connected

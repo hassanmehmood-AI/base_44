@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveSyncedMessageDirection, selectUnseenRemoteMessages } from "./social";
+import { resolveSyncedMessageDirection, selectUnseenRemoteMessages, getCachedBrand, type BrandCache } from "./social";
+import type { MetricoolBrand } from "@/server/integrations/metricool";
 
 // Regression coverage for the Metricool sync bug where a reply sent through
 // this CRM re-appeared as a second, mislabeled INBOUND message once the next
@@ -58,4 +59,62 @@ test("selectUnseenRemoteMessages: orders chronologically regardless of input ord
   const result = selectUnseenRemoteMessages(remote, new Set<string>());
 
   assert.deepEqual(result.map((m) => m.id), ["earlier", "later"]);
+});
+
+// Regression coverage for Stage 1's getBrand caching: must dedupe repeated
+// calls for the same blogId within one sync run (the Facebook/Instagram rows
+// that share a brand), but must never carry a result over from a different
+// run/cache instance — that's what keeps a connection toggle on Metricool's
+// side picked up on the very next poll instead of serving stale data.
+
+function fakeBrand(id: number): MetricoolBrand {
+  return { id, label: `brand-${id}`, title: `brand-${id}`, image: "", availableConnectors: [] };
+}
+
+test("getCachedBrand: a second call for the same blogId in the same cache reuses the first result", async () => {
+  const cache: BrandCache = new Map();
+  let calls = 0;
+  const fetchBrand = async (blogId: string) => {
+    calls++;
+    return fakeBrand(Number(blogId));
+  };
+
+  const first = await getCachedBrand(cache, "123", fetchBrand);
+  const second = await getCachedBrand(cache, "123", fetchBrand);
+
+  assert.equal(calls, 1);
+  assert.equal(first.id, 123);
+  assert.equal(second.id, 123);
+});
+
+test("getCachedBrand: different blogIds in the same cache each fetch independently", async () => {
+  const cache: BrandCache = new Map();
+  let calls = 0;
+  const fetchBrand = async (blogId: string) => {
+    calls++;
+    return fakeBrand(Number(blogId));
+  };
+
+  await getCachedBrand(cache, "111", fetchBrand);
+  await getCachedBrand(cache, "222", fetchBrand);
+
+  assert.equal(calls, 2);
+});
+
+test("getCachedBrand: a fresh cache (new run) never reuses a prior run's result", async () => {
+  let calls = 0;
+  const fetchBrand = async (blogId: string) => {
+    calls++;
+    return fakeBrand(Number(blogId));
+  };
+
+  const runOneCache: BrandCache = new Map();
+  await getCachedBrand(runOneCache, "999", fetchBrand);
+
+  // A brand new Map, exactly as the cron route creates per request — must
+  // NOT see run one's cached entry.
+  const runTwoCache: BrandCache = new Map();
+  await getCachedBrand(runTwoCache, "999", fetchBrand);
+
+  assert.equal(calls, 2);
 });

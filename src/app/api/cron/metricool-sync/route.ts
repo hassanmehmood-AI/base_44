@@ -28,27 +28,46 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
 
-  const accounts = await companySocialAccountsRepo.listByPlatforms(METRICOOL_PLATFORMS);
-  const results: Array<{
-    accountId: string;
-    companyId: string;
-    ok: boolean;
-    conversationsSeen?: number;
-    messagesAdded?: number;
-    error?: string;
-  }> = [];
+  // withMetricoolSyncLock holds a Postgres advisory lock for the entire run
+  // below, so an overlapping invocation gets `ran: false` instead of racing
+  // this one — see its doc comment in social.ts for why.
+  const outcome = await socialService.withMetricoolSyncLock(async () => {
+    const accounts = await companySocialAccountsRepo.listByPlatforms(METRICOOL_PLATFORMS);
+    const results: Array<{
+      accountId: string;
+      companyId: string;
+      ok: boolean;
+      conversationsSeen?: number;
+      messagesAdded?: number;
+      error?: string;
+    }> = [];
 
-  for (const account of accounts) {
-    try {
-      const result = await socialService.syncMetricoolConversations(account);
-      results.push({ accountId: account.id, companyId: account.companyId, ok: true, ...result });
-    } catch (e) {
-      const message =
-        e instanceof ProviderNotConfiguredError ? e.message : e instanceof Error ? e.message : "Unknown error";
-      results.push({ accountId: account.id, companyId: account.companyId, ok: false, error: message });
-      console.error(`[metricool sync] account ${account.id} (company ${account.companyId}) failed:`, e);
+    // Shared across every account in this run so the Facebook/Instagram
+    // rows that point at the same Metricool brand (see the schema comment
+    // on company_social_accounts) hit getBrand once instead of twice per
+    // run — see the caching comment on syncMetricoolConversations.
+    const brandCache: socialService.BrandCache = new Map();
+
+    for (const account of accounts) {
+      try {
+        const result = await socialService.syncMetricoolConversations(account, brandCache);
+        results.push({ accountId: account.id, companyId: account.companyId, ok: true, ...result });
+      } catch (e) {
+        const message =
+          e instanceof ProviderNotConfiguredError ? e.message : e instanceof Error ? e.message : "Unknown error";
+        results.push({ accountId: account.id, companyId: account.companyId, ok: false, error: message });
+        console.error(`[metricool sync] account ${account.id} (company ${account.companyId}) failed:`, e);
+      }
     }
-  }
 
-  return NextResponse.json({ accountsSynced: accounts.length, results });
+    return { accountsSynced: accounts.length, results };
+  });
+
+  if (!outcome.ran) {
+    return NextResponse.json(
+      { skipped: true, reason: "Another Metricool sync is already in progress." },
+      { status: 409 }
+    );
+  }
+  return NextResponse.json(outcome.result);
 }
