@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Send } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -226,15 +226,19 @@ export function RedesSocialesClient({
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[300px_1fr_280px]">
-        <Card className="flex flex-col gap-3 p-5">
-          <div className="flex items-center justify-between">
+        {/* Height capped to the viewport (same convention as the CRM contacts
+            card) so a growing conversation count scrolls inside this panel
+            instead of lengthening the whole page; header stays outside the
+            scrollable region. */}
+        <Card className="flex max-h-[calc(100vh-280px)] min-h-[520px] flex-col gap-3 p-5">
+          <div className="flex shrink-0 items-center justify-between">
             <CardTitle>{t("Social inbox", "Bandeja social")}</CardTitle>
             <Badge tone="outline" style={{ backgroundColor: theme.accentSoft, color: theme.accent, borderColor: theme.accentSoft }}>
               {searched.length}
             </Badge>
           </div>
 
-          <div className="flex flex-col gap-1">
+          <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
             {searched.map((c) => {
               const isSelected = selectedId === c.id;
               const customerName = c.contactName ?? c.subject ?? t("Unknown sender", "Remitente desconocido");
@@ -301,7 +305,7 @@ export function RedesSocialesClient({
             />
           </>
         ) : (
-          <Card className="flex items-center justify-center p-6 text-[13.5px] text-text-tertiary lg:col-span-2">
+          <Card className="flex max-h-[calc(100vh-280px)] min-h-[520px] items-center justify-center p-6 text-[13.5px] text-text-tertiary lg:col-span-2">
             {t("Select a conversation to view it.", "Selecciona una conversación para verla.")}
           </Card>
         )}
@@ -330,6 +334,16 @@ function ConversationPanel({
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const messagesRef = useRef<HTMLDivElement>(null);
+
+  // Jump to the latest message whenever the conversation's history changes —
+  // the message list now scrolls inside a fixed-height card (see layout
+  // fix above), so without this a long conversation would open scrolled to
+  // its oldest message instead of the newest.
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [conversation.id, messages]);
 
   async function handleSend() {
     setSending(true);
@@ -345,8 +359,8 @@ function ConversationPanel({
   }
 
   return (
-    <Card className="flex flex-col gap-4 p-6">
-      <div>
+    <Card className="flex max-h-[calc(100vh-280px)] min-h-[520px] flex-col gap-4 p-6">
+      <div className="shrink-0">
         <p className="text-[15px] font-semibold text-text-primary">
           {conversation.contactName ?? conversation.subject ?? t("Unknown sender", "Remitente desconocido")}
         </p>
@@ -356,7 +370,7 @@ function ConversationPanel({
         </p>
       </div>
 
-      <div className="flex max-h-[360px] flex-col gap-3 overflow-y-auto">
+      <div ref={messagesRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
         {loadingDetail ? (
           <p className="py-6 text-center text-[13.5px] text-text-tertiary">{t("Loading...", "Cargando...")}</p>
         ) : messages.length === 0 ? (
@@ -385,7 +399,7 @@ function ConversationPanel({
         )}
       </div>
 
-      <div className="mt-auto flex flex-col gap-3 border-t border-border pt-4">
+      <div className="flex shrink-0 flex-col gap-3 border-t border-border pt-4">
         <Textarea rows={3} placeholder={t("Write a reply...", "Escribe una respuesta...")} value={reply} onChange={(e) => setReply(e.target.value)} />
         {error && <p className="text-[13px] text-danger">{error}</p>}
         <Button
@@ -453,7 +467,7 @@ function SidePanel({
   }
 
   return (
-    <Card className="flex flex-col gap-4 p-5">
+    <Card className="flex max-h-[calc(100vh-280px)] min-h-[520px] flex-col gap-4 overflow-y-auto p-5">
       <div className="flex items-center gap-3">
         <div className="shrink-0 rounded-full" style={{ boxShadow: `0 0 0 2px ${theme.accent}` }}>
           <Avatar
