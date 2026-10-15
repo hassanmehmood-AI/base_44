@@ -211,8 +211,15 @@ export async function replyToConversation(conversationId: string, body: string) 
     ? await companySocialAccountsRepo.findById(conversation.companySocialAccountId)
     : undefined;
 
+  // Metricool-assigned id for this exact send, captured so the next poll
+  // (syncMetricoolConversations) recognizes this message as already-stored
+  // instead of re-inserting it as a new, mislabeled INBOUND message — see
+  // that function's seenExternalIds check. Meta-direct sends have no
+  // equivalent polling step (Meta pushes inbound messages via webhook
+  // instead), so there's nothing to dedupe against and no id to capture.
+  let externalId: string | undefined;
   if (account && (METRICOOL_PLATFORMS as readonly string[]).includes(account.platform)) {
-    await sendViaMetricool(account, conversation.externalThreadId, body);
+    externalId = await sendViaMetricool(account, conversation.externalThreadId, body);
   } else {
     await metaProvider.sendMessage(conversation.externalThreadId, body);
   }
@@ -225,6 +232,7 @@ export async function replyToConversation(conversationId: string, body: string) 
     body,
     createdBy: session.user.id,
     sentAt: now,
+    metadata: externalId ? { externalId } : null,
   });
   await conversationsRepo.updateLastMessageAt(conversation.id, now);
 
@@ -249,7 +257,7 @@ export async function replyToConversation(conversationId: string, body: string) 
  * `participants[0]` unconditionally was sending every reply addressed to the
  * brand's own account, which Metricool correctly rejects with a 400. The
  * contact is whichever participant's id isn't the conversation's own `self`. */
-async function sendViaMetricool(account: CompanySocialAccount, externalThreadId: string, body: string): Promise<void> {
+async function sendViaMetricool(account: CompanySocialAccount, externalThreadId: string, body: string): Promise<string> {
   const provider = metricoolProviderForPlatform(account.platform);
   const remoteConversations = await metricoolProvider.listConversations(account.externalPageId, provider);
   const remote = remoteConversations.find((c) => c.id === externalThreadId);
@@ -258,7 +266,7 @@ async function sendViaMetricool(account: CompanySocialAccount, externalThreadId:
   const recipient = remote.participants.find((p) => p.id !== remote.self)?.id;
   if (!recipient) throw new Error("Could not determine who to reply to for this Metricool conversation.");
 
-  await metricoolProvider.sendMessage(account.externalPageId, provider, externalThreadId, recipient, body);
+  return metricoolProvider.sendMessage(account.externalPageId, provider, externalThreadId, recipient, body);
 }
 
 /** The "contact association" step from guide §16 — inbound social messages
@@ -417,27 +425,25 @@ export async function syncMetricoolConversations(account: {
       existing.map((m) => (m.metadata as { externalId?: string } | null)?.externalId).filter((id): id is string => Boolean(id))
     );
 
-    const newRemoteMessages = remote.messages
-      .filter((m) => !seenExternalIds.has(m.id))
-      .sort((a, b) => new Date(a.publicationDateTime).getTime() - new Date(b.publicationDateTime).getTime());
+    const newRemoteMessages = selectUnseenRemoteMessages(remote.messages, seenExternalIds);
     if (newRemoteMessages.length === 0) continue;
 
     let latestSentAt: Date | null = null;
     for (const m of newRemoteMessages) {
       const sentAt = new Date(m.publicationDateTime);
-      // Everything newly seen here defaults to INBOUND: genuine outbound
-      // replies sent through this CRM are already written (with their
-      // Metricool-assigned id) by sendViaMetricool/replyToConversation at
-      // send time, so they're already in seenExternalIds above and never
-      // reach this branch. Known gap: a reply sent from Metricool's own web
-      // UI (bypassing this CRM entirely) would show up here and be
-      // mis-labeled INBOUND, since Metricool's from/to fields aren't
-      // confirmed to reliably identify the connected brand account vs. the
-      // contact — verify against a live payload if that scenario matters.
-      const senderLabel = remote.participants.find((p) => p.id === m.from)?.name ?? null;
+      // Direction is derived from the verified sender id (m.from vs. the
+      // conversation's own `remote.self`), never assumed. Genuine outbound
+      // replies sent through this CRM are already written at send time (with
+      // their Metricool-assigned id — see sendViaMetricool/replyToConversation)
+      // so they're already in seenExternalIds above and never reach this
+      // branch; this check instead covers a reply sent from Metricool's own
+      // web UI (bypassing this CRM) and acts as a defense-in-depth backstop
+      // against mislabeling if that id capture ever fails for any reason.
+      const direction = resolveSyncedMessageDirection(m.from, remote.self);
+      const senderLabel = direction === "OUTBOUND" ? null : remote.participants.find((p) => p.id === m.from)?.name ?? null;
       await messagesRepo.create({
         conversationId: conversation.id,
-        direction: "INBOUND",
+        direction,
         senderLabel,
         body: m.text,
         metadata: { externalId: m.id },
@@ -453,4 +459,29 @@ export async function syncMetricoolConversations(account: {
   }
 
   return { conversationsSeen: remoteConversations.length, messagesAdded };
+}
+
+/** Pure sync helpers, exported only so the regression tests (social.test.ts)
+ * can exercise them directly without standing up a database. */
+
+/** A remote message is OUTBOUND only when its verified sender id matches the
+ * conversation's own `self` participant — never inferred from array
+ * position, message text, or display name. */
+export function resolveSyncedMessageDirection(
+  senderId: string,
+  selfId: string
+): "INBOUND" | "OUTBOUND" {
+  return senderId === selfId ? "OUTBOUND" : "INBOUND";
+}
+
+/** Dedupes by Metricool's own per-message id (never by body text — customers
+ * can legitimately send the same text twice), then orders chronologically so
+ * callers persist history in the right sequence. */
+export function selectUnseenRemoteMessages<T extends { id: string; publicationDateTime: string }>(
+  remoteMessages: T[],
+  seenExternalIds: Set<string>
+): T[] {
+  return remoteMessages
+    .filter((m) => !seenExternalIds.has(m.id))
+    .sort((a, b) => new Date(a.publicationDateTime).getTime() - new Date(b.publicationDateTime).getTime());
 }
