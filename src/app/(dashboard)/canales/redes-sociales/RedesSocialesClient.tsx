@@ -468,12 +468,12 @@ function ConversationPanel({
             value={reply}
             onChange={(e) => setReply(e.target.value)}
             onKeyDown={handleTextareaKeyDown}
-            className="!pr-12"
+            className="!pr-14"
           />
           <Button
             aria-label={t("Post reply", "Publicar respuesta")}
             title={t("Post reply", "Publicar respuesta")}
-            className="absolute bottom-2 right-2 h-9 w-9 !px-0 transition-[filter] hover:brightness-95 active:brightness-90"
+            className="absolute bottom-2 right-2 w-10 !px-0 transition-[filter] hover:brightness-95 active:brightness-90"
             style={{ background: theme.actionBackground, color: "#fff" }}
             disabled={sending}
             onClick={handleSend}
