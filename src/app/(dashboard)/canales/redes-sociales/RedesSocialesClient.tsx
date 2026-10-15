@@ -19,11 +19,13 @@ import type { UserWithRole } from "@/server/repositories/users";
 import type { PlatformConnectionStatus } from "@/server/services/social";
 import {
   getConversationDetailAction,
+  listConversationsAction,
   replyToConversationAction,
   linkContactAction,
   updateConversationAssigneeAction,
   getAssignableUsersAction,
 } from "./actions";
+import { useSocialRealtime } from "./useSocialRealtime";
 
 type SocialPlatform = "FACEBOOK" | "INSTAGRAM";
 
@@ -165,6 +167,46 @@ export function RedesSocialesClient({
       applyConversationUpdate(result.conversation);
     }
   }
+
+  async function refreshConversationList() {
+    const fresh = await listConversationsAction();
+    setConversations(fresh);
+  }
+
+  // Always reads the latest selectedId without needing it as an effect
+  // dependency (which would tear the socket down and reconnect it on every
+  // conversation switch — wasteful and defeats the point of a persistent
+  // connection).
+  const selectedIdRef = useRef(selectedId);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  // Coalesces a burst of near-simultaneous events (e.g. several messages
+  // arriving together) into one refresh instead of one per event — directly
+  // avoids the "unnecessary API calls" this feature could otherwise cause.
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function scheduleRefresh(options: { alwaysRefreshDetail: boolean; conversationId: string | null }) {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      refreshConversationList();
+      const shouldRefreshDetail =
+        options.alwaysRefreshDetail || (options.conversationId && options.conversationId === selectedIdRef.current);
+      if (shouldRefreshDetail) refreshDetail();
+    }, 300);
+  }
+
+  useSocialRealtime((event) => {
+    if ("reconnected" in event) {
+      // Unconditional: we don't know what, if anything, was missed while
+      // disconnected, so the open conversation (if any) is refreshed
+      // regardless of whether it matches a specific event's conversationId.
+      scheduleRefresh({ alwaysRefreshDetail: true, conversationId: null });
+    } else {
+      scheduleRefresh({ alwaysRefreshDetail: false, conversationId: event.conversationId });
+    }
+  });
 
   return (
     <div className="flex flex-col gap-6">

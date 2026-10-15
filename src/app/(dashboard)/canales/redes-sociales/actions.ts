@@ -8,6 +8,16 @@ import { ProviderNotConfiguredError } from "@/server/integrations/errors";
 
 export type ActionResult = { error?: string; ok?: true };
 
+/** Re-fetches the full, authoritative conversation list for the current
+ * user — used by the realtime layer (useSocialRealtime) to refresh after a
+ * WS notification or on (re)connect. Deliberately the exact same
+ * authenticated, company-scoped query page.tsx uses for the initial load:
+ * the WS event only ever carries a bare pointer, never message content, so
+ * this is what actually resolves "something changed" into real data. */
+export async function listConversationsAction() {
+  return socialService.listSocialConversationsForCurrentUser();
+}
+
 export async function getConversationDetailAction(id: string) {
   const result = await socialService.getConversation(id);
   return result ?? null;

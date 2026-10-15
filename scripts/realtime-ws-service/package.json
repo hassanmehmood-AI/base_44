@@ -1,0 +1,24 @@
+{
+  "name": "growth-on-realtime-ws-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone Socket.IO service that notifies authorized, company-scoped browser clients when a new CRM message is saved. Separate Railway service from the main growth-on app — see server.ts's top comment for why.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch server.ts",
+    "start": "tsx server.ts",
+    "test": "node --import tsx --test *.test.ts"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1",
+    "jose": "^6.2.12",
+    "pg": "^8.13.1",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/pg": "^8.11.10",
+    "socket.io-client": "^4.8.1",
+    "typescript": "^5"
+  }
+}

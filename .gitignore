@@ -2,6 +2,10 @@
 
 # dependencies
 /node_modules
+# scripts/* subdirectories (e.g. realtime-ws-service) have their own
+# package.json/node_modules, independent of the root app's — not caught by
+# the rooted /node_modules entry above.
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
