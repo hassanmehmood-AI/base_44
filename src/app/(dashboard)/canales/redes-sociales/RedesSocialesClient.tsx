@@ -264,7 +264,9 @@ export function RedesSocialesClient({
                         {!c.contactId && <span className="text-warning-700">{t("Unmatched", "Sin asociar")}</span>}
                         {!c.contactId && c.lastMessageAt && <span className="text-text-tertiary">·</span>}
                         {c.lastMessageAt && (
-                          <span className="text-text-tertiary">{formatRelativeTime(c.lastMessageAt, language)}</span>
+                          <span className="text-text-tertiary" suppressHydrationWarning>
+                            {formatRelativeTime(c.lastMessageAt, language)}
+                          </span>
                         )}
                       </span>
                     )}
@@ -390,7 +392,7 @@ function ConversationPanel({
                 )}
               >
                 <p className="whitespace-pre-wrap break-words">{m.body}</p>
-                <p className={cn("mt-1 text-[11px]", outbound ? "text-white/80" : "text-text-tertiary")}>
+                <p className={cn("mt-1 text-[11px]", outbound ? "text-white/80" : "text-text-tertiary")} suppressHydrationWarning>
                   {outbound ? t("You", "Tú") : (m.senderLabel ?? "")} · {formatRelativeTime(m.sentAt, language)}
                 </p>
               </div>
