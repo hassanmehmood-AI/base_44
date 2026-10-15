@@ -190,10 +190,16 @@ export function RedesSocialesClient({
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     refreshTimerRef.current = setTimeout(() => {
       refreshTimerRef.current = null;
-      refreshConversationList();
+      // Errors are logged, not swallowed — these were previously
+      // fire-and-forget with no .catch, so a failed refresh (e.g. a
+      // transient network blip) would silently leave the inbox stale with
+      // no visible signal that anything went wrong.
+      refreshConversationList().catch((e) => console.error("[realtime] failed to refresh conversation list:", e));
       const shouldRefreshDetail =
         options.alwaysRefreshDetail || (options.conversationId && options.conversationId === selectedIdRef.current);
-      if (shouldRefreshDetail) refreshDetail();
+      if (shouldRefreshDetail) {
+        refreshDetail().catch((e) => console.error("[realtime] failed to refresh conversation detail:", e));
+      }
     }, 300);
   }
 

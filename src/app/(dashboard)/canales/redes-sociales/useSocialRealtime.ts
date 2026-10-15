@@ -72,6 +72,15 @@ export function useSocialRealtime(onChange: (event: SocialNewMessageEvent | { re
       onChangeRef.current(payload);
     });
 
+    // Previously silent — a failed connection (bad/expired token, the
+    // realtime service being unreachable, etc.) gave zero visibility beyond
+    // Socket.IO's own default console noise. Logged here so a broken
+    // connection is diagnosable instead of looking identical to "nothing
+    // happened yet".
+    socket.on("connect_error", (err) => {
+      console.error("[realtime] connection failed:", err.message);
+    });
+
     return () => {
       socket.close();
     };
