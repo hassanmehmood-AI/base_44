@@ -408,6 +408,17 @@ function ConversationPanel({
     onSent();
   }
 
+  // Enter sends (matches common chat UX elsewhere); Shift+Enter still
+  // inserts a newline rather than submitting, so multi-line replies are
+  // still possible. Guarded on `sending` the same way the button already
+  // is, so holding Enter can't fire a second send mid-flight.
+  function handleTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!sending) handleSend();
+    }
+  }
+
   return (
     <Card className="flex max-h-[calc(100vh-280px)] min-h-[520px] flex-col gap-4 p-6">
       <div className="shrink-0">
@@ -450,15 +461,23 @@ function ConversationPanel({
       </div>
 
       <div className="flex shrink-0 flex-col gap-3 border-t border-border pt-4">
-        <Textarea rows={3} placeholder={t("Write a reply...", "Escribe una respuesta...")} value={reply} onChange={(e) => setReply(e.target.value)} />
+        <Textarea
+          rows={3}
+          placeholder={t("Write a reply...", "Escribe una respuesta...")}
+          value={reply}
+          onChange={(e) => setReply(e.target.value)}
+          onKeyDown={handleTextareaKeyDown}
+        />
         {error && <p className="text-[13px] text-danger">{error}</p>}
         <Button
-          className="w-fit self-end transition-[filter] hover:brightness-95 active:brightness-90"
+          aria-label={t("Post reply", "Publicar respuesta")}
+          title={t("Post reply", "Publicar respuesta")}
+          className="h-10 w-10 shrink-0 self-end !px-0 transition-[filter] hover:brightness-95 active:brightness-90"
           style={{ background: theme.actionBackground, color: "#fff" }}
           disabled={sending}
           onClick={handleSend}
         >
-          <Send className="h-4 w-4" /> {sending ? t("Sending...", "Enviando...") : t("Post reply", "Publicar respuesta")}
+          <Send className="h-4 w-4" />
         </Button>
       </div>
     </Card>
