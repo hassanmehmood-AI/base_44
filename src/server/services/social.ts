@@ -213,13 +213,22 @@ export async function replyToConversation(conversationId: string, body: string) 
 
   // Metricool-assigned id for this exact send, captured so the next poll
   // (syncMetricoolConversations) recognizes this message as already-stored
-  // instead of re-inserting it as a new, mislabeled INBOUND message — see
-  // that function's seenExternalIds check. Meta-direct sends have no
+  // instead of re-inserting it as a new message — see that function's
+  // seenExternalIds check. Only trusted as a dedup key when it actually
+  // looks like one (see looksLikeUsableMetricoolMessageId): confirmed live,
+  // this account's send endpoint returns the literal string "OK" instead of
+  // a real id on every observed send, on both Facebook and Instagram — a
+  // fake id stored here would never match anything, silently reopening the
+  // duplicate-message bug this field exists to prevent. When it's not
+  // usable, syncMetricoolConversations' reconciliation step is the actual
+  // safety net (matches by conversation + sender identity + body + a tight
+  // timestamp window, never by body alone). Meta-direct sends have no
   // equivalent polling step (Meta pushes inbound messages via webhook
   // instead), so there's nothing to dedupe against and no id to capture.
   let externalId: string | undefined;
   if (account && (METRICOOL_PLATFORMS as readonly string[]).includes(account.platform)) {
-    externalId = await sendViaMetricool(account, conversation.externalThreadId, body);
+    const sendResult = await sendViaMetricool(account, conversation.externalThreadId, body);
+    externalId = looksLikeUsableMetricoolMessageId(sendResult) ? sendResult : undefined;
   } else {
     await metaProvider.sendMessage(conversation.externalThreadId, body);
   }
@@ -247,6 +256,23 @@ export async function replyToConversation(conversationId: string, body: string) 
       createdBy: session.user.id,
     });
   }
+}
+
+/** Metricool's send endpoint doesn't reliably return a real message id —
+ * confirmed live: this account's /v2/inbox/conversations POST returns the
+ * literal string "OK" on every observed send, across both Facebook and
+ * Instagram. Deliberately a denylist of known non-id acknowledgments, not a
+ * format allowlist: real ids have been observed in at least two very
+ * different shapes across providers (a short "m_..." token for Facebook, a
+ * long base64-ish token for Instagram), so guessing "the" real shape would
+ * be more likely to reject a genuine future id than to catch an
+ * acknowledgment string we haven't seen yet. */
+const KNOWN_NON_ID_ACKNOWLEDGMENTS = new Set(["ok", "success", "true", "done"]);
+
+export function looksLikeUsableMetricoolMessageId(value: string | null | undefined): value is string {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 && !KNOWN_NON_ID_ACKNOWLEDGMENTS.has(normalized);
 }
 
 /** Resolves who to reply to by re-fetching the conversation from Metricool
@@ -402,8 +428,11 @@ export async function withMetricoolSyncLock<T>(
  * Idempotent and safe to re-run on every poll tick: new messages are
  * deduped against what's already stored via Metricool's own message id,
  * kept in messages.metadata.externalId — including messages this same
- * reply flow already wrote at send time, so a message sent through this CRM
- * is never double-inserted when it shows back up in the next poll.
+ * reply flow already wrote at send time. When that id wasn't usable (see
+ * looksLikeUsableMetricoolMessageId/replyToConversation — confirmed live,
+ * Metricool's send response doesn't always return one), the
+ * matchAlreadySentOutboundMessages reconciliation step below is the backstop
+ * that still stops it from being double-inserted.
  *
  * Conversations are matched by (companyId, channel, externalThreadId =
  * Metricool's conversation id) — a completely different id space from
@@ -493,8 +522,24 @@ export async function syncMetricoolConversations(
     const newRemoteMessages = selectUnseenRemoteMessages(remote.messages, seenExternalIds);
     if (newRemoteMessages.length === 0) continue;
 
+    // Reconciliation safety net for sends whose Metricool response wasn't a
+    // usable id (see looksLikeUsableMetricoolMessageId/replyToConversation):
+    // without this, a remote echo of a message this CRM already sent would
+    // fail the seenExternalIds check above and get inserted a second time —
+    // the exact duplicate-message bug this exists to prevent. Scoped to only
+    // the newly-seen messages Metricool says *we* sent (never applied to a
+    // customer's INBOUND messages), matched against local OUTBOUND rows by
+    // conversation + body + a tight timestamp window — never by body alone.
+    const selfSentCandidates = newRemoteMessages.filter(
+      (m) => resolveSyncedMessageDirection(m.from, remote.self) === "OUTBOUND"
+    );
+    const localOutboundCandidates = existing.filter((e) => e.direction === "OUTBOUND");
+    const alreadyRepresented = matchAlreadySentOutboundMessages(selfSentCandidates, localOutboundCandidates);
+
     let latestSentAt: Date | null = null;
     for (const m of newRemoteMessages) {
+      if (alreadyRepresented.has(m)) continue;
+
       const sentAt = new Date(m.publicationDateTime);
       // Direction is derived from the verified sender id (m.from vs. the
       // conversation's own `remote.self`), never assumed. Genuine outbound
@@ -576,4 +621,67 @@ export function selectUnseenRemoteMessages<T extends { id: string; publicationDa
   return remoteMessages
     .filter((m) => !seenExternalIds.has(m.id))
     .sort((a, b) => new Date(a.publicationDateTime).getTime() - new Date(b.publicationDateTime).getTime());
+}
+
+/** Default reconciliation window for matchAlreadySentOutboundMessages — real
+ * observed gaps between a send's local timestamp and Metricool's recorded
+ * publicationDateTime for that same message are all under 1 second (the
+ * apparent gap is mostly sub-second-truncation on Metricool's side, not
+ * real latency); 10s is generous headroom for that without being wide
+ * enough to falsely pair messages sent minutes apart. */
+export const DEFAULT_OUTBOUND_RECONCILIATION_TOLERANCE_SECONDS = 10;
+
+/** One-to-one, nearest-timestamp matching between remote messages Metricool
+ * says this CRM's own connected account sent, and local OUTBOUND rows not
+ * already known to correspond to any remote id. This is the safety net for
+ * sends whose response wasn't a usable id (see
+ * looksLikeUsableMetricoolMessageId) — without it, that remote echo would
+ * fail the fast id-based dedup check and get inserted as a second copy of
+ * a message this CRM already sent.
+ *
+ * Deliberately never matches by body text alone — two genuinely separate
+ * sends can share identical text (e.g. an agent sending "hi" twice a few
+ * seconds apart): a candidate pair additionally requires the timestamps to
+ * fall within `toleranceSeconds`, pairs are tried nearest-first, and each
+ * local row can satisfy at most one remote message — so two real sends of
+ * identical text correctly pair with their two real remote echoes instead
+ * of one accidentally absorbing both and losing the other. A remote message
+ * with no matching unclaimed local row (e.g. a genuine reply sent from
+ * Metricool's own web UI, bypassing this CRM) is left unmatched, so the
+ * caller inserts it normally — never worse than not reconciling at all.
+ *
+ * Returns the subset of `remoteMessages` already represented locally; the
+ * caller should skip inserting these rather than re-creating them. */
+export function matchAlreadySentOutboundMessages<
+  R extends { text: string; publicationDateTime: string },
+  L extends { body: string; sentAt: Date },
+>(
+  remoteMessages: R[],
+  localCandidates: L[],
+  toleranceSeconds: number = DEFAULT_OUTBOUND_RECONCILIATION_TOLERANCE_SECONDS
+): Set<R> {
+  const toleranceMs = toleranceSeconds * 1000;
+  const candidatePairs: Array<{ remote: R; local: L; diffMs: number }> = [];
+
+  for (const remote of remoteMessages) {
+    const remoteTime = new Date(remote.publicationDateTime).getTime();
+    for (const local of localCandidates) {
+      if (local.body !== remote.text) continue;
+      const diffMs = Math.abs(local.sentAt.getTime() - remoteTime);
+      if (diffMs <= toleranceMs) {
+        candidatePairs.push({ remote, local, diffMs });
+      }
+    }
+  }
+
+  candidatePairs.sort((a, b) => a.diffMs - b.diffMs);
+
+  const matchedRemote = new Set<R>();
+  const claimedLocal = new Set<L>();
+  for (const pair of candidatePairs) {
+    if (matchedRemote.has(pair.remote) || claimedLocal.has(pair.local)) continue;
+    matchedRemote.add(pair.remote);
+    claimedLocal.add(pair.local);
+  }
+  return matchedRemote;
 }

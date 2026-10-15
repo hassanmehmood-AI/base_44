@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveSyncedMessageDirection, selectUnseenRemoteMessages, getCachedBrand, type BrandCache } from "./social";
+import {
+  resolveSyncedMessageDirection,
+  selectUnseenRemoteMessages,
+  getCachedBrand,
+  looksLikeUsableMetricoolMessageId,
+  matchAlreadySentOutboundMessages,
+  type BrandCache,
+} from "./social";
 import type { MetricoolBrand } from "@/server/integrations/metricool";
 
 // Regression coverage for the Metricool sync bug where a reply sent through
@@ -117,4 +124,126 @@ test("getCachedBrand: a fresh cache (new run) never reuses a prior run's result"
   await getCachedBrand(runTwoCache, "999", fetchBrand);
 
   assert.equal(calls, 2);
+});
+
+// Regression coverage for Stage 2's duplicate-outgoing-message fix: confirmed
+// live that Metricool's send response is not reliably a usable id (this
+// account's endpoint returns the literal string "OK" on every observed send,
+// both Facebook and Instagram) — looksLikeUsableMetricoolMessageId stops a
+// fake value from being trusted as a dedup key, and
+// matchAlreadySentOutboundMessages is the sync-side safety net that still
+// prevents a duplicate when that id was never captured.
+
+test("looksLikeUsableMetricoolMessageId: Metricool's generic acknowledgment is rejected", () => {
+  assert.equal(looksLikeUsableMetricoolMessageId("OK"), false);
+  assert.equal(looksLikeUsableMetricoolMessageId("ok"), false);
+  assert.equal(looksLikeUsableMetricoolMessageId("  Ok  "), false);
+});
+
+test("looksLikeUsableMetricoolMessageId: null, undefined, and empty are rejected", () => {
+  assert.equal(looksLikeUsableMetricoolMessageId(null), false);
+  assert.equal(looksLikeUsableMetricoolMessageId(undefined), false);
+  assert.equal(looksLikeUsableMetricoolMessageId(""), false);
+  assert.equal(looksLikeUsableMetricoolMessageId("   "), false);
+});
+
+test("looksLikeUsableMetricoolMessageId: a real-looking id (either observed shape) is accepted", () => {
+  assert.equal(looksLikeUsableMetricoolMessageId("m_hfXizJHgQkCKkKeqPd7gnfAFvt76p5QXLXS9DIAHNM8"), true);
+  assert.equal(
+    looksLikeUsableMetricoolMessageId("aWdfZAG1faXRlbToxOklHTWVzc2FnZAUlEOjE3ODQxNDc1NTM1Mjc0MzY4"),
+    true
+  );
+});
+
+type FakeRemoteSelfSent = { id: string; text: string; publicationDateTime: string };
+type FakeLocalOutbound = { id: string; body: string; sentAt: Date };
+
+test("matchAlreadySentOutboundMessages: duplicate prevention — a remote echo within the window matches its local send", () => {
+  const local: FakeLocalOutbound[] = [{ id: "local-1", body: "hi", sentAt: new Date("2026-10-15T09:16:04.256Z") }];
+  const remote: FakeRemoteSelfSent[] = [
+    { id: "m_remote1", text: "hi", publicationDateTime: "2026-10-15T09:16:04.000Z" },
+  ];
+
+  const matched = matchAlreadySentOutboundMessages(remote, local);
+
+  assert.equal(matched.size, 1);
+  assert.ok(matched.has(remote[0]));
+});
+
+test("matchAlreadySentOutboundMessages: identical messages — two real back-to-back sends both still get represented, neither lost", () => {
+  const local: FakeLocalOutbound[] = [
+    { id: "local-1", body: "hi", sentAt: new Date("2026-10-15T09:16:04.000Z") },
+    { id: "local-2", body: "hi", sentAt: new Date("2026-10-15T09:16:07.000Z") },
+  ];
+  const remote: FakeRemoteSelfSent[] = [
+    { id: "m_remote1", text: "hi", publicationDateTime: "2026-10-15T09:16:04.300Z" },
+    { id: "m_remote2", text: "hi", publicationDateTime: "2026-10-15T09:16:07.300Z" },
+  ];
+
+  const matched = matchAlreadySentOutboundMessages(remote, local);
+
+  // Both remote echoes are matched (to their own nearest local send) — if
+  // the match were ambiguous/wrong, one local row could absorb both remote
+  // messages and leave the other appearing "new" (i.e. duplicated).
+  assert.equal(matched.size, 2);
+  assert.ok(matched.has(remote[0]));
+  assert.ok(matched.has(remote[1]));
+});
+
+test("matchAlreadySentOutboundMessages: never matches by text alone — a remote message with no local counterpart stays unmatched", () => {
+  const local: FakeLocalOutbound[] = [{ id: "local-1", body: "hi", sentAt: new Date("2026-10-15T09:16:04.000Z") }];
+  // A genuine reply sent from Metricool's own web UI, bypassing this CRM —
+  // same text, but no corresponding local row at all.
+  const remote: FakeRemoteSelfSent[] = [
+    { id: "m_remote1", text: "hi", publicationDateTime: "2026-10-16T12:00:00.000Z" },
+  ];
+
+  const matched = matchAlreadySentOutboundMessages(remote, local);
+
+  assert.equal(matched.size, 0);
+});
+
+test("matchAlreadySentOutboundMessages: unmatched messages — different body text never matches regardless of timing", () => {
+  const local: FakeLocalOutbound[] = [{ id: "local-1", body: "hi", sentAt: new Date("2026-10-15T09:16:04.000Z") }];
+  const remote: FakeRemoteSelfSent[] = [
+    { id: "m_remote1", text: "hello", publicationDateTime: "2026-10-15T09:16:04.000Z" },
+  ];
+
+  const matched = matchAlreadySentOutboundMessages(remote, local);
+
+  assert.equal(matched.size, 0);
+});
+
+test("matchAlreadySentOutboundMessages: delayed Metricool response just inside the tolerance window still matches", () => {
+  const local: FakeLocalOutbound[] = [{ id: "local-1", body: "hi", sentAt: new Date("2026-10-15T09:16:00.000Z") }];
+  const remote: FakeRemoteSelfSent[] = [
+    // 9.9s later — just inside the default 10s tolerance.
+    { id: "m_remote1", text: "hi", publicationDateTime: "2026-10-15T09:16:09.900Z" },
+  ];
+
+  const matched = matchAlreadySentOutboundMessages(remote, local);
+
+  assert.equal(matched.size, 1);
+});
+
+test("matchAlreadySentOutboundMessages: delayed Metricool response just outside the tolerance window is left unmatched (documented limit, not a crash)", () => {
+  const local: FakeLocalOutbound[] = [{ id: "local-1", body: "hi", sentAt: new Date("2026-10-15T09:16:00.000Z") }];
+  const remote: FakeRemoteSelfSent[] = [
+    // 10.1s later — just outside the default 10s tolerance.
+    { id: "m_remote1", text: "hi", publicationDateTime: "2026-10-15T09:16:10.100Z" },
+  ];
+
+  const matched = matchAlreadySentOutboundMessages(remote, local);
+
+  assert.equal(matched.size, 0);
+});
+
+test("matchAlreadySentOutboundMessages: a custom tolerance window is respected", () => {
+  const local: FakeLocalOutbound[] = [{ id: "local-1", body: "hi", sentAt: new Date("2026-10-15T09:16:00.000Z") }];
+  const remote: FakeRemoteSelfSent[] = [
+    { id: "m_remote1", text: "hi", publicationDateTime: "2026-10-15T09:16:03.000Z" },
+  ];
+
+  assert.equal(matchAlreadySentOutboundMessages(remote, local, 2).size, 0);
+  assert.equal(matchAlreadySentOutboundMessages(remote, local, 5).size, 1);
 });
