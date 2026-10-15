@@ -461,24 +461,27 @@ function ConversationPanel({
       </div>
 
       <div className="flex shrink-0 flex-col gap-3 border-t border-border pt-4">
-        <Textarea
-          rows={3}
-          placeholder={t("Write a reply...", "Escribe una respuesta...")}
-          value={reply}
-          onChange={(e) => setReply(e.target.value)}
-          onKeyDown={handleTextareaKeyDown}
-        />
+        <div className="relative">
+          <Textarea
+            rows={3}
+            placeholder={t("Write a reply...", "Escribe una respuesta...")}
+            value={reply}
+            onChange={(e) => setReply(e.target.value)}
+            onKeyDown={handleTextareaKeyDown}
+            className="!pr-12"
+          />
+          <Button
+            aria-label={t("Post reply", "Publicar respuesta")}
+            title={t("Post reply", "Publicar respuesta")}
+            className="absolute bottom-2 right-2 h-9 w-9 !px-0 transition-[filter] hover:brightness-95 active:brightness-90"
+            style={{ background: theme.actionBackground, color: "#fff" }}
+            disabled={sending}
+            onClick={handleSend}
+          >
+            <Send className="h-4 w-4" />
+          </Button>
+        </div>
         {error && <p className="text-[13px] text-danger">{error}</p>}
-        <Button
-          aria-label={t("Post reply", "Publicar respuesta")}
-          title={t("Post reply", "Publicar respuesta")}
-          className="h-10 w-10 shrink-0 self-end !px-0 transition-[filter] hover:brightness-95 active:brightness-90"
-          style={{ background: theme.actionBackground, color: "#fff" }}
-          disabled={sending}
-          onClick={handleSend}
-        >
-          <Send className="h-4 w-4" />
-        </Button>
       </div>
     </Card>
   );
