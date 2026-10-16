@@ -18,6 +18,25 @@ function hashOf(str: string) {
   return h;
 }
 
+export type AvatarImageState = { url: string | null; loaded: boolean; failed: boolean };
+
+/** Re-points the tracked state at a new `url`, resetting `loaded`/`failed` —
+ * this is what makes the component retry a fresh image instead of staying
+ * stuck on a previous failure. Returns the SAME object (not a new one) when
+ * `url` hasn't actually changed, so calling this on every render is a safe,
+ * cheap no-op that never triggers an extra re-render by itself. */
+export function withTrackedUrl(state: AvatarImageState, url: string | null): AvatarImageState {
+  return url === state.url ? state : { url, loaded: false, failed: false };
+}
+
+export function withLoaded(state: AvatarImageState): AvatarImageState {
+  return { ...state, loaded: true };
+}
+
+export function withFailed(state: AvatarImageState): AvatarImageState {
+  return { ...state, failed: true };
+}
+
 /** `imageUrl` (e.g. Metricool's MetricoolParticipant.imageProfileUrl) is
  * layered over the initials, never swapped in for them — Metricool's picture
  * URLs are signed, short-lived Facebook Graph API URLs (confirmed live: one
@@ -30,7 +49,17 @@ function hashOf(str: string) {
  * underneath, which is the only state that's ever actually visible then.
  * No external image library/config involved: a plain `<img>`, since this
  * codebase has no existing next/image usage or configured remotePatterns to
- * extend. */
+ * extend.
+ *
+ * `loaded`/`failed` are tracked per-URL (via `withTrackedUrl`), not just per
+ * mount: a prior failure (e.g. an expired signed URL) must not stick forever
+ * once a later re-render supplies a genuinely different, possibly-valid
+ * `imageUrl` for the same conversation row — otherwise a live-refreshed
+ * avatar could never recover without a full page reload. Adjusting state
+ * during render (guarded by the `url === state.url` check in
+ * `withTrackedUrl`, which no-ops when nothing changed) is React's documented
+ * pattern for resetting state from a prop change without an extra
+ * effect-triggered render. */
 export function Avatar({
   name,
   imageUrl,
@@ -42,8 +71,11 @@ export function Avatar({
   size?: number;
   className?: string;
 }) {
-  const [loaded, setLoaded] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const normalizedUrl = imageUrl ?? null;
+  const [state, setState] = useState<AvatarImageState>({ url: normalizedUrl, loaded: false, failed: false });
+  const next = withTrackedUrl(state, normalizedUrl);
+  if (next !== state) setState(next);
+
   const initials = name
     .split(" ")
     .filter(Boolean)
@@ -63,16 +95,17 @@ export function Avatar({
       >
         {initials || "?"}
       </div>
-      {imageUrl && !failed && (
+      {state.url && !state.failed && (
         // eslint-disable-next-line @next/next/no-img-element -- external, unpredictable Metricool/Meta CDN URL; no next/image remotePatterns configured anywhere in this repo
         <img
-          src={imageUrl}
+          key={state.url}
+          src={state.url}
           alt={name}
-          onLoad={() => setLoaded(true)}
-          onError={() => setFailed(true)}
+          onLoad={() => setState((s) => withLoaded(s))}
+          onError={() => setState((s) => withFailed(s))}
           className={cn(
             "absolute inset-0 h-full w-full object-cover transition-opacity",
-            loaded ? "opacity-100" : "opacity-0"
+            state.loaded ? "opacity-100" : "opacity-0"
           )}
         />
       )}
