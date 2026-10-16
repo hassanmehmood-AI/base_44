@@ -9,6 +9,7 @@ import { assertAssignableUser } from "@/server/services/users";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import * as metaProvider from "@/server/integrations/meta";
 import * as metricoolProvider from "@/server/integrations/metricool";
+import * as avatarCapture from "@/server/services/avatarCapture";
 import type { CompanySocialAccount } from "@/server/repositories/companySocialAccounts";
 
 const CHANNEL = "SOCIAL";
@@ -537,6 +538,7 @@ export async function syncMetricoolConversations(
     const alreadyRepresented = matchAlreadySentOutboundMessages(selfSentCandidates, localOutboundCandidates);
 
     let latestSentAt: Date | null = null;
+    let hasNewInboundMessage = false;
     for (const m of newRemoteMessages) {
       if (alreadyRepresented.has(m)) continue;
 
@@ -561,10 +563,23 @@ export async function syncMetricoolConversations(
       });
       messagesAdded += 1;
       latestSentAt = sentAt;
+      if (direction === "INBOUND") hasNewInboundMessage = true;
     }
 
     if (latestSentAt) {
       await conversationsRepo.updateLastMessageAt(conversation.id, latestSentAt);
+    }
+
+    // Queue a permanent-avatar-capture attempt (see avatarCapture.ts) the
+    // moment genuinely new customer activity is seen — this is a single
+    // cheap, awaited DB write (never a network call), so it can't slow down
+    // or fail this sync tick. The actual download/upload is dispatched
+    // separately, via the cron route's after() call, so it runs in this
+    // same tick without making the worker's request wait for it. Gated on
+    // an actual INBOUND message (not just any new row) since this is about
+    // the customer's picture, not the brand's own echoed reply.
+    if (hasNewInboundMessage) {
+      await avatarCapture.maybeQueuePendingCapture(conversation, otherParticipant?.imageProfileUrl);
     }
   }
 

@@ -300,7 +300,7 @@ export function RedesSocialesClient({
                     !isSelected && (platform === "FACEBOOK" ? "hover:bg-[#EAF3FF]" : "hover:bg-[#FDF2FA]")
                   )}
                 >
-                  <Avatar name={customerName} imageUrl={c.customerAvatarUrl} size={36} />
+                  <Avatar name={customerName} imageUrl={c.customerAvatarKey ? `/api/avatars/${c.id}` : c.customerAvatarUrl} size={36} />
                   <div className="min-w-0 flex-1">
                     <span className="block truncate text-[13.5px] font-medium text-text-primary">{customerName}</span>
                     <span className="flex items-center gap-1 truncate text-[11.5px] text-text-secondary">
@@ -544,7 +544,7 @@ function SidePanel({
         <div className="shrink-0 rounded-full" style={{ boxShadow: `0 0 0 2px ${theme.accent}` }}>
           <Avatar
             name={conversation.contactName ?? conversation.subject ?? "?"}
-            imageUrl={conversation.customerAvatarUrl}
+            imageUrl={conversation.customerAvatarKey ? `/api/avatars/${conversation.id}` : conversation.customerAvatarUrl}
             size={44}
           />
         </div>

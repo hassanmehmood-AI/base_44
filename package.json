@@ -15,6 +15,7 @@
     "db:seed": "dotenv -e .env.local -- tsx src/db/seed.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1152.0",
     "bcryptjs": "^3.0.3",
     "drizzle-orm": "^0.45.3",
     "lucide-react": "^1.47.0",

@@ -300,7 +300,36 @@ export const conversations = pgTable("conversations", {
   // MetricoolParticipant.imageProfileUrl) — null when unavailable (direct
   // Meta webhook rows never set this; Metricool rows get it from
   // syncMetricoolConversations). Never the connected brand's own picture.
+  // Confirmed live (see services/avatarCapture.ts) that this signed URL is
+  // only downloadable for a short window after a message arrives — this
+  // column is kept purely as the raw/diagnostic value and as the frontend's
+  // fallback source; customerAvatarKey below is what's actually displayed
+  // once avatar storage has captured a permanent copy.
   customerAvatarUrl: text("customer_avatar_url"),
+  // Object key of a permanently-stored copy of the customer's picture (see
+  // avatarStorage.ts/avatarCapture.ts) — null until successfully captured.
+  // Additive and independent of customerAvatarUrl above: never backfilled
+  // for historical rows (their source URL is already dead by the time this
+  // feature exists), only ever set going forward for new inbound messages.
+  customerAvatarKey: text("customer_avatar_key"),
+  // A freshly-seen, not-yet-captured avatar URL awaiting a download attempt
+  // — written synchronously (cheap) the moment a new message is detected,
+  // so the actual download/upload (which can fail or take a moment) has a
+  // durable trigger that survives a process restart between ticks, instead
+  // of only living in an in-memory fire-and-forget promise. Cleared once
+  // either customerAvatarKey is set (success) or the capture is abandoned
+  // (see shouldAbandonPendingCapture in avatarCapture.ts).
+  customerAvatarPendingUrl: text("customer_avatar_pending_url"),
+  // How many download attempts customerAvatarPendingUrl has already had —
+  // bounds retries so a dead URL isn't attempted forever (see
+  // shouldAbandonPendingCapture).
+  customerAvatarCaptureAttempts: integer("customer_avatar_capture_attempts").notNull().default(0),
+  // When customerAvatarPendingUrl was first queued — the time-based half of
+  // the retry cap (see shouldAbandonPendingCapture): a crash-and-retry on
+  // the next tick is useful, but retrying minutes later against a URL
+  // that's almost certainly already expired (per the live timing test) is
+  // not, so this bounds how long we keep trying regardless of attempt count.
+  customerAvatarCaptureFirstSeenAt: timestamp("customer_avatar_capture_first_seen_at", { withTimezone: true }),
   assignedUserId: uuid("assigned_user_id").references(() => users.id, { onDelete: "set null" }),
   // Which connected account (and therefore which provider — Meta's direct
   // Graph API vs. Metricool — see company_social_accounts.platform below)

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { conversations, contacts, companies, companySocialAccounts } from "@/db/schema";
 
@@ -126,4 +126,66 @@ export async function updateIdentity(
 ): Promise<Conversation> {
   const [row] = await getDb().update(conversations).set(data).where(eq(conversations.id, id)).returning();
   return row;
+}
+
+/** Queues a freshly-seen avatar URL for a background download attempt (see
+ * services/avatarCapture.ts) — called synchronously from the sync path, but
+ * is itself just a cheap single-row write, not the download. Only ever
+ * called when customerAvatarKey is still null (checked by the caller), so
+ * this can never overwrite an already-successfully-captured avatar. */
+export async function markAvatarPending(id: string, url: string): Promise<void> {
+  await getDb()
+    .update(conversations)
+    .set({ customerAvatarPendingUrl: url, customerAvatarCaptureAttempts: 0, customerAvatarCaptureFirstSeenAt: new Date() })
+    .where(eq(conversations.id, id));
+}
+
+/** Finds conversations with a pending avatar capture still awaiting an
+ * attempt — the durable queue that survives a process restart between
+ * cron ticks (see avatarCapture.processPendingAvatarCaptures). */
+export async function findPendingAvatarCaptures(limit: number): Promise<Conversation[]> {
+  return getDb()
+    .select()
+    .from(conversations)
+    .where(and(isNotNull(conversations.customerAvatarPendingUrl), isNull(conversations.customerAvatarKey)))
+    .limit(limit);
+}
+
+export async function markAvatarCaptured(id: string, key: string): Promise<void> {
+  await getDb()
+    .update(conversations)
+    .set({ customerAvatarKey: key, customerAvatarPendingUrl: null, customerAvatarCaptureAttempts: 0, customerAvatarCaptureFirstSeenAt: null })
+    .where(eq(conversations.id, id));
+}
+
+/** Atomically claims one pending capture before attempting its download —
+ * the race this closes: processPendingAvatarCaptures runs outside the
+ * Metricool advisory lock (on purpose, so a slow/stuck capture can never
+ * block a sync tick), so two overlapping cron ticks' after() calls could
+ * otherwise both select and attempt the SAME pending row. A plain UPDATE's
+ * WHERE clause is re-checked under Postgres's own row lock, so a second
+ * concurrent caller's claim on an already-claimed-and-resolved row returns
+ * no row (customerAvatarKey or customerAvatarPendingUrl already changed by
+ * the first caller) instead of racing it — no transaction/advisory lock of
+ * our own needed. Bumps the attempt count as part of the same statement, so
+ * callers use the returned row's count directly rather than claiming once
+ * and incrementing again separately. */
+export async function claimPendingAvatarCapture(id: string): Promise<Conversation | undefined> {
+  const [row] = await getDb()
+    .update(conversations)
+    .set({ customerAvatarCaptureAttempts: sql`${conversations.customerAvatarCaptureAttempts} + 1` })
+    .where(and(eq(conversations.id, id), isNotNull(conversations.customerAvatarPendingUrl), isNull(conversations.customerAvatarKey)))
+    .returning();
+  return row;
+}
+
+/** Gives up on this capture — clears the pending url so it's never retried
+ * again (the URL is past its proven-dead window either way; see
+ * shouldAbandonPendingCapture). customerAvatarUrl/customerAvatarKey are
+ * untouched: this never blanks out the existing fallback chain. */
+export async function abandonPendingAvatar(id: string): Promise<void> {
+  await getDb()
+    .update(conversations)
+    .set({ customerAvatarPendingUrl: null })
+    .where(eq(conversations.id, id));
 }

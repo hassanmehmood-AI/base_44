@@ -1,6 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import * as companySocialAccountsRepo from "@/server/repositories/companySocialAccounts";
 import * as socialService from "@/server/services/social";
+import * as avatarCapture from "@/server/services/avatarCapture";
 import { ProviderNotConfiguredError } from "@/server/integrations/errors";
 
 const METRICOOL_PLATFORMS = ["METRICOOL_INSTAGRAM", "METRICOOL_FACEBOOK"];
@@ -69,5 +70,22 @@ export async function GET(request: NextRequest) {
       { status: 409 }
     );
   }
+
+  // Dispatched via after() so it runs once this response has been sent —
+  // the worker's curl call (75s cadence, unchanged) gets its reply
+  // immediately, this never adds to that latency. Deliberately outside
+  // withMetricoolSyncLock's run(): avatar capture failures/timeouts must
+  // never affect the advisory lock or the sync result above, and this way
+  // they structurally can't — this runs after that result is already
+  // finalized and returned. No-ops entirely when avatar storage isn't
+  // configured (see avatarCapture.processPendingAvatarCaptures).
+  after(async () => {
+    try {
+      await avatarCapture.processPendingAvatarCaptures();
+    } catch (e) {
+      console.error("[avatar capture] processPendingAvatarCaptures failed:", e instanceof Error ? e.message : e);
+    }
+  });
+
   return NextResponse.json(outcome.result);
 }
