@@ -29,6 +29,22 @@ import { useSocialRealtime } from "./useSocialRealtime";
 
 type SocialPlatform = "FACEBOOK" | "INSTAGRAM";
 
+/** Pure decision extracted from scheduleRefresh purely so it's directly
+ * unit-testable without rendering the component (see
+ * useSocialRealtime.test.ts) — behavior is unchanged from the inline
+ * expression this replaces. `alwaysRefreshDetail` is true for both a
+ * browser-side socket reconnect and the relay's resync broadcast (see
+ * useSocialRealtime.ts's "social:resync" handler): in either case there's no
+ * way to know what, if anything, was missed, so the open conversation (if
+ * any) is refreshed unconditionally rather than only when the event's own
+ * conversationId happens to match. */
+export function shouldRefreshDetailForEvent(
+  options: { alwaysRefreshDetail: boolean; conversationId: string | null },
+  selectedId: string | null
+): boolean {
+  return options.alwaysRefreshDetail || (options.conversationId !== null && options.conversationId === selectedId);
+}
+
 /** Platform-specific visual accents for the Social Media page only — purely
  * presentational (colors/backgrounds), never affects which conversations
  * load or how they're filtered (that's still platform/company state above).
@@ -195,9 +211,7 @@ export function RedesSocialesClient({
       // transient network blip) would silently leave the inbox stale with
       // no visible signal that anything went wrong.
       refreshConversationList().catch((e) => console.error("[realtime] failed to refresh conversation list:", e));
-      const shouldRefreshDetail =
-        options.alwaysRefreshDetail || (options.conversationId && options.conversationId === selectedIdRef.current);
-      if (shouldRefreshDetail) {
+      if (shouldRefreshDetailForEvent(options, selectedIdRef.current)) {
         refreshDetail().catch((e) => console.error("[realtime] failed to refresh conversation detail:", e));
       }
     }, 300);

@@ -72,6 +72,18 @@ export function useSocialRealtime(onChange: (event: SocialNewMessageEvent | { re
       onChangeRef.current(payload);
     });
 
+    // Emitted by the relay service itself whenever its own Postgres LISTEN
+    // connection recovers from a drop (see server.ts's onPgListenerConnected)
+    // — pg_notify has no durability/replay, so anything inserted during that
+    // downtime is permanently lost with no per-event signal. This carries no
+    // payload on purpose (never which company changed, since the relay
+    // doesn't know what it missed) — treated exactly like a browser-side
+    // reconnect: an unconditional full resync is the only correct recovery
+    // for "something may have been missed, no way to know what."
+    socket.on("social:resync", () => {
+      onChangeRef.current({ reconnected: true });
+    });
+
     // Previously silent — a failed connection (bad/expired token, the
     // realtime service being unreachable, etc.) gave zero visibility beyond
     // Socket.IO's own default console noise. Logged here so a broken
