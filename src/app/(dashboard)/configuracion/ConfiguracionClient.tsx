@@ -36,8 +36,14 @@ import {
   listLinkableMetricoolBrandsAction,
   linkExistingMetricoolBrandAction,
   getLiveMetricoolConnectionStatusAction,
+  createWhapiChannelAction,
+  retryWhapiChannelCreationAction,
+  confirmNoWhapiChannelWasCreatedAction,
+  getLiveWhapiChannelStatusAction,
+  getWhapiQrAction,
 } from "./actions";
 import type { CompanyProvisioningStatus, LinkableBrand } from "@/server/services/metricoolOnboarding";
+import type { CompanyChannelStatus as WhapiChannelStatus } from "@/server/services/whapiOnboarding";
 
 export type UserRow = {
   id: string;
@@ -86,6 +92,7 @@ export function ConfiguracionClient({
   canManageStages,
   companies: realCompanies,
   metricoolStatuses,
+  whapiStatuses,
   canManageAdmin,
   canAddUsers,
   canManagePermissions,
@@ -100,6 +107,9 @@ export function ConfiguracionClient({
   /** DB-only provisioning status per company (no Metricool call) — see
    * configuracion/page.tsx. Empty for non-Superuser viewers. */
   metricoolStatuses: CompanyProvisioningStatus[];
+  /** Same DB-only pattern as metricoolStatuses, for each company's Whapi
+   * (WhatsApp) channel — see whapiOnboardingService.getProvisioningStatusForCompanies. */
+  whapiStatuses: WhapiChannelStatus[];
   canManageAdmin: boolean;
   canAddUsers: boolean;
   /** Superuser (any user) or Director (their own company's Managers/Agents
@@ -579,6 +589,12 @@ export function ConfiguracionClient({
                   initialBlogId={metricoolStatuses.find((s) => s.companyId === c.id)?.blogId ?? null}
                 />
               )}
+              {canManageAdmin && (
+                <CompanyWhapiStatus
+                  companyId={c.id}
+                  initialStatus={whapiStatuses.find((s) => s.companyId === c.id)?.status ?? "NONE"}
+                />
+              )}
             </Card>
           ))}
           {realCompanies.length === 0 && (
@@ -812,6 +828,210 @@ function LinkMetricoolBrandModal({
           </Button>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Whapi (WhatsApp) onboarding — per-company channel provisioning, the
+// WhatsApp equivalent of CompanyMetricoolStatus above. On demand only: there
+// is no auto-create path, since a Whapi channel is a real, continuously
+// billed resource (see server/services/whapiOnboarding.ts's doc comment).
+// -----------------------------------------------------------------------------
+
+function CompanyWhapiStatus({ companyId, initialStatus }: { companyId: string; initialStatus: WhapiChannelStatus["status"] }) {
+  const { t } = useLanguage();
+  const [status, setStatus] = useState(initialStatus);
+  const [creating, setCreating] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [live, setLive] = useState<{ connected: boolean } | undefined>();
+
+  async function handleCreate() {
+    setCreating(true);
+    setError(undefined);
+    const result = await createWhapiChannelAction(companyId);
+    setCreating(false);
+    if (result.error) {
+      setError(result.error);
+      // Re-read status from the server rather than guessing — a failure may
+      // have landed as FAILED or FAILED_NEEDS_MANUAL_CHECK, both of which
+      // change what this card should offer next.
+      return;
+    }
+    setStatus("ACTIVE");
+  }
+
+  async function handleRetry() {
+    setCreating(true);
+    setError(undefined);
+    const result = await retryWhapiChannelCreationAction(companyId);
+    setCreating(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    setStatus("ACTIVE");
+  }
+
+  async function handleConfirmNoChannel() {
+    setConfirming(true);
+    setError(undefined);
+    const result = await confirmNoWhapiChannelWasCreatedAction(companyId);
+    setConfirming(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    setStatus("FAILED");
+  }
+
+  async function handleCheckStatus() {
+    setChecking(true);
+    setError(undefined);
+    const result = await getLiveWhapiChannelStatusAction(companyId);
+    setChecking(false);
+    if ("error" in result && result.error) {
+      setError(result.error);
+      return;
+    }
+    if (result.provisioned && "connected" in result) {
+      setLive({ connected: result.connected });
+    }
+  }
+
+  const badgeTone = status === "ACTIVE" ? (live?.connected ? "green" : "amber") : status === "NONE" ? "gray" : "red";
+  const badgeLabel =
+    status === "ACTIVE"
+      ? live
+        ? live.connected
+          ? t("WhatsApp connected", "WhatsApp conectado")
+          : t("Not linked yet", "Aún no vinculado")
+        : t("Channel active", "Canal activo")
+      : status === "PENDING"
+        ? t("Creating...", "Creando...")
+        : status === "FAILED_NEEDS_MANUAL_CHECK"
+          ? t("Needs manual check", "Requiere verificación manual")
+          : status === "FAILED"
+            ? t("Failed", "Falló")
+            : t("Not created", "No creado");
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-semibold tracking-wide text-text-tertiary">WHATSAPP (WHAPI)</p>
+        <Badge tone={badgeTone}>{badgeLabel}</Badge>
+      </div>
+
+      {status === "NONE" && (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={creating} onClick={handleCreate}>
+            {creating ? t("Creating...", "Creando...") : t("Create WhatsApp channel", "Crear canal de WhatsApp")}
+          </Button>
+        </div>
+      )}
+
+      {status === "FAILED" && (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={creating} onClick={handleRetry}>
+            {creating ? t("Retrying...", "Reintentando...") : t("Retry", "Reintentar")}
+          </Button>
+        </div>
+      )}
+
+      {status === "FAILED_NEEDS_MANUAL_CHECK" && (
+        <div className="flex flex-col gap-2">
+          <p className="text-[12px] text-text-secondary">
+            {t(
+              "Whapi's response was inconclusive — check the Whapi partner dashboard for a channel matching this company before retrying, to avoid creating a second paid channel.",
+              "La respuesta de Whapi fue inconclusa — revisa el panel de socios de Whapi para confirmar si ya existe un canal para esta empresa antes de reintentar, para evitar crear un segundo canal con costo."
+            )}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" disabled={confirming} onClick={handleConfirmNoChannel}>
+              {confirming ? t("Confirming...", "Confirmando...") : t("I checked — no channel exists", "Verifiqué — no existe canal")}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {status === "ACTIVE" && (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" onClick={() => setQrOpen(true)}>
+            {t("Show QR to connect", "Mostrar QR para conectar")}
+          </Button>
+          <Button type="button" size="sm" variant="outline" disabled={checking} onClick={handleCheckStatus}>
+            {checking ? t("Checking...", "Comprobando...") : t("Check status", "Comprobar estado")}
+          </Button>
+        </div>
+      )}
+      {error && <p className="text-[12px] text-danger">{error}</p>}
+
+      <WhapiQrModal open={qrOpen} companyId={companyId} onClose={() => setQrOpen(false)} />
+    </div>
+  );
+}
+
+/** Renders the QR image returned by getWhapiQrAction — the decrypted
+ * channel token itself never reaches this component or the browser at all
+ * (see whapiOnboardingService.getQrForCompany); only the already-rendered
+ * QR image is ever sent down. The authorized person scans it with the
+ * company's actual WhatsApp app (Settings > Linked devices). Polls on an
+ * interval while open so the modal can close itself once linked, without
+ * requiring a manual "Check status" click mid-scan. */
+function WhapiQrModal({ open, companyId, onClose }: { open: boolean; companyId: string; onClose: () => void }) {
+  const { t } = useLanguage();
+  const [base64, setBase64] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    async function fetchQr() {
+      setLoading(true);
+      const result = await getWhapiQrAction(companyId);
+      if (!active) return;
+      setLoading(false);
+      if (!result.ok) {
+        setError(result.message);
+        return;
+      }
+      setError(undefined);
+      setBase64(result.base64);
+    }
+    fetchQr();
+    // Whapi's QR expires quickly (per its own docs) — refreshing on an
+    // interval while the modal stays open means a slow scanner always sees
+    // a live code instead of a stale, expired one.
+    const interval = setInterval(fetchQr, 20_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [open, companyId]);
+
+  return (
+    <Modal open={open} onClose={onClose} title={t("Scan to connect WhatsApp", "Escanea para conectar WhatsApp")}>
+      <div className="flex flex-col items-center gap-4 py-2">
+        <p className="text-center text-[13px] text-text-secondary">
+          {t(
+            "Open WhatsApp on the company's phone → Settings → Linked devices → Link a device, then scan this code.",
+            "Abre WhatsApp en el teléfono de la empresa → Configuración → Dispositivos vinculados → Vincular un dispositivo, y escanea este código."
+          )}
+        </p>
+        {loading && !base64 && <p className="text-[13px] text-text-tertiary">{t("Loading QR...", "Cargando QR...")}</p>}
+        {error && <p className="text-[13px] text-danger">{error}</p>}
+        {base64 && (
+          // eslint-disable-next-line @next/next/no-img-element -- a short-lived, per-session QR code is not an optimizable static asset
+          <img src={base64} alt={t("WhatsApp QR code", "Código QR de WhatsApp")} className="h-56 w-56 rounded-lg border border-border" />
+        )}
+        <Button type="button" variant="outline" onClick={onClose}>
+          {t("Close", "Cerrar")}
+        </Button>
+      </div>
     </Modal>
   );
 }

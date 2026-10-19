@@ -78,6 +78,13 @@
       "when": 1792145994022,
       "tag": "0010_loving_rawhide_kid",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792399226654,
+      "tag": "0011_whapi_whatsapp_integration",
+      "breakpoints": true
     }
   ]
 }

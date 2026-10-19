@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { conversations, contacts, companies, companySocialAccounts } from "@/db/schema";
+import { conversations, contacts, companies, companySocialAccounts, pipelineStages } from "@/db/schema";
 
 export type Conversation = typeof conversations.$inferSelect;
 export type NewConversation = typeof conversations.$inferInsert;
@@ -13,7 +13,19 @@ export type NewConversation = typeof conversations.$inferInsert;
  * SOCIAL conversation prior to this field existing came from the direct Meta
  * (Facebook) integration only (see api/webhooks/meta/route.ts, which only
  * ever ingests platform: "META_PAGE" today). */
-export type ConversationWithJoins = Conversation & { contactName: string | null; companyName: string; platform: "FACEBOOK" | "INSTAGRAM" };
+export type ConversationWithJoins = Conversation & {
+  contactName: string | null;
+  companyName: string;
+  platform: "FACEBOOK" | "INSTAGRAM";
+  /** The linked contact's current CRM pipeline stage key (e.g. "NUEVO_LEAD")
+   * — null when the conversation has no linked contactId yet (common for a
+   * fresh inbound WhatsApp message before an agent links it, see
+   * linkConversationToContact) or the linked contact's stage row is
+   * inactive/missing. Only meaningful for channel === "WHATSAPP" today (the
+   * WhatsApp page's Pipeline View groups by this); irrelevant/ignored by the
+   * SOCIAL and EMAIL pages. */
+  contactStageKey: string | null;
+};
 
 const INSTAGRAM_PLATFORMS = new Set(["META_INSTAGRAM", "METRICOOL_INSTAGRAM"]);
 
@@ -26,6 +38,7 @@ const baseSelect = {
   contactName: contacts.name,
   companyName: companies.name,
   socialPlatform: companySocialAccounts.platform,
+  contactStageKey: pipelineStages.key,
 };
 
 function toJoined(row: {
@@ -33,12 +46,14 @@ function toJoined(row: {
   contactName: string | null;
   companyName: string;
   socialPlatform: string | null;
+  contactStageKey: string | null;
 }): ConversationWithJoins {
   return {
     ...row.conversation,
     contactName: row.contactName,
     companyName: row.companyName,
     platform: normalizeSocialPlatform(row.socialPlatform),
+    contactStageKey: row.contactStageKey,
   };
 }
 
@@ -48,7 +63,8 @@ function baseQuery() {
     .from(conversations)
     .innerJoin(companies, eq(conversations.companyId, companies.id))
     .leftJoin(contacts, eq(conversations.contactId, contacts.id))
-    .leftJoin(companySocialAccounts, eq(conversations.companySocialAccountId, companySocialAccounts.id));
+    .leftJoin(companySocialAccounts, eq(conversations.companySocialAccountId, companySocialAccounts.id))
+    .leftJoin(pipelineStages, eq(contacts.pipelineStageId, pipelineStages.id));
 }
 
 export async function findManyByCompanyIdsAndChannel(companyIds: string[], channel: string): Promise<ConversationWithJoins[]> {

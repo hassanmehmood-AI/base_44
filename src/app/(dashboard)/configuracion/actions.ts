@@ -5,6 +5,7 @@ import * as pipelineStagesService from "@/server/services/pipelineStages";
 import * as companiesService from "@/server/services/companies";
 import * as usersService from "@/server/services/users";
 import * as metricoolOnboardingService from "@/server/services/metricoolOnboarding";
+import * as whapiOnboardingService from "@/server/services/whapiOnboarding";
 import { UnauthorizedError } from "@/server/services/authorization";
 import type { RoleKey, ModuleKey } from "@/server/constants";
 
@@ -85,6 +86,72 @@ export async function linkExistingMetricoolBrandAction(companyId: string, blogId
   }
   revalidatePath("/configuracion");
   return { ok: true };
+}
+
+/** DB-only status (no Whapi call) for every given company at once — safe on
+ * every Configuración page load, mirroring getMetricoolProvisioningStatusAction. */
+export async function getWhapiProvisioningStatusAction(companyIds: string[]) {
+  try {
+    return { statuses: await whapiOnboardingService.getProvisioningStatusForCompanies(companyIds) };
+  } catch {
+    return { statuses: [] as whapiOnboardingService.CompanyChannelStatus[] };
+  }
+}
+
+/** The on-demand, Superuser-only, pay-per-channel creation button — never
+ * called automatically (see whapiOnboarding.ts's doc comment on why this is
+ * deliberately not wired into createCompanyAction the way Metricool is). */
+export async function createWhapiChannelAction(companyId: string): Promise<ActionResult & { channelId?: string }> {
+  const result = await whapiOnboardingService.createChannelForCompany(companyId).catch((e) => {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { ok: false as const, reason: "error" as const, message: e.message };
+    throw e;
+  });
+  if (!result.ok) return { error: result.message };
+  revalidatePath("/configuracion");
+  return { ok: true, channelId: result.channelId };
+}
+
+export async function retryWhapiChannelCreationAction(companyId: string): Promise<ActionResult & { channelId?: string }> {
+  const result = await whapiOnboardingService.retryChannelCreation(companyId).catch((e) => {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { ok: false as const, reason: "error" as const, message: e.message };
+    throw e;
+  });
+  if (!result.ok) return { error: result.message };
+  revalidatePath("/configuracion");
+  return { ok: true, channelId: result.channelId };
+}
+
+/** The explicit "I checked the Whapi dashboard, no duplicate channel exists"
+ * confirmation — the only way out of FAILED_NEEDS_MANUAL_CHECK (see
+ * whapiOnboarding.ts). Never triggered automatically. */
+export async function confirmNoWhapiChannelWasCreatedAction(companyId: string): Promise<ActionResult> {
+  const result = await whapiOnboardingService.confirmNoChannelWasCreated(companyId).catch((e) => {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { ok: false, message: e.message };
+    throw e;
+  });
+  if (!result.ok) return { error: result.message };
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+export async function getLiveWhapiChannelStatusAction(companyId: string) {
+  try {
+    return await whapiOnboardingService.getLiveChannelStatus(companyId);
+  } catch (e) {
+    const error = e instanceof UnauthorizedError || e instanceof Error ? e.message : "Unknown error.";
+    return { provisioned: false as const, error };
+  }
+}
+
+/** Returns only a QR image for the browser to render — the decrypted
+ * channel token itself never leaves whapiOnboardingService.getQrForCompany. */
+export async function getWhapiQrAction(companyId: string) {
+  try {
+    return await whapiOnboardingService.getQrForCompany(companyId);
+  } catch (e) {
+    const message = e instanceof UnauthorizedError || e instanceof Error ? e.message : "Unknown error.";
+    return { ok: false as const, message };
+  }
 }
 
 export async function createUserAction(input: {

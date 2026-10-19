@@ -339,6 +339,13 @@ export const conversations = pgTable("conversations", {
   companySocialAccountId: uuid("company_social_account_id").references(() => companySocialAccounts.id, {
     onDelete: "set null",
   }),
+  // Which connected Whapi channel this WHATSAPP conversation came from — the
+  // WhatsApp equivalent of companySocialAccountId above. A separate column
+  // (not a reuse of companySocialAccountId) because whapi_channels stores a
+  // genuine secret (the channel's own token) and deserves its own table
+  // rather than overloading company_social_accounts, which only ever held
+  // plain, non-secret external ids.
+  whapiChannelId: uuid("whapi_channel_id").references(() => whapiChannels.id, { onDelete: "set null" }),
   lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
   createdAt: createdAt(),
 }, (t) => [
@@ -380,6 +387,89 @@ export const companySocialAccounts = pgTable("company_social_accounts", {
   createdAt: createdAt(),
 }, (t) => [
   uniqueIndex("company_social_accounts_platform_page_idx").on(t.platform, t.externalPageId),
+]);
+
+/** One Whapi.Cloud channel (= one WhatsApp number) per company, provisioned
+ * on demand from Configuración (see server/services/whapiOnboarding.ts).
+ *
+ * status is a state machine, never re-created: PENDING -> ACTIVE | FAILED |
+ * FAILED_NEEDS_MANUAL_CHECK. The row is inserted as PENDING *before* the
+ * paid Whapi create-channel call is made — the unique index on companyId
+ * below is what makes a double-click, a slow request retried by the
+ * browser, or two concurrent Superusers physically unable to create two
+ * paid channels for the same company: the second INSERT attempt fails with
+ * a unique violation and is turned into "already provisioning", never a
+ * second Whapi API call. FAILED_NEEDS_MANUAL_CHECK is distinct from FAILED:
+ * it's used when the create call failed ambiguously (timeout/5xx, so it's
+ * unknown whether Whapi actually created a paid channel before the response
+ * was lost) — retrying automatically from that state is never offered; a
+ * Superuser must confirm via the Whapi partner dashboard first (same
+ * non-idempotent-send caution already applied to Metricool's sendMessage
+ * retry policy in integrations/metricool.ts).
+ *
+ * encryptedToken is this channel's own bearer token (returned once by
+ * Whapi's create-channel response) — unlike Metricool's single shared
+ * account token, every company's Whapi channel has a *different* secret,
+ * so (unlike company_social_accounts.externalPageId, which is never a
+ * secret) this needs real encryption at rest, not a plain column. See
+ * server/crypto/secretBox.ts for the AES-256-GCM scheme and
+ * WHAPI_TOKEN_ENCRYPTION_KEY.
+ *
+ * encryptedWebhookSecret is a value *we* generate (never Whapi), registered
+ * with Whapi as a custom callback header (see "Customizable Webhook
+ * Headers" in Whapi's docs) because Whapi's webhooks carry no native
+ * signature — this is the compensating control the inbound webhook route
+ * checks on every request. Encrypted at rest for the same reason as the
+ * channel token. */
+export const whapiChannels = pgTable("whapi_channels", {
+  id: id(),
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("PENDING"),
+  // Whapi's own channel id — null until the create call succeeds.
+  channelId: text("channel_id"),
+  // This channel's own API base url, returned in the create response —
+  // channel-scoped calls (QR, send, settings) go to this host, not the
+  // shared manager.whapi.cloud used only for Partner-token create/manage calls.
+  apiUrl: text("api_url"),
+  encryptedToken: text("encrypted_token"),
+  encryptedWebhookSecret: text("encrypted_webhook_secret"),
+  lastError: text("last_error"),
+  createdAt: createdAt(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("whapi_channels_company_id_idx").on(t.companyId),
+  uniqueIndex("whapi_channels_channel_id_idx").on(t.channelId),
+]);
+
+/** Durable staging area for inbound Whapi webhook deliveries — mirrors the
+ * pending-capture pattern in services/avatarCapture.ts: the webhook route's
+ * ONLY job is to authenticate the request and INSERT a raw event here as
+ * fast as possible, before any attempt to turn it into a conversation/
+ * message. That insert surviving is what makes a transient failure further
+ * down the pipeline (a DB hiccup, a bug, a timeout) something that can be
+ * retried on the next processing pass instead of a silently lost message —
+ * the event already exists in Postgres by the time the webhook responds.
+ *
+ * The unique index on (whapiChannelId, externalMessageId) is the first line
+ * of idempotency: Whapi redelivering the same webhook (its own retry, or a
+ * duplicate network delivery) is a harmless no-op insert, never a second
+ * row — defense in depth alongside the messages.metadata.externalId dedupe
+ * applied when an event is actually turned into a message (same two-layer
+ * approach already proven for Metricool's sync in services/social.ts). */
+export const whapiInboundEvents = pgTable("whapi_inbound_events", {
+  id: id(),
+  whapiChannelId: uuid("whapi_channel_id").notNull().references(() => whapiChannels.id, { onDelete: "cascade" }),
+  externalMessageId: text("external_message_id").notNull(),
+  rawPayload: jsonb("raw_payload").notNull(),
+  // PENDING -> PROCESSED | ABANDONED
+  status: text("status").notNull().default("PENDING"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  receivedAt: createdAt(),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("whapi_inbound_events_channel_message_idx").on(t.whapiChannelId, t.externalMessageId),
+  index("whapi_inbound_events_status_idx").on(t.status),
 ]);
 
 export const calls = pgTable("calls", {

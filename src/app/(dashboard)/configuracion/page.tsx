@@ -3,6 +3,7 @@ import { getDefaultPipelineStages } from "@/server/services/pipelineStages";
 import * as companiesRepo from "@/server/repositories/companies";
 import * as usersService from "@/server/services/users";
 import * as metricoolOnboardingService from "@/server/services/metricoolOnboarding";
+import * as whapiOnboardingService from "@/server/services/whapiOnboarding";
 import { ConfiguracionClient, type UserRow } from "./ConfiguracionClient";
 
 export default async function ConfiguracionPage() {
@@ -17,6 +18,11 @@ export default async function ConfiguracionPage() {
   // else gets an empty list, same shape either way.
   const metricoolStatuses = isSuperuser
     ? await metricoolOnboardingService.getProvisioningStatusForCompanies(companies.map((c) => c.id))
+    : [];
+  // Same DB-only, Superuser-only pattern as metricoolStatuses above — see
+  // whapiOnboardingService.getProvisioningStatusForCompanies.
+  const whapiStatuses = isSuperuser
+    ? await whapiOnboardingService.getProvisioningStatusForCompanies(companies.map((c) => c.id))
     : [];
   const isDirector = session?.user.roleKey === "DIRECTOR";
   const isManager = session?.user.roleKey === "CALL_CENTER_LEAD";
@@ -72,6 +78,7 @@ export default async function ConfiguracionPage() {
       canManageStages={isSuperuser}
       companies={companies}
       metricoolStatuses={metricoolStatuses}
+      whapiStatuses={whapiStatuses}
       canManageAdmin={isSuperuser}
       canAddUsers={canAddUsers}
       canManagePermissions={canManagePermissions}
