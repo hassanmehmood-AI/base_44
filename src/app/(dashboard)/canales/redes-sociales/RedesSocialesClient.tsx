@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { Send } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -26,8 +27,7 @@ import {
   getAssignableUsersAction,
 } from "./actions";
 import { useSocialRealtime } from "./useSocialRealtime";
-
-type SocialPlatform = "FACEBOOK" | "INSTAGRAM";
+import { type SocialPlatform, buildSocialMediaSearchParams } from "./socialPlatformUrl";
 
 /** Pure decision extracted from scheduleRefresh purely so it's directly
  * unit-testable without rendering the component (see
@@ -107,17 +107,25 @@ export function RedesSocialesClient({
   platformStatus,
   initialSelectedId,
   initialMessages,
+  initialPlatform,
 }: {
   conversations: ConversationWithJoins[];
   contacts: ContactWithJoins[];
   platformStatus: Record<string, PlatformConnectionStatus>;
   initialSelectedId: string | null;
   initialMessages: Message[];
+  /** Resolved server-side (see page.tsx) from the URL's `platform` query
+   * param via resolveInitialPlatform — this is what makes the Instagram tab
+   * survive a plain browser refresh instead of always resetting to
+   * Facebook. */
+  initialPlatform: SocialPlatform;
 }) {
   const { t, language } = useLanguage();
   const { activeCompany, setActiveCompany } = useCompany();
+  const router = useRouter();
+  const pathname = usePathname();
   const [conversations, setConversations] = useState(initialConversations);
-  const [platform, setPlatform] = useState<SocialPlatform>("FACEBOOK");
+  const [platform, setPlatform] = useState<SocialPlatform>(initialPlatform);
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -201,6 +209,21 @@ export function RedesSocialesClient({
   // Coalesces a burst of near-simultaneous events (e.g. several messages
   // arriving together) into one refresh instead of one per event — directly
   // avoids the "unnecessary API calls" this feature could otherwise cause.
+  // Keeps the URL in sync with the current tab/conversation — never
+  // navigates or reloads anything (router.replace only updates history +
+  // the address bar), so this can't interfere with messaging, the
+  // WebSocket connection, or Metricool sync. This is the write half of the
+  // fix: page.tsx (the read half) resolves initialPlatform/initialSelectedId
+  // from these exact same query param names on the next load, so a plain
+  // browser refresh — which re-enters page.tsx with whatever is currently
+  // in the address bar — lands back on the same tab and conversation.
+  // Runs on mount too (not just on a later change), so even the very first
+  // fallback-to-default selection gets reflected in the URL immediately.
+  useEffect(() => {
+    const query = buildSocialMediaSearchParams(platform, selectedId);
+    router.replace(`${pathname}?${query}`, { scroll: false });
+  }, [platform, selectedId, pathname, router]);
+
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   function scheduleRefresh(options: { alwaysRefreshDetail: boolean; conversationId: string | null }) {
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
