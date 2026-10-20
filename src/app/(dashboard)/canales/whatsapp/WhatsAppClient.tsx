@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { Send, MoreHorizontal, Building2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/Card";
@@ -20,6 +21,7 @@ import {
   replyToWhatsappConversationAction,
 } from "./actions";
 import { useWhatsappRealtime } from "./useWhatsappRealtime";
+import { type WhatsappView, buildWhatsappSearchParams } from "./whatsappUrlState";
 
 /** Same seven stages the original mock Pipeline View used — preserved
  * exactly (see the git history for this file's predecessor) — plus one
@@ -43,15 +45,23 @@ export function WhatsAppClient({
   conversations: initialConversations,
   initialSelectedId,
   initialMessages,
+  initialView,
 }: {
   conversations: ConversationWithJoins[];
   initialSelectedId: string | null;
   initialMessages: Message[];
+  /** Resolved server-side (see page.tsx) from the URL's `view` query param
+   * via resolveInitialView — this is what makes the Chat view (and the
+   * open conversation) survive a plain browser refresh instead of always
+   * resetting to the Pipeline view. */
+  initialView: WhatsappView;
 }) {
   const { t, language } = useLanguage();
   const { activeCompany, setActiveCompany } = useCompany();
+  const router = useRouter();
+  const pathname = usePathname();
   const [conversations, setConversations] = useState(initialConversations);
-  const [view, setView] = useState<"pipeline" | "chat">("pipeline");
+  const [view, setView] = useState<WhatsappView>(initialView);
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -103,6 +113,20 @@ export function WhatsAppClient({
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+
+  // Keeps the URL in sync with the current view/conversation — never
+  // navigates or reloads anything (router.replace only updates history +
+  // the address bar), so this can't interfere with messaging, Metricool
+  // sync, or the WebSocket connection. page.tsx (the read half) resolves
+  // initialView/initialSelectedId from these exact same query param names
+  // on the next load, so a plain browser refresh — which re-enters
+  // page.tsx with whatever is currently in the address bar — lands back on
+  // the same view and conversation instead of always resetting to Pipeline
+  // with no chat open.
+  useEffect(() => {
+    const query = buildWhatsappSearchParams(view, selectedId);
+    router.replace(`${pathname}?${query}`, { scroll: false });
+  }, [view, selectedId, pathname, router]);
 
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   function scheduleRefresh(options: { alwaysRefreshDetail: boolean; conversationId: string | null }) {
