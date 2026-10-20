@@ -220,11 +220,13 @@ export async function processPendingAvatarCaptures(
     }
     if (!claimed || !claimed.customerAvatarPendingUrl) continue;
 
+    let captureSucceeded = false;
     try {
       const { bytes, contentType } = await downloadAvatarBytes(claimed.customerAvatarPendingUrl);
       await avatarStorage.putAvatar(storageKeyFor(claimed.id), bytes, contentType);
       await conversationsRepo.markAvatarCaptured(claimed.id, storageKeyFor(claimed.id));
       captured++;
+      captureSucceeded = true;
     } catch (e) {
       failed++;
       const firstSeenAt = claimed.customerAvatarCaptureFirstSeenAt ?? new Date();
@@ -241,7 +243,41 @@ export async function processPendingAvatarCaptures(
       }
       console.error(`[avatarCapture] capture failed for conversation ${claimed.id}:`, e instanceof Error ? e.message : e);
     }
+
+    // Deliberately OUTSIDE the try/catch above: if notifying ever somehow
+    // threw (it shouldn't — see notifyAvatarCapturedBestEffort's own
+    // internal catch), it must never be mistaken for the capture itself
+    // failing (which would wrongly bump the retry/abandon bookkeeping for
+    // an avatar that's already successfully stored). Gated on
+    // captureSucceeded so a failed/retried capture — which never reaches
+    // this point with anything new to announce — can't send a spurious
+    // notification, and so this fires at most once per successful capture,
+    // never a duplicate.
+    if (captureSucceeded) {
+      await notifyAvatarCapturedBestEffort(claimed.id, claimed.companyId);
+    }
   }
 
   return { attempted: pending.length, captured, abandoned, failed };
+}
+
+/** Wraps the realtime nudge in its own failure isolation — exported with an
+ * injectable `notify` (defaulting to the real
+ * conversationsRepo.notifyAvatarCaptured) purely so the regression tests
+ * can inject a throwing fake without a real database or WebSocket relay,
+ * same dependency-injection idiom already used by social.ts's
+ * getCachedBrand for testability. Catching here (rather than trusting every
+ * call site to remember to) is what makes it structurally impossible for a
+ * notify/WebSocket hiccup to affect the avatar capture that, by the time
+ * this runs, has already fully succeeded. */
+export async function notifyAvatarCapturedBestEffort(
+  conversationId: string,
+  companyId: string,
+  notify: (conversationId: string, companyId: string) => Promise<void> = conversationsRepo.notifyAvatarCaptured
+): Promise<void> {
+  try {
+    await notify(conversationId, companyId);
+  } catch (e) {
+    console.error(`[avatarCapture] failed to notify realtime relay for conversation ${conversationId}:`, e instanceof Error ? e.message : e);
+  }
 }

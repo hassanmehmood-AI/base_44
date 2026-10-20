@@ -174,6 +174,49 @@ export async function markAvatarCaptured(id: string, key: string): Promise<void>
     .where(eq(conversations.id, id));
 }
 
+/** Channel name confirmed directly from 0009_notify_new_message.sql's
+ * trigger (the only other emitter) and server.ts's NOTIFY_CHANNEL constant
+ * in scripts/realtime-ws-service — this MUST stay identical to both, since
+ * it's how the relay recognizes which Postgres channel to LISTEN on. */
+const REALTIME_NOTIFY_CHANNEL = "social_messages";
+
+/** Pure payload-shape builder, exported only so the regression tests can
+ * verify it matches exactly what server.ts's `JSON.parse(msg.payload)`
+ * expects — confirmed from that file: `conversationId`/`companyId` are
+ * required (a notification missing either is silently dropped there), and
+ * `messageId` is read as `parsed.messageId ?? null`, so omitting it
+ * entirely (as here — this notify is about an avatar, not a new message)
+ * is already the documented, supported shape, not a workaround. */
+export function buildAvatarCapturedNotifyPayload(conversationId: string, companyId: string): string {
+  return JSON.stringify({ conversationId, companyId, messageId: null });
+}
+
+/** Best-effort realtime nudge for "this conversation changed in a way that
+ * isn't a new message" — today, only an avatar finishing capture (see
+ * avatarCapture.ts's call site). Deliberately NOT a DB trigger like the
+ * messages-insert one: there's no insert moment to hang a trigger off of
+ * here (markAvatarCaptured above is a plain UPDATE on an existing row), so
+ * this is issued directly from application code instead, at the one place
+ * that actually knows a capture just succeeded.
+ *
+ * Reuses the EXACT channel the existing trigger already uses — the relay
+ * service and every frontend realtime hook (useSocialRealtime.ts,
+ * useWhatsappRealtime.ts) already treat any event on this channel as
+ * "something changed, go refetch," regardless of content, so this needs
+ * zero frontend changes to take effect, and automatically covers both the
+ * Social Media and WhatsApp inboxes with this one call.
+ *
+ * `companyId` is never derived from caller/user input anywhere in this
+ * call chain — it's always the already-authorized conversation row's own
+ * company, so this can't be used to leak a notification to the wrong
+ * company (the relay's own existing room-based broadcast,
+ * `io.to(\`company:${companyId}\`)`, is what actually enforces isolation on
+ * delivery — unchanged, not touched by this). */
+export async function notifyAvatarCaptured(conversationId: string, companyId: string): Promise<void> {
+  const payload = buildAvatarCapturedNotifyPayload(conversationId, companyId);
+  await getDb().$client`SELECT pg_notify(${REALTIME_NOTIFY_CHANNEL}, ${payload})`;
+}
+
 /** Atomically claims one pending capture before attempting its download —
  * the race this closes: processPendingAvatarCaptures runs outside the
  * Metricool advisory lock (on purpose, so a slow/stuck capture can never

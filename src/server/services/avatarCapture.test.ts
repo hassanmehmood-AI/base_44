@@ -5,6 +5,7 @@ import {
   isAllowedContentType,
   shouldAbandonPendingCapture,
   downloadAvatarBytes,
+  notifyAvatarCapturedBestEffort,
 } from "./avatarCapture";
 
 // Regression coverage for the permanent-avatar-storage feature (Phase 3).
@@ -185,4 +186,35 @@ test("downloadAvatarBytes: a response exceeding the max size is rejected", async
       await assert.rejects(() => downloadAvatarBytes("https://graph.facebook.com/123/picture"), /max allowed size/);
     }
   );
+});
+
+// --- notifyAvatarCapturedBestEffort: the avatar-completion realtime notify ---
+// Regression coverage for "ensure avatar capture can never be interrupted by
+// a notification/WebSocket failure" — the injectable `notify` param (same
+// dependency-injection idiom already used by social.ts's getCachedBrand)
+// lets these tests exercise the real failure-isolation logic without a
+// database or the actual WebSocket relay.
+
+test("notifyAvatarCapturedBestEffort: delivers the exact conversationId/companyId to the notify function — this is what company isolation at this layer actually relies on", async () => {
+  let received: { conversationId: string; companyId: string } | null = null;
+  await notifyAvatarCapturedBestEffort("conv-1", "company-A", async (conversationId, companyId) => {
+    received = { conversationId, companyId };
+  });
+  assert.deepEqual(received, { conversationId: "conv-1", companyId: "company-A" });
+});
+
+test("notifyAvatarCapturedBestEffort: a throwing notify function is caught and swallowed — never propagates to the caller", async () => {
+  await assert.doesNotReject(() =>
+    notifyAvatarCapturedBestEffort("conv-1", "company-A", async () => {
+      throw new Error("relay unreachable");
+    })
+  );
+});
+
+test("notifyAvatarCapturedBestEffort: resolves normally on a successful notify (no error swallowing side effect when nothing failed)", async () => {
+  let callCount = 0;
+  await notifyAvatarCapturedBestEffort("conv-1", "company-A", async () => {
+    callCount++;
+  });
+  assert.equal(callCount, 1);
 });
