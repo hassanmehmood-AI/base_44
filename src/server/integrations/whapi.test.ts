@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createChannel, getQrCode, getChannelHealth, setWebhook, sendTextMessage, isWhapiPartnerConfigured, WhapiApiError } from "./whapi";
+import { createChannel, getQrCode, getChannelHealth, setWebhook, sendTextMessage, getContactProfile, isWhapiPartnerConfigured, WhapiApiError } from "./whapi";
 
 // Same mocked-fetch regression style as integrations/metricool.test.ts — no
 // real Whapi call is ever made by this suite, and no paid channel is ever
@@ -148,6 +148,39 @@ test("sendTextMessage throws when Whapi reports sent:false", async () => {
   const mock = mockFetchSequence([{ status: 200, body: { sent: false } }]);
   try {
     await assert.rejects(() => sendTextMessage("https://gate.whapi.cloud", "channel-token", "to", "hi"));
+  } finally {
+    mock.restore();
+  }
+});
+
+test("getContactProfile maps icon/icon_full and calls the correct URL with the channel token", async () => {
+  const mock = mockFetchSequence([{ status: 200, body: { name: "Jane", about: "Hey there", icon: "https://pps.whatsapp.net/v/small", icon_full: "https://pps.whatsapp.net/v/full" } }]);
+  try {
+    const profile = await getContactProfile("https://gate.whapi.cloud", "channel-token", "15550001111@s.whatsapp.net");
+    assert.equal(profile.name, "Jane");
+    assert.equal(profile.icon, "https://pps.whatsapp.net/v/small");
+    assert.equal(profile.iconFull, "https://pps.whatsapp.net/v/full");
+    assert.match(mock.calls[0].url, /\/contacts\/15550001111%40s\.whatsapp\.net\/profile$/);
+    assert.equal((mock.calls[0].init?.headers as Record<string, string>).Authorization, "Bearer channel-token");
+  } finally {
+    mock.restore();
+  }
+});
+
+test("getContactProfile returns all-null fields on a 404 (contact has no profile picture) — never throws", async () => {
+  const mock = mockFetchSequence([{ status: 404, body: { message: "not found" } }]);
+  try {
+    const profile = await getContactProfile("https://gate.whapi.cloud", "channel-token", "15550002222@s.whatsapp.net");
+    assert.deepEqual(profile, { name: null, about: null, icon: null, iconFull: null });
+  } finally {
+    mock.restore();
+  }
+});
+
+test("getContactProfile still throws on a genuine non-404 error", async () => {
+  const mock = mockFetchSequence([{ status: 401, body: { message: "unauthorized" } }]);
+  try {
+    await assert.rejects(() => getContactProfile("https://gate.whapi.cloud", "channel-token", "15550003333@s.whatsapp.net"), WhapiApiError);
   } finally {
     mock.restore();
   }

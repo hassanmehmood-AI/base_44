@@ -5,6 +5,7 @@ import * as whapiChannelsRepo from "@/server/repositories/whapiChannels";
 import * as whapiInboundEventsRepo from "@/server/repositories/whapiInboundEvents";
 import type { WhapiChannel } from "@/server/repositories/whapiChannels";
 import * as whapiProvider from "@/server/integrations/whapi";
+import * as avatarCapture from "@/server/services/avatarCapture";
 import { decryptSecret } from "@/server/crypto/secretBox";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import { getAllowedCompaniesForCurrentUser } from "@/server/services/companies";
@@ -17,7 +18,12 @@ const CHANNEL = "WHATSAPP";
  * unrelated (see whapiOnboarding.ts's doc comment on the one structural
  * difference: a per-company secret token rather than Metricool's single
  * shared account token). Nothing here is called by, or changes the
- * behavior of, social.ts, the Metricool sync cron, or avatarCapture.ts. */
+ * behavior of, social.ts or the Metricool sync cron. This file DOES call
+ * into avatarCapture.ts's existing, already-channel-agnostic queue (see
+ * maybeFetchAndQueueAvatarIfNeeded below) — but only ever as a caller
+ * passing a fresh WhatsApp-sourced url; avatarCapture.ts's own queueing,
+ * retry-capping, and download logic is untouched, so Metricool/Meta's
+ * existing avatar behavior is unaffected. */
 
 export type IncomingWhapiMessage = {
   id: string;
@@ -151,6 +157,50 @@ export function mapIncomingMessage(message: IncomingWhapiMessage): { direction: 
   return { direction, body, senderLabel: direction === "INBOUND" ? message.from_name ?? null : null };
 }
 
+/** Pure gate deciding whether a live Whapi profile-fetch call is worth
+ * making at all — exported so the regression tests can exercise it without
+ * a database or network call. Three conditions, all must hold:
+ *  - direction === "INBOUND": never fetch for our own outbound echo — we
+ *    already know our own brand has no "customer" avatar to speak of.
+ *  - no customerAvatarKey yet: a permanently-captured avatar never needs
+ *    re-fetching — this is what makes a long-running conversation's 50th
+ *    inbound message cost zero extra Whapi calls, not one per message.
+ *  - no customerAvatarPendingUrl yet: a capture already queued (awaiting
+ *    its background download) must not trigger ANOTHER live profile fetch
+ *    for every subsequent inbound message that arrives before that
+ *    download completes — this is the difference between one Whapi call
+ *    per conversation and one per message. */
+export function shouldFetchContactAvatar(
+  direction: "INBOUND" | "OUTBOUND",
+  conversation: { customerAvatarKey: string | null; customerAvatarPendingUrl: string | null }
+): boolean {
+  return direction === "INBOUND" && !conversation.customerAvatarKey && !conversation.customerAvatarPendingUrl;
+}
+
+/** Best-effort, isolated from message processing by design: every failure
+ * mode here (decrypt error, Whapi API error/timeout, a queueing error) is
+ * caught and logged, never rethrown — so a Whapi avatar-fetch hiccup can
+ * never fail the message insert that already succeeded by the time this is
+ * called (see processOneEvent, which calls this strictly after its own
+ * messagesRepo.create has already committed). Mirrors the same
+ * best-effort philosophy as avatarCapture.maybeQueuePendingCapture itself,
+ * one layer up. */
+async function maybeFetchAndQueueAvatarIfNeeded(
+  channel: WhapiChannel,
+  conversation: Parameters<typeof avatarCapture.maybeQueuePendingCapture>[0],
+  contactId: string
+): Promise<void> {
+  if (!channel.apiUrl || !channel.encryptedToken) return;
+  try {
+    const token = decryptSecret(channel.encryptedToken);
+    const profile = await whapiProvider.getContactProfile(channel.apiUrl, token, contactId);
+    const imageUrl = profile.iconFull ?? profile.icon;
+    await avatarCapture.maybeQueuePendingCapture(conversation, imageUrl);
+  } catch (e) {
+    console.error(`[whapi avatar] failed to fetch/queue avatar for conversation ${conversation.id}:`, e instanceof Error ? e.message : e);
+  }
+}
+
 async function processOneEvent(event: whapiInboundEventsRepo.WhapiInboundEvent): Promise<void> {
   const channel = await whapiChannelsRepo.findById(event.whapiChannelId);
   if (!channel) throw new Error(`whapi_channels row ${event.whapiChannelId} no longer exists.`);
@@ -186,6 +236,14 @@ async function processOneEvent(event: whapiInboundEventsRepo.WhapiInboundEvent):
   // Realtime push is the existing, channel-agnostic Postgres trigger
   // (0009_notify_new_message.sql fires on every messages insert) — nothing
   // new is needed here for the WebSocket side; see useWhatsappRealtime.ts.
+
+  // Avatar fetch+queue happens strictly AFTER the message above has already
+  // committed — see maybeFetchAndQueueAvatarIfNeeded's doc comment for why
+  // this ordering is what makes a Whapi avatar-fetch failure structurally
+  // unable to affect message delivery.
+  if (shouldFetchContactAvatar(direction, conversation)) {
+    await maybeFetchAndQueueAvatarIfNeeded(channel, conversation, message.from ?? message.chat_id);
+  }
 }
 
 export async function listWhatsappConversationsForCurrentUser() {

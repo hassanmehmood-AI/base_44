@@ -210,6 +210,41 @@ export async function setWebhook(
   });
 }
 
+export type WhapiContactProfile = {
+  name: string | null;
+  about: string | null;
+  icon: string | null;
+  iconFull: string | null;
+};
+
+/** GET {apiUrl}/contacts/{contactId}/profile — channel-token-scoped.
+ * Confirmed against Whapi's own docs: this dedicated single-contact lookup
+ * does NOT require the `init_avatars` channel setting or re-authorization
+ * (that prerequisite only applies to bulk list endpoints — Get Chats/Get
+ * Contacts/Get Messages — confirmed by the docs' own words: "you can also
+ * get this information about any contact outside of your phonebook and
+ * without corresponding with them"). `icon`/`iconFull` point to WhatsApp's
+ * own profile-picture CDN (pps.whatsapp.net, confirmed from Whapi's
+ * documented example response) — a short-lived URL, same as Metricool's
+ * imageProfileUrl, meant to be downloaded once via avatarCapture.ts rather
+ * than linked to directly. Returns all-null fields (never throws) on a 404
+ * — a contact with no set profile picture is an expected, common case, not
+ * an error. */
+export async function getContactProfile(apiUrl: string, channelToken: string, contactId: string): Promise<WhapiContactProfile> {
+  try {
+    const result = await whapiFetch<{ name?: string; about?: string; icon?: string; icon_full?: string }>(
+      `${apiUrl}/contacts/${encodeURIComponent(contactId)}/profile`,
+      channelToken
+    );
+    return { name: result.name ?? null, about: result.about ?? null, icon: result.icon ?? null, iconFull: result.icon_full ?? null };
+  } catch (e) {
+    if (e instanceof WhapiApiError && e.status === 404) {
+      return { name: null, about: null, icon: null, iconFull: null };
+    }
+    throw e;
+  }
+}
+
 /** POST {apiUrl}/messages/text — channel-token-scoped. `to` accepts the raw
  * chat_id Whapi gave us on the inbound webhook (see whapi_inbound_events'
  * rawPayload.messages[].chat_id), confirmed as the correct recipient field

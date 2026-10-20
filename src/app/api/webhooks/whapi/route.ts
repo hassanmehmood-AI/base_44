@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import * as whatsappService from "@/server/services/whatsapp";
+import * as avatarCapture from "@/server/services/avatarCapture";
 import type { IncomingWhapiPayload } from "@/server/services/whatsapp";
 
 /** Inbound WhatsApp events from Whapi.Cloud — one shared URL for every
@@ -59,6 +60,20 @@ export async function POST(request: NextRequest) {
       await whatsappService.processPendingWhapiEvents();
     } catch (e) {
       console.error("[whapi webhook] processPendingWhapiEvents failed:", e);
+    }
+  });
+
+  // Same after()-dispatched, best-effort pattern as api/cron/metricool-sync's
+  // avatar-capture hook — processPendingAvatarCaptures is entirely generic
+  // (not channel-specific), so this call picks up any WhatsApp avatar queued
+  // by processPendingWhapiEvents above in the exact same tick, without this
+  // response waiting on the actual download. A failure here can never affect
+  // the 200 OK already being returned below.
+  after(async () => {
+    try {
+      await avatarCapture.processPendingAvatarCaptures();
+    } catch (e) {
+      console.error("[whapi webhook] avatar capture failed:", e instanceof Error ? e.message : e);
     }
   });
 

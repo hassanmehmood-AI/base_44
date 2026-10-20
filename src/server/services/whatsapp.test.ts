@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { verifyWebhookSecret, mapIncomingMessage } from "./whatsapp";
+import { verifyWebhookSecret, mapIncomingMessage, shouldFetchContactAvatar } from "./whatsapp";
 
 // Pure-function regression coverage — no database or network call. DB-
 // touching functions (resolveAuthenticatedChannel, processPendingWhapiEvents,
@@ -50,4 +50,25 @@ test("mapIncomingMessage: direction is derived strictly from from_me, never from
   const outbound = mapIncomingMessage({ id: "5", chat_id: "c1", from_me: true, type: "text", text: { body: "same text" } });
   assert.equal(inbound.direction, "INBOUND");
   assert.equal(outbound.direction, "OUTBOUND");
+});
+
+// Regression coverage for the avatar-fetch gate (requirement: avoid
+// unnecessary Whapi API calls and duplicate downloads) — see
+// shouldFetchContactAvatar's doc comment in whatsapp.ts for the three
+// conditions this encodes.
+
+test("shouldFetchContactAvatar: fetches for a fresh inbound message with no avatar yet", () => {
+  assert.equal(shouldFetchContactAvatar("INBOUND", { customerAvatarKey: null, customerAvatarPendingUrl: null }), true);
+});
+
+test("shouldFetchContactAvatar: never fetches for our own OUTBOUND echo", () => {
+  assert.equal(shouldFetchContactAvatar("OUTBOUND", { customerAvatarKey: null, customerAvatarPendingUrl: null }), false);
+});
+
+test("shouldFetchContactAvatar: never re-fetches once permanently captured (customerAvatarKey set)", () => {
+  assert.equal(shouldFetchContactAvatar("INBOUND", { customerAvatarKey: "avatars/conv-1", customerAvatarPendingUrl: null }), false);
+});
+
+test("shouldFetchContactAvatar: never re-fetches while a capture is already queued — this is what caps Whapi calls at one per conversation, not one per message", () => {
+  assert.equal(shouldFetchContactAvatar("INBOUND", { customerAvatarKey: null, customerAvatarPendingUrl: "https://pps.whatsapp.net/v/..." }), false);
 });

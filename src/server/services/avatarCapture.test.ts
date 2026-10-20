@@ -35,6 +35,19 @@ test("isAllowedAvatarHost: an arbitrary/attacker-controlled host is rejected (SS
   assert.equal(isAllowedAvatarHost("notfbcdn.net"), false);
 });
 
+// Regression coverage for widening the allowlist to support WhatsApp (Whapi.Cloud)
+// avatars — confirms the new entry works AND that it never weakens the
+// existing Meta-only checks above (same two tests, unmodified, still pass).
+test("isAllowedAvatarHost: WhatsApp's own profile-picture CDN host is allowed", () => {
+  assert.equal(isAllowedAvatarHost("pps.whatsapp.net"), true);
+  assert.equal(isAllowedAvatarHost("PPS.WHATSAPP.NET"), true);
+});
+
+test("isAllowedAvatarHost: a lookalike WhatsApp host is still rejected (SSRF guard holds for the new entry too)", () => {
+  assert.equal(isAllowedAvatarHost("pps.whatsapp.net.evil.com"), false);
+  assert.equal(isAllowedAvatarHost("notpps.whatsapp.net"), false);
+});
+
 test("isAllowedContentType: common image types are allowed", () => {
   assert.equal(isAllowedContentType("image/jpeg"), true);
   assert.equal(isAllowedContentType("image/png"), true);

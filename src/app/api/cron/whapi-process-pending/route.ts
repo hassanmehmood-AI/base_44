@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as whatsappService from "@/server/services/whatsapp";
+import * as avatarCapture from "@/server/services/avatarCapture";
 
 /** Safety-net sweep for whapi_inbound_events left PENDING by a crash or a
  * failed after() dispatch in api/webhooks/whapi/route.ts — the webhook
@@ -25,5 +26,15 @@ export async function GET(request: NextRequest) {
   }
 
   const result = await whatsappService.processPendingWhapiEvents();
-  return NextResponse.json(result);
+
+  // Same backstop role as the webhook route's own after() dispatch — mops
+  // up any avatar left pending by a crash between that queue write and its
+  // own download attempt. Generic/channel-agnostic, so this is a sweep for
+  // ANY pending avatar, not WhatsApp-specific; harmless to call from here.
+  const avatarResult = await avatarCapture.processPendingAvatarCaptures().catch((e) => {
+    console.error("[whapi cron] avatar capture sweep failed:", e instanceof Error ? e.message : e);
+    return null;
+  });
+
+  return NextResponse.json({ ...result, avatarCapture: avatarResult });
 }

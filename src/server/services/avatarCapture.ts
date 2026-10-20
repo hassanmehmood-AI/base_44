@@ -24,7 +24,19 @@ import type { Conversation } from "@/server/repositories/conversations";
 // error responses observed were literally Graph API's own JSON error shape
 // ("GraphMethodException" / "Invalid appsecret_time"). A valid request
 // redirects to the actual image CDN host, so both must be allowed.
-const ALLOWED_EXACT_HOSTS = new Set(["graph.facebook.com", "graph.instagram.com"]);
+//
+// pps.whatsapp.net added for WhatsApp (Whapi.Cloud) customer avatars — this
+// is WhatsApp's own profile-picture CDN host, confirmed from Whapi's
+// documented example response for GET /contacts/{id}/profile (see
+// integrations/whapi.ts's getContactProfile). Purely additive: the Meta
+// hosts above are untouched, so Facebook/Instagram avatar capture behaves
+// identically to before this entry existed. Not yet confirmed against a
+// live Whapi response (only Whapi's own docs) — if a live capture ever
+// redirects to a different WhatsApp CDN host, fetchFollowingRedirects below
+// will safely reject it (fail closed) rather than silently allow it; add
+// that host here only once actually observed, same bar Metricool's hosts
+// were held to.
+const ALLOWED_EXACT_HOSTS = new Set(["graph.facebook.com", "graph.instagram.com", "pps.whatsapp.net"]);
 const ALLOWED_HOST_SUFFIXES = [".fbcdn.net", ".cdninstagram.com", ".fbsbx.com"];
 
 export function isAllowedAvatarHost(hostname: string): boolean {
