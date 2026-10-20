@@ -433,16 +433,26 @@ function ConversationPanel({
     }
   }
 
+  const headerCustomerName = conversation.contactName ?? conversation.subject ?? t("Unknown sender", "Remitente desconocido");
+
   return (
     <Card className="flex max-h-[calc(100vh-280px)] min-h-[520px] flex-col gap-4 p-6">
-      <div className="shrink-0">
-        <p className="text-[15px] font-semibold text-text-primary">
-          {conversation.contactName ?? conversation.subject ?? t("Unknown sender", "Remitente desconocido")}
-        </p>
-        <p className="flex items-center gap-1 text-[12.5px] text-text-secondary">
-          <PlatformIcon className="h-3.5 w-3.5" style={{ color: theme.accent }} />
-          {platformLabel} · {conversation.companyName}
-        </p>
+      <div className="flex shrink-0 items-center gap-3">
+        {/* Same persistent-avatar-first expression as the inbox row and
+            profile card below — a stored Railway avatar (customerAvatarKey)
+            always takes priority over Metricool's short-lived live URL. */}
+        <Avatar
+          name={headerCustomerName}
+          imageUrl={conversation.customerAvatarKey ? `/api/avatars/${conversation.id}` : conversation.customerAvatarUrl}
+          size={38}
+        />
+        <div>
+          <p className="text-[15px] font-semibold text-text-primary">{headerCustomerName}</p>
+          <p className="flex items-center gap-1 text-[12.5px] text-text-secondary">
+            <PlatformIcon className="h-3.5 w-3.5" style={{ color: theme.accent }} />
+            {platformLabel} · {conversation.companyName}
+          </p>
+        </div>
       </div>
 
       <div ref={messagesRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
