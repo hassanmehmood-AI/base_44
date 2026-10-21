@@ -6,6 +6,7 @@ import * as whapiInboundEventsRepo from "@/server/repositories/whapiInboundEvent
 import type { WhapiChannel } from "@/server/repositories/whapiChannels";
 import * as whapiProvider from "@/server/integrations/whapi";
 import * as avatarCapture from "@/server/services/avatarCapture";
+import { isGroupJid } from "@/server/services/whatsappJid";
 import { decryptSecret } from "@/server/crypto/secretBox";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import { getAllowedCompaniesForCurrentUser } from "@/server/services/companies";
@@ -157,6 +158,20 @@ export function mapIncomingMessage(message: IncomingWhapiMessage): { direction: 
   return { direction, body, senderLabel: direction === "INBOUND" ? message.from_name ?? null : null };
 }
 
+/** Pure decision for a brand-new conversation's initial subject — exported
+ * so the regression tests can exercise it directly. This is the fix for
+ * the confirmed-live bug where group conversations were labeled with one
+ * member's name: a message's own `from_name` is only ever that one
+ * member's name, never the group's real identity, so for a group this
+ * deliberately returns null (left for maybeEnrichConversationIdentity's
+ * getGroupInfo call to resolve properly, once, after creation) rather than
+ * ever guessing from the triggering message. A personal chat's from_name
+ * IS the actual contact's own name — unchanged, still used directly. */
+export function resolveInitialConversationSubject(chatId: string, fromName: string | null | undefined): string | null {
+  if (isGroupJid(chatId)) return null;
+  return fromName ?? null;
+}
+
 /** Pure gate deciding whether a live Whapi profile-fetch call is worth
  * making at all — exported so the regression tests can exercise it without
  * a database or network call. Three conditions, all must hold:
@@ -179,25 +194,48 @@ export function shouldFetchContactAvatar(
 
 /** Best-effort, isolated from message processing by design: every failure
  * mode here (decrypt error, Whapi API error/timeout, a queueing error) is
- * caught and logged, never rethrown — so a Whapi avatar-fetch hiccup can
- * never fail the message insert that already succeeded by the time this is
- * called (see processOneEvent, which calls this strictly after its own
- * messagesRepo.create has already committed). Mirrors the same
- * best-effort philosophy as avatarCapture.maybeQueuePendingCapture itself,
- * one layer up. */
-async function maybeFetchAndQueueAvatarIfNeeded(
+ * caught and logged, never rethrown — so a Whapi identity/avatar-fetch
+ * hiccup can never fail the message insert that already succeeded by the
+ * time this is called (see processOneEvent, which calls this strictly
+ * after its own messagesRepo.create has already committed). Mirrors the
+ * same best-effort philosophy as avatarCapture.maybeQueuePendingCapture
+ * itself, one layer up.
+ *
+ * Branches on whether this conversation's own JID is a group: a group's
+ * real name/photo belongs to the GROUP (fetched via getGroupInfo against
+ * the conversation's own externalThreadId), never to whichever individual
+ * member happened to send the triggering message — that mismatch is
+ * exactly the bug this branch fixes (confirmed live in this CRM's own
+ * production data: several group conversations were mislabeled with one
+ * member's name). `conversation.subject` is only ever overwritten here
+ * when it's currently null/empty — this never blanks out or downgrades an
+ * already-correct value, matching the same caller discipline
+ * conversationsRepo.updateIdentity's own doc comment already requires for
+ * Metricool's identical reconciliation pattern. */
+async function maybeEnrichConversationIdentity(
   channel: WhapiChannel,
-  conversation: Parameters<typeof avatarCapture.maybeQueuePendingCapture>[0],
-  contactId: string
+  conversation: Parameters<typeof avatarCapture.maybeQueuePendingCapture>[0] & { subject: string | null; customerAvatarUrl: string | null; externalThreadId: string | null },
+  senderContactId: string
 ): Promise<void> {
   if (!channel.apiUrl || !channel.encryptedToken) return;
   try {
     const token = decryptSecret(channel.encryptedToken);
-    const profile = await whapiProvider.getContactProfile(channel.apiUrl, token, contactId);
+
+    if (isGroupJid(conversation.externalThreadId)) {
+      const group = await whapiProvider.getGroupInfo(channel.apiUrl, token, conversation.externalThreadId!);
+      if (group.name && !conversation.subject) {
+        await conversationsRepo.updateIdentity(conversation.id, { subject: group.name, customerAvatarUrl: conversation.customerAvatarUrl });
+      }
+      const imageUrl = group.chatPicFull ?? group.chatPic;
+      await avatarCapture.maybeQueuePendingCapture(conversation, imageUrl);
+      return;
+    }
+
+    const profile = await whapiProvider.getContactProfile(channel.apiUrl, token, senderContactId);
     const imageUrl = profile.iconFull ?? profile.icon;
     await avatarCapture.maybeQueuePendingCapture(conversation, imageUrl);
   } catch (e) {
-    console.error(`[whapi avatar] failed to fetch/queue avatar for conversation ${conversation.id}:`, e instanceof Error ? e.message : e);
+    console.error(`[whapi identity] failed to fetch/queue identity for conversation ${conversation.id}:`, e instanceof Error ? e.message : e);
   }
 }
 
@@ -214,7 +252,7 @@ async function processOneEvent(event: whapiInboundEventsRepo.WhapiInboundEvent):
       companyId: channel.companyId,
       channel: CHANNEL,
       externalThreadId: message.chat_id,
-      subject: message.from_name ?? null,
+      subject: resolveInitialConversationSubject(message.chat_id, message.from_name),
       whapiChannelId: channel.id,
     });
   }
@@ -237,12 +275,12 @@ async function processOneEvent(event: whapiInboundEventsRepo.WhapiInboundEvent):
   // (0009_notify_new_message.sql fires on every messages insert) — nothing
   // new is needed here for the WebSocket side; see useWhatsappRealtime.ts.
 
-  // Avatar fetch+queue happens strictly AFTER the message above has already
-  // committed — see maybeFetchAndQueueAvatarIfNeeded's doc comment for why
-  // this ordering is what makes a Whapi avatar-fetch failure structurally
-  // unable to affect message delivery.
+  // Identity/avatar fetch+queue happens strictly AFTER the message above
+  // has already committed — see maybeEnrichConversationIdentity's doc
+  // comment for why this ordering is what makes a Whapi fetch failure
+  // structurally unable to affect message delivery.
   if (shouldFetchContactAvatar(direction, conversation)) {
-    await maybeFetchAndQueueAvatarIfNeeded(channel, conversation, message.from ?? message.chat_id);
+    await maybeEnrichConversationIdentity(channel, conversation, message.from ?? message.chat_id);
   }
 }
 

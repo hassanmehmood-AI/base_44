@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { verifyWebhookSecret, mapIncomingMessage, shouldFetchContactAvatar } from "./whatsapp";
+import { verifyWebhookSecret, mapIncomingMessage, shouldFetchContactAvatar, resolveInitialConversationSubject } from "./whatsapp";
 
 // Pure-function regression coverage — no database or network call. DB-
 // touching functions (resolveAuthenticatedChannel, processPendingWhapiEvents,
@@ -71,4 +71,28 @@ test("shouldFetchContactAvatar: never re-fetches once permanently captured (cust
 
 test("shouldFetchContactAvatar: never re-fetches while a capture is already queued — this is what caps Whapi calls at one per conversation, not one per message", () => {
   assert.equal(shouldFetchContactAvatar("INBOUND", { customerAvatarKey: null, customerAvatarPendingUrl: "https://pps.whatsapp.net/v/..." }), false);
+});
+
+// Regression coverage for the confirmed-live bug: group conversations were
+// labeled with whichever individual member happened to send the first
+// message, instead of the group's real name (resolved separately via
+// maybeEnrichConversationIdentity's getGroupInfo call).
+
+test("resolveInitialConversationSubject: a personal chat uses the sender's own from_name directly — unchanged existing behavior", () => {
+  assert.equal(resolveInitialConversationSubject("923244373788@s.whatsapp.net", "Haider"), "Haider");
+});
+
+test("resolveInitialConversationSubject: a group chat NEVER uses the triggering message's from_name — this is the direct fix for the mislabeled-group bug", () => {
+  assert.equal(resolveInitialConversationSubject("120363426877091849@g.us", "Itzaz khalid"), null);
+});
+
+test("resolveInitialConversationSubject: a personal chat with no from_name at all resolves to null, not a crash", () => {
+  assert.equal(resolveInitialConversationSubject("923244373788@s.whatsapp.net", null), null);
+  assert.equal(resolveInitialConversationSubject("923244373788@s.whatsapp.net", undefined), null);
+});
+
+test("resolveInitialConversationSubject: classification is purely from the chat_id's JID shape, never the name — identical from_name produces different results for a personal vs. a group chat_id", () => {
+  const sameFromName = "Itzaz khalid";
+  assert.equal(resolveInitialConversationSubject("923244373788@s.whatsapp.net", sameFromName), sameFromName);
+  assert.equal(resolveInitialConversationSubject("120363426877091849@g.us", sameFromName), null);
 });

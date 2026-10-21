@@ -245,6 +245,39 @@ export async function getContactProfile(apiUrl: string, channelToken: string, co
   }
 }
 
+export type WhapiGroupInfo = {
+  name: string | null;
+  chatPic: string | null;
+  chatPicFull: string | null;
+};
+
+/** GET {apiUrl}/groups/{groupId} — channel-token-scoped. Confirmed against
+ * Whapi's own docs: the real group identity (its actual name/icon, set by
+ * whoever administers the group) — never derivable from any individual
+ * message's `from_name`, which is only ever the specific member who sent
+ * that one message, not the group itself (confirmed live: this CRM's own
+ * production data had multiple group conversations incorrectly labeled
+ * with one member's name before this function existed). `chat_pic`/
+ * `chat_pic_full` are the group's own photo — same short-lived-CDN-URL
+ * contract as getContactProfile's icon/iconFull, meant to be downloaded
+ * once via avatarCapture.ts. Returns all-null fields (never throws) on a
+ * 404 — a group with no set photo/name resolvable is an expected case,
+ * not an error. */
+export async function getGroupInfo(apiUrl: string, channelToken: string, groupId: string): Promise<WhapiGroupInfo> {
+  try {
+    const result = await whapiFetch<{ name?: string; chat_pic?: string; chat_pic_full?: string }>(
+      `${apiUrl}/groups/${encodeURIComponent(groupId)}`,
+      channelToken
+    );
+    return { name: result.name ?? null, chatPic: result.chat_pic ?? null, chatPicFull: result.chat_pic_full ?? null };
+  } catch (e) {
+    if (e instanceof WhapiApiError && e.status === 404) {
+      return { name: null, chatPic: null, chatPicFull: null };
+    }
+    throw e;
+  }
+}
+
 /** POST {apiUrl}/messages/text — channel-token-scoped. `to` accepts the raw
  * chat_id Whapi gave us on the inbound webhook (see whapi_inbound_events'
  * rawPayload.messages[].chat_id), confirmed as the correct recipient field

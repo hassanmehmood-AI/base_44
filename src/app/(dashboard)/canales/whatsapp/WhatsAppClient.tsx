@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { Send, MoreHorizontal, Building2 } from "lucide-react";
+import { Send, MoreHorizontal, Building2, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -22,6 +22,7 @@ import {
 } from "./actions";
 import { useWhatsappRealtime } from "./useWhatsappRealtime";
 import { type WhatsappView, buildWhatsappSearchParams } from "./whatsappUrlState";
+import { resolveConversationDisplay } from "@/server/services/whatsappJid";
 
 /** Same seven stages the original mock Pipeline View used — preserved
  * exactly (see the git history for this file's predecessor) — plus one
@@ -249,7 +250,10 @@ export function WhatsAppClient({
             </div>
             <div className="flex-1 overflow-y-auto">
               {filteredConversations.map((c) => {
-                const name = c.contactName ?? c.subject ?? t("Unknown sender", "Remitente desconocido");
+                const display = resolveConversationDisplay(c, {
+                  personal: t("Unknown sender", "Remitente desconocido"),
+                  group: t("Group chat", "Chat de grupo"),
+                });
                 return (
                   <button
                     key={c.id}
@@ -259,10 +263,19 @@ export function WhatsAppClient({
                       selectedId === c.id ? "bg-brand-50" : "hover:bg-surface-muted"
                     )}
                   >
-                    <Avatar name={name} imageUrl={c.customerAvatarKey ? `/api/avatars/${c.id}` : c.customerAvatarUrl} size={36} />
+                    <Avatar name={display.name} imageUrl={c.customerAvatarKey ? `/api/avatars/${c.id}` : c.customerAvatarUrl} size={36} />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-[13.5px] font-semibold text-text-primary">{name}</p>
+                      <div className="flex items-center gap-1.5">
+                        {display.isGroup && <Users className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />}
+                        <p className="truncate text-[13.5px] font-semibold text-text-primary">{display.name}</p>
+                        {display.isGroup && (
+                          <span className="shrink-0 rounded-full bg-surface-muted px-1.5 py-0.5 text-[10px] font-medium text-text-tertiary">
+                            {t("Group", "Grupo")}
+                          </span>
+                        )}
+                      </div>
                       <p className="truncate text-[12px] text-text-tertiary">
+                        {display.phoneNumber && `+${display.phoneNumber} · `}
                         {c.contactStageKey ? stageLabels[c.contactStageKey as Stage] ?? c.contactStageKey : t("Unassigned", "Sin asignar")}
                       </p>
                     </div>
@@ -323,15 +336,22 @@ function PipelineColumn({
       </div>
       <div className="flex flex-col gap-2.5">
         {cards.map((c) => {
-          const name = c.contactName ?? c.subject ?? t("Unknown sender", "Remitente desconocido");
+          const display = resolveConversationDisplay(c, {
+            personal: t("Unknown sender", "Remitente desconocido"),
+            group: t("Group chat", "Chat de grupo"),
+          });
           return (
             <Card key={c.id} className="cursor-pointer p-3.5 transition-shadow hover:shadow-md" onClick={() => onSelect(c.id)}>
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2.5">
-                  <Avatar name={name} imageUrl={c.customerAvatarKey ? `/api/avatars/${c.id}` : c.customerAvatarUrl} size={30} />
+                  <Avatar name={display.name} imageUrl={c.customerAvatarKey ? `/api/avatars/${c.id}` : c.customerAvatarUrl} size={30} />
                   <div>
-                    <p className="text-[13.5px] font-semibold text-text-primary">{name}</p>
+                    <div className="flex items-center gap-1.5">
+                      {display.isGroup && <Users className="h-3 w-3 shrink-0 text-text-tertiary" />}
+                      <p className="text-[13.5px] font-semibold text-text-primary">{display.name}</p>
+                    </div>
                     <p className="text-[11.5px] text-text-tertiary" suppressHydrationWarning>
+                      {display.phoneNumber && `+${display.phoneNumber} · `}
                       {t("Last message", "Último mensaje")} · {c.lastMessageAt ? formatRelativeTime(c.lastMessageAt, language) : "—"}
                     </p>
                   </div>
@@ -369,7 +389,10 @@ function ChatPane({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const messagesRef = useRef<HTMLDivElement>(null);
-  const name = conversation.contactName ?? conversation.subject ?? t("Unknown sender", "Remitente desconocido");
+  const display = resolveConversationDisplay(conversation, {
+    personal: t("Unknown sender", "Remitente desconocido"),
+    group: t("Group chat", "Chat de grupo"),
+  });
 
   useEffect(() => {
     const el = messagesRef.current;
@@ -393,10 +416,21 @@ function ChatPane({
   return (
     <>
       <div className="flex items-center gap-3 border-b border-border p-4">
-        <Avatar name={name} imageUrl={conversation.customerAvatarKey ? `/api/avatars/${conversation.id}` : conversation.customerAvatarUrl} size={38} />
+        <Avatar name={display.name} imageUrl={conversation.customerAvatarKey ? `/api/avatars/${conversation.id}` : conversation.customerAvatarUrl} size={38} />
         <div>
-          <p className="text-[14.5px] font-semibold text-text-primary">{name}</p>
-          <p className="text-[12px] text-text-secondary">{conversation.companyName}</p>
+          <div className="flex items-center gap-1.5">
+            {display.isGroup && <Users className="h-4 w-4 shrink-0 text-text-tertiary" />}
+            <p className="text-[14.5px] font-semibold text-text-primary">{display.name}</p>
+            {display.isGroup && (
+              <span className="shrink-0 rounded-full bg-surface-muted px-1.5 py-0.5 text-[10px] font-medium text-text-tertiary">
+                {t("Group", "Grupo")}
+              </span>
+            )}
+          </div>
+          <p className="text-[12px] text-text-secondary">
+            {conversation.companyName}
+            {display.phoneNumber && ` · +${display.phoneNumber}`}
+          </p>
         </div>
       </div>
       <div ref={messagesRef} className="flex-1 space-y-3 overflow-y-auto bg-surface-muted/60 p-5">

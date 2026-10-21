@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createChannel, getQrCode, getChannelHealth, setWebhook, sendTextMessage, getContactProfile, isWhapiPartnerConfigured, WhapiApiError } from "./whapi";
+import { createChannel, getQrCode, getChannelHealth, setWebhook, sendTextMessage, getContactProfile, getGroupInfo, isWhapiPartnerConfigured, WhapiApiError } from "./whapi";
 
 // Same mocked-fetch regression style as integrations/metricool.test.ts — no
 // real Whapi call is ever made by this suite, and no paid channel is ever
@@ -181,6 +181,39 @@ test("getContactProfile still throws on a genuine non-404 error", async () => {
   const mock = mockFetchSequence([{ status: 401, body: { message: "unauthorized" } }]);
   try {
     await assert.rejects(() => getContactProfile("https://gate.whapi.cloud", "channel-token", "15550003333@s.whatsapp.net"), WhapiApiError);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("getGroupInfo maps name/chat_pic/chat_pic_full and calls the correct URL with the channel token", async () => {
+  const mock = mockFetchSequence([{ status: 200, body: { name: "Project Team", chat_pic: "https://pps.whatsapp.net/v/small", chat_pic_full: "https://pps.whatsapp.net/v/full" } }]);
+  try {
+    const info = await getGroupInfo("https://gate.whapi.cloud", "channel-token", "120363426877091849@g.us");
+    assert.equal(info.name, "Project Team");
+    assert.equal(info.chatPic, "https://pps.whatsapp.net/v/small");
+    assert.equal(info.chatPicFull, "https://pps.whatsapp.net/v/full");
+    assert.match(mock.calls[0].url, /\/groups\/120363426877091849%40g\.us$/);
+    assert.equal((mock.calls[0].init?.headers as Record<string, string>).Authorization, "Bearer channel-token");
+  } finally {
+    mock.restore();
+  }
+});
+
+test("getGroupInfo returns all-null fields on a 404 (group has no resolvable name/photo) — never throws", async () => {
+  const mock = mockFetchSequence([{ status: 404, body: { message: "not found" } }]);
+  try {
+    const info = await getGroupInfo("https://gate.whapi.cloud", "channel-token", "120363999999999999@g.us");
+    assert.deepEqual(info, { name: null, chatPic: null, chatPicFull: null });
+  } finally {
+    mock.restore();
+  }
+});
+
+test("getGroupInfo still throws on a genuine non-404 error", async () => {
+  const mock = mockFetchSequence([{ status: 401, body: { message: "unauthorized" } }]);
+  try {
+    await assert.rejects(() => getGroupInfo("https://gate.whapi.cloud", "channel-token", "120363888888888888@g.us"), WhapiApiError);
   } finally {
     mock.restore();
   }
