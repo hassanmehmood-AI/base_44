@@ -91,10 +91,15 @@ export async function findManyByAssignedUserId(companyIds: string[], assignedUse
 /** Call Center Manager's CRM "All Contacts" view (hierarchy redesign phase
  * 4): contacts linked (via campaign_contacts) to a campaign this manager
  * owns, OR contacts currently assigned to one of this manager's own agents
- * (manager_agent_assignments) — the latter keeps a manager's view of their
- * team's work intact even for leads assigned before a campaign link existed
- * or for manually-created leads outside any campaign. Scoped to their
- * allowed companies. */
+ * (manager_agent_assignments), OR contacts whose managerId column directly
+ * names this manager — the third condition is what makes a Manager-created,
+ * campaign-less, still-Unassigned lead visible at all: the first two
+ * conditions are both false for exactly that case (no campaign, no
+ * assignee), so without managerId such a lead would be invisible to its own
+ * creator the moment it's saved. The other two conditions stay in place
+ * unchanged — they still correctly surface team-owned leads that predate
+ * this column or that arrived via campaign/assignment instead of direct
+ * creation. Scoped to their allowed companies. */
 export async function findManyByManagerScope(companyIds: string[], managerUserId: string): Promise<ContactWithJoins[]> {
   if (companyIds.length === 0) return [];
   const db = getDb();
@@ -108,6 +113,7 @@ export async function findManyByManagerScope(companyIds: string[], managerUserId
       and(
         inArray(contacts.companyId, companyIds),
         or(
+          eq(contacts.managerId, managerUserId),
           exists(
             db
               .select()
@@ -131,6 +137,49 @@ export async function findManyByManagerScope(companyIds: string[], managerUserId
     )
     .orderBy(desc(contacts.createdAt));
   return rows.map(toJoined);
+}
+
+/** Manager-Based Team Isolation: single-contact version of
+ * findManyByManagerScope's ownership definition — a contact is "in scope"
+ * for a manager if it's linked (via campaign_contacts) to a campaign they
+ * own, OR currently assigned to one of their own agents
+ * (manager_agent_assignments). Used by services/contacts.ts's getContact to
+ * enforce the same boundary on direct-by-id access that the list views
+ * already enforce, so a Manager can't bypass list-level scoping just by
+ * knowing another contact's id. */
+export async function isInManagerScope(contactId: string, managerUserId: string): Promise<boolean> {
+  const db = getDb();
+  const [row] = await db
+    .select({ id: contacts.id })
+    .from(contacts)
+    .where(
+      and(
+        eq(contacts.id, contactId),
+        or(
+          eq(contacts.managerId, managerUserId),
+          exists(
+            db
+              .select()
+              .from(campaignContacts)
+              .innerJoin(campaigns, eq(campaigns.id, campaignContacts.campaignId))
+              .where(and(eq(campaignContacts.contactId, contacts.id), eq(campaigns.ownerId, managerUserId)))
+          ),
+          exists(
+            db
+              .select()
+              .from(managerAgentAssignments)
+              .where(
+                and(
+                  eq(managerAgentAssignments.agentUserId, contacts.assignedUserId),
+                  eq(managerAgentAssignments.managerUserId, managerUserId)
+                )
+              )
+          )
+        )
+      )
+    )
+    .limit(1);
+  return !!row;
 }
 
 /** Agent-scoped "Manual Leads" filter — same role-scoping as
@@ -173,16 +222,19 @@ export async function findManualByManagerScope(companyIds: string[], managerUser
       and(
         inArray(contacts.companyId, companyIds),
         notExists(db.select().from(campaignContacts).where(eq(campaignContacts.contactId, contacts.id))),
-        exists(
-          db
-            .select()
-            .from(managerAgentAssignments)
-            .where(
-              and(
-                eq(managerAgentAssignments.agentUserId, contacts.assignedUserId),
-                eq(managerAgentAssignments.managerUserId, managerUserId)
+        or(
+          eq(contacts.managerId, managerUserId),
+          exists(
+            db
+              .select()
+              .from(managerAgentAssignments)
+              .where(
+                and(
+                  eq(managerAgentAssignments.agentUserId, contacts.assignedUserId),
+                  eq(managerAgentAssignments.managerUserId, managerUserId)
+                )
               )
-            )
+          )
         )
       )
     )

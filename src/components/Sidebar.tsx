@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useRef, useState } from "react";
+import { useRef, useState, useTransition } from "react";
 import {
   Sprout,
   Database,
@@ -24,16 +24,15 @@ import {
   X,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useTransition } from "react";
 import { cn } from "@/lib/cn";
 import { Avatar } from "@/components/ui/Avatar";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { useCompanyLabel } from "@/components/CompanySwitcher";
 import { UserSwitcherMenu, type ImpersonatableUser } from "@/components/UserSwitcher";
-import { signOutAction, stopImpersonationAction } from "@/app/(dashboard)/actions";
+import { signOutAction, stopImpersonationAction, setMyOnlineStatusAction } from "@/app/(dashboard)/actions";
 import { ROLE_LABEL, ROLE_LABEL_ES } from "@/lib/roles";
-import type { RoleKey } from "@/server/constants";
+import type { RoleKey, AgentOnlineStatus } from "@/server/constants";
 import { clearAllDraftsForUser } from "@/lib/drafts";
 import { useCurrentUserId } from "@/context/CurrentUserContext";
 

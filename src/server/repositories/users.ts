@@ -1,7 +1,7 @@
 import { eq, ne, and, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { users, roles, userCompanyAccess, managerAgentAssignments } from "@/db/schema";
-import { ROUND_ROBIN_ELIGIBLE_ROLES, type RoleKey } from "@/server/constants";
+import { ROUND_ROBIN_ELIGIBLE_ROLES, type RoleKey, type AgentOnlineStatus } from "@/server/constants";
 
 export type User = typeof users.$inferSelect;
 export type UserWithRole = User & { roleKey: RoleKey };
@@ -44,6 +44,14 @@ export async function setActive(userId: string, isActive: boolean): Promise<void
   await getDb().update(users).set({ isActive, updatedAt: new Date() }).where(eq(users.id, userId));
 }
 
+/** Agent Online button — the manual status column only. Callers must already
+ * have verified userId is the caller's own id (see services/users.ts's
+ * setMyOnlineStatus) — this function itself performs no authorization, same
+ * convention as setActive/setRole above. */
+export async function setOnlineStatus(userId: string, status: AgentOnlineStatus): Promise<void> {
+  await getDb().update(users).set({ availabilityStatus: status, updatedAt: new Date() }).where(eq(users.id, userId));
+}
+
 export async function setRole(userId: string, roleId: string): Promise<void> {
   await getDb().update(users).set({ roleId, updatedAt: new Date() }).where(eq(users.id, userId));
 }
@@ -80,9 +88,12 @@ export async function findImpersonatableUsers(): Promise<UserWithRole[]> {
 /** Candidates for automatic Round Robin assignment for this company: active,
  * explicitly granted this company (Superuser's implicit access does NOT
  * count here — Superuser is deliberately excluded from auto-assignment),
- * and holding one of ROUND_ROBIN_ELIGIBLE_ROLES. Ordered by id for a stable,
- * deterministic rotation order. Takes the db/tx handle explicitly so the
- * caller can run this inside the same transaction as the cursor lock. */
+ * holding one of ROUND_ROBIN_ELIGIBLE_ROLES, AND currently marked ONLINE
+ * (the Agent Online button's manual status — see constants.ts's
+ * AGENT_ONLINE_STATUSES comment; no heartbeat/connection check involved).
+ * Ordered by id for a stable, deterministic rotation order. Takes the db/tx
+ * handle explicitly so the caller can run this inside the same transaction
+ * as the cursor lock. */
 export async function findEligibleForRoundRobin(
   db: ReturnType<typeof getDb>,
   companyId: string
@@ -96,7 +107,8 @@ export async function findEligibleForRoundRobin(
       and(
         eq(users.isActive, true),
         eq(userCompanyAccess.companyId, companyId),
-        inArray(roles.key, ROUND_ROBIN_ELIGIBLE_ROLES)
+        inArray(roles.key, ROUND_ROBIN_ELIGIBLE_ROLES),
+        eq(users.availabilityStatus, "ONLINE")
       )
     )
     .orderBy(users.id);
@@ -151,7 +163,9 @@ export async function findTeamForManager(managerUserId: string, companyId: strin
  * (campaign-level, not company-level): active agents actually linked to
  * this manager via manager_agent_assignments in this company — never a
  * manager's agents from another company, never other managers, never
- * Director/Superuser/Marketing (they're simply not in this table at all).
+ * Director/Superuser/Marketing (they're simply not in this table at all) —
+ * AND currently marked ONLINE (same manual status check as
+ * findEligibleForRoundRobin above; no heartbeat/connection check involved).
  * Same stable orderBy(users.id) as findEligibleForRoundRobin, for the same
  * deterministic-rotation reason. Takes the db/tx handle explicitly so the
  * caller can run this inside the same transaction as the cursor lock. */
@@ -168,7 +182,8 @@ export async function findEligibleForManagerRoundRobin(
       and(
         eq(users.isActive, true),
         eq(managerAgentAssignments.companyId, companyId),
-        eq(managerAgentAssignments.managerUserId, managerUserId)
+        eq(managerAgentAssignments.managerUserId, managerUserId),
+        eq(users.availabilityStatus, "ONLINE")
       )
     )
     .orderBy(users.id);

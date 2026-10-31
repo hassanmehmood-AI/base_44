@@ -131,6 +131,7 @@ export function CrmClient({
   initialTasks,
   deepLinkContactId,
   deepLinkResolved,
+  isManager,
 }: {
   contacts: ContactWithJoins[];
   stages: PipelineStage[];
@@ -147,6 +148,11 @@ export function CrmClient({
    * can see (exists + company-access + role-scoping all passed server-side).
    * Meaningless when `deepLinkContactId` is null. */
   deepLinkResolved: boolean;
+  /** Agent Online-only lead assignment (UI side only — the real boundary is
+   * server-side in services/contacts.ts's assertManagerCanAssign): a Call
+   * Center Manager's "Assign agent"/"Responsable" dropdowns disable Offline
+   * team members; Director/Superuser keep the full, unrestricted list. */
+  isManager: boolean;
 }) {
   const { t, language } = useLanguage();
   const { activeCompany } = useCompany();
@@ -681,6 +687,7 @@ export function CrmClient({
             contact={selected}
             stages={stages}
             users={assignableUsers}
+            isManager={isManager}
             onSaved={(newActivity) => {
               startTransition(() => setActivities((prev) => [newActivity, ...prev]));
               router.refresh();
@@ -751,6 +758,7 @@ export function CrmClient({
           <AssignAgentForm
             currentAssignedUserId={selected.assignedUserId}
             users={assignableUsers}
+            isManager={isManager}
             onSubmit={async (assignedUserId) => {
               const result = await assignContactAction(selected.id, assignedUserId);
               if (result.ok) {
@@ -1087,13 +1095,52 @@ function TaskForm({
 // contact: changes only the owner, with no channel/stage/notes required.
 // -----------------------------------------------------------------------------
 
+/** Shared by AssignAgentForm and ClassifyPanel's "Responsible" dropdown.
+ * Agent Online-only lead assignment: each option is prefixed with ● Online /
+ * ○ Offline (a native <select>'s <option> can't render a colored dot, so a
+ * plain-text marker is used instead). When `restrictToOnline` is true (a
+ * Call Center Manager assigning — see CrmClient's `isManager` prop), every
+ * Offline option is disabled EXCEPT the contact's current assignee, so
+ * reopening the form never looks like it force-unassigns someone who simply
+ * went Offline since the last save — matches the server-side exception in
+ * services/contacts.ts's assertManagerCanAssign. Director/Superuser
+ * (`restrictToOnline` false) see the same status markers but nothing is
+ * disabled — informational only for them. */
+function AssigneeOptions({
+  users,
+  currentAssignedUserId,
+  restrictToOnline,
+}: {
+  users: UserWithRole[];
+  currentAssignedUserId: string | null;
+  restrictToOnline: boolean;
+}) {
+  const { t } = useLanguage();
+  return (
+    <>
+      {users.map((u) => {
+        const isOnline = u.availabilityStatus === "ONLINE";
+        const isCurrent = u.id === currentAssignedUserId;
+        const disabled = restrictToOnline && !isOnline && !isCurrent;
+        return (
+          <option key={u.id} value={u.id} disabled={disabled}>
+            {u.fullName} — {isOnline ? t("● Online", "● En línea") : t("○ Offline", "○ Desconectado")}
+          </option>
+        );
+      })}
+    </>
+  );
+}
+
 function AssignAgentForm({
   currentAssignedUserId,
   users,
+  isManager,
   onSubmit,
 }: {
   currentAssignedUserId: string | null;
   users: UserWithRole[];
+  isManager: boolean;
   onSubmit: (assignedUserId: string) => Promise<{ error?: string; ok?: true }>;
 }) {
   const { t } = useLanguage();
@@ -1115,12 +1162,16 @@ function AssignAgentForm({
       <Field label={t("ASSIGNED TO", "ASIGNADO A")}>
         <Select value={assignedUserId} onChange={(e) => setAssignedUserId(e.target.value)}>
           <option value="">{t("Unassigned", "Sin asignar")}</option>
-          {users.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.fullName}
-            </option>
-          ))}
+          <AssigneeOptions users={users} currentAssignedUserId={currentAssignedUserId} restrictToOnline={isManager} />
         </Select>
+        {isManager && (
+          <p className="mt-1.5 text-[12px] text-text-tertiary">
+            {t(
+              "New leads can only be assigned to Online agents on your team.",
+              "Los nuevos leads solo se pueden asignar a agentes En línea de tu equipo."
+            )}
+          </p>
+        )}
       </Field>
 
       {error && <p className="text-[13px] text-danger">{error}</p>}
@@ -1140,11 +1191,13 @@ function ClassifyPanel({
   contact,
   stages,
   users,
+  isManager,
   onSaved,
 }: {
   contact: ContactWithJoins;
   stages: PipelineStage[];
   users: UserWithRole[];
+  isManager: boolean;
   onSaved: (activity: ActivityWithAuthor) => void;
 }) {
   const { t, language } = useLanguage();
@@ -1297,12 +1350,16 @@ function ClassifyPanel({
       <Field label={t("RESPONSIBLE", "RESPONSABLE")}>
         <Select value={assignedUserId} onChange={(e) => setAssignedUserId(e.target.value)}>
           <option value="">{t("Unassigned", "Sin asignar")}</option>
-          {users.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.fullName}
-            </option>
-          ))}
+          <AssigneeOptions users={users} currentAssignedUserId={contact.assignedUserId} restrictToOnline={isManager} />
         </Select>
+        {isManager && (
+          <p className="mt-1.5 text-[12px] text-text-tertiary">
+            {t(
+              "New leads can only be assigned to Online agents on your team.",
+              "Los nuevos leads solo se pueden asignar a agentes En línea de tu equipo."
+            )}
+          </p>
+        )}
       </Field>
 
       <Field label={t("NOTES", "NOTAS")}>

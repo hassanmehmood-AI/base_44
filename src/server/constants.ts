@@ -12,6 +12,14 @@ export type RoleKey = (typeof ROLE_KEYS)[number];
 // excluded by design even though it has implicit company access everywhere).
 export const ROUND_ROBIN_ELIGIBLE_ROLES: RoleKey[] = ["CALL_CENTER_AGENT"];
 
+// Agent Online button — a simple manual toggle an agent sets themselves,
+// visible to their Manager/Director/Superuser. Deliberately NOT read by
+// Round Robin or assignment eligibility (see ROUND_ROBIN_ELIGIBLE_ROLES
+// above, which is untouched by this) — purely a visibility signal, not a
+// gate on anything. No heartbeat/connection tracking.
+export const AGENT_ONLINE_STATUSES = ["ONLINE", "OFFLINE"] as const;
+export type AgentOnlineStatus = (typeof AGENT_ONLINE_STATUSES)[number];
+
 // Matches src/lib/mock-data.ts `allowedModules` (one key per sidebar-gated module)
 export const MODULE_KEYS = [
   "PROSPECTING",

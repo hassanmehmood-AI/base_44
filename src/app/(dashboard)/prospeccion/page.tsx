@@ -10,6 +10,7 @@ import { Input, SearchInput, Select, Textarea } from "@/components/ui/Input";
 import { Avatar } from "@/components/ui/Avatar";
 import { StageBadge } from "@/components/StageBadge";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { AgentOnlineButton } from "@/components/AgentOnlineButton";
 import { useLanguage } from "@/context/LanguageContext";
 import { useCompany } from "@/context/CompanyContext";
 import { campaigns, prospects } from "@/lib/mock-data";
@@ -82,7 +83,12 @@ export default function ProspeccionPage() {
           "Find potential clients with AI and organize results by campaigns",
           "Encuentra clientes potenciales con IA y organiza resultados por campañas"
         )}
-        actions={<LanguageSwitcher />}
+        actions={
+          <>
+            <AgentOnlineButton />
+            <LanguageSwitcher />
+          </>
+        }
       />
 
       <div className="flex flex-col gap-3 sm:flex-row">

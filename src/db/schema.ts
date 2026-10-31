@@ -49,6 +49,14 @@ export const users = pgTable("users", {
   // credentials auth (Auth.js) — nullable so a future OAuth-only user isn't forced to have one
   passwordHash: text("password_hash"),
   authProviderId: text("auth_provider_id"),
+  // Agent Online button — a simple manual ONLINE/OFFLINE toggle the agent
+  // sets themselves (see services/users.ts's setMyOnlineStatus), visible to
+  // their Manager/Director/Superuser. Purely a self-reported visibility
+  // signal: no heartbeat, and no effect on Round Robin or assignment
+  // eligibility. Column already existed in both local databases from an
+  // earlier, larger feature attempt (migration 0012) — reused as-is rather
+  // than adding a new one.
+  availabilityStatus: text("availability_status").notNull().default("OFFLINE"),
   createdAt: createdAt(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -106,6 +114,16 @@ export const managerAgentAssignments = pgTable("manager_agent_assignments", {
   index("manager_agent_assignments_manager_idx").on(t.managerUserId),
 ]);
 
+/** Physically exists in both local databases (migration 0012, from an
+ * earlier, larger Agent Availability attempt) — declared here so schema.ts
+ * stays accurate and a future `drizzle-kit generate` doesn't propose
+ * dropping it. Not read or written by the current Agent Online button
+ * feature (which only uses users.availabilityStatus above). */
+export const agentPresence = pgTable("agent_presence", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ---------------------------------------------------------------------------
 // Sales pipeline
 // ---------------------------------------------------------------------------
@@ -142,6 +160,19 @@ export const contacts = pgTable("contacts", {
   phone: text("phone"),
   email: text("email"),
   assignedUserId: uuid("assigned_user_id").references(() => users.id, { onDelete: "set null" }),
+  // Manager-Based Team Isolation — which CALL_CENTER_LEAD owns this lead,
+  // independent of campaign linkage or current agent assignment. Needed
+  // specifically for a Manager-created, campaign-less, still-Unassigned
+  // lead: without this column there is nothing on the row itself to derive
+  // ownership from (see findManyByManagerScope's campaign-owner /
+  // assigned-agent's-manager OR-conditions, both of which are absent for
+  // exactly that case). Set once at creation (services/contacts.ts's
+  // createContact/importContacts) and never reassigned automatically —
+  // reassigning a lead's owning manager, if ever needed, is a deliberate
+  // admin action, not a side effect of campaign or assignment changes.
+  // Nullable: stays null for Director/Superuser/Marketing-created leads,
+  // exactly mirroring today's "no manager owner" case.
+  managerId: uuid("manager_id").references(() => users.id, { onDelete: "set null" }),
   leadSource: text("lead_source"),
   pipelineStageId: uuid("pipeline_stage_id").notNull().references(() => pipelineStages.id, { onDelete: "restrict" }),
   // denormalized cache — written transactionally by the service layer whenever an activity is appended
@@ -153,6 +184,7 @@ export const contacts = pgTable("contacts", {
 }, (t) => [
   index("contacts_company_stage_idx").on(t.companyId, t.pipelineStageId),
   index("contacts_company_assigned_idx").on(t.companyId, t.assignedUserId),
+  index("contacts_company_manager_idx").on(t.companyId, t.managerId),
   index("contacts_follow_up_at_idx").on(t.followUpAt),
 ]);
 

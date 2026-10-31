@@ -289,6 +289,7 @@ export function CampanasClient({
                               <MemberAssignAgentSelect
                                 companyId={selectedCampaign.companyId}
                                 member={m}
+                                isManager={isManager}
                                 onAssigned={refreshMembers}
                               />
                             ) : (
@@ -577,18 +578,28 @@ function ManagerAssignSelect({ campaign }: { campaign: CampaignWithJoins }) {
 /** Campaign Members table's per-lead "Assign Agent" (hierarchy redesign
  * phase 5) — reuses the same scoped options and assignContact() write path
  * as the CRM's own Assign Agent action (phase 4), just a different entry
- * point. Options are scoped per company, fetched once per row on mount. */
+ * point. Options are scoped per company, fetched once per row on mount.
+ *
+ * Agent Online-only lead assignment: each option shows ● Online / ○ Offline
+ * (see CrmClient's AssigneeOptions for why a plain-text marker, not a
+ * colored dot, is used inside a native <select>). When `isManager` is true,
+ * every Offline option is disabled EXCEPT the member's current assignee —
+ * same exception as services/contacts.ts's assertManagerCanAssign, which is
+ * the real enforcement boundary (this is UI-only, informational for
+ * Director/Superuser). */
 function MemberAssignAgentSelect({
   companyId,
   member,
+  isManager,
   onAssigned,
 }: {
   companyId: string;
   member: CampaignMemberWithChannels;
+  isManager: boolean;
   onAssigned: () => void;
 }) {
   const { t } = useLanguage();
-  const [agents, setAgents] = useState<{ id: string; fullName: string }[]>([]);
+  const [agents, setAgents] = useState<{ id: string; fullName: string; availabilityStatus: string }[]>([]);
   const [assignedUserId, setAssignedUserId] = useState(member.assignedUserId ?? "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -622,11 +633,16 @@ function MemberAssignAgentSelect({
     <div className="min-w-[150px]" onClick={(e) => e.stopPropagation()}>
       <Select value={assignedUserId} disabled={pending} onChange={(e) => handleChange(e.target.value)}>
         <option value="">{t("Unassigned", "Sin asignar")}</option>
-        {agents.map((a) => (
-          <option key={a.id} value={a.id}>
-            {a.fullName}
-          </option>
-        ))}
+        {agents.map((a) => {
+          const isOnline = a.availabilityStatus === "ONLINE";
+          const isCurrent = a.id === (member.assignedUserId ?? "");
+          const disabled = isManager && !isOnline && !isCurrent;
+          return (
+            <option key={a.id} value={a.id} disabled={disabled}>
+              {a.fullName} — {isOnline ? t("● Online", "● En línea") : t("○ Offline", "○ Desconectado")}
+            </option>
+          );
+        })}
       </Select>
       {error && <p className="mt-1 text-[11px] text-danger">{error}</p>}
     </div>

@@ -3,6 +3,18 @@ import * as activitiesRepo from "@/server/repositories/activities";
 import * as usersRepo from "@/server/repositories/users";
 import * as companiesService from "@/server/services/companies";
 import { requireSession } from "@/server/services/authorization";
+
+/** Manager-Based Team Isolation: the same scoped-contact-source swap used in
+ * campaigns.ts's getCampaignPageStats. Every downstream computation in this
+ * file only ever tests membership (`.has(c.id)`, map lookups by contact id)
+ * against contacts drawn from this list, so narrowing the source here is
+ * sufficient — no other query in this file needs to change. Director/
+ * Superuser/Marketing/Agent keep today's full company-wide KPI view. */
+async function getKpiScopedContacts(companyIds: string[], session: Awaited<ReturnType<typeof requireSession>>) {
+  return session.user.roleKey === "CALL_CENTER_LEAD"
+    ? contactsRepo.findManyByManagerScope(companyIds, session.user.id)
+    : contactsRepo.findManyByCompanyIds(companyIds);
+}
 import { OPPORTUNITY_STAGE_KEYS, CUSTOMER_STAGE_KEYS, type Stage } from "@/lib/pipeline";
 import { KPI_DEPARTMENT_ROLE_KEYS, DEFAULT_KPI_DEPARTMENT, type KpiPeriod, type KpiDepartment, type RoleKey } from "@/server/constants";
 
@@ -100,13 +112,13 @@ export async function getKpiTotals(
   period: KpiPeriod = "ALL",
   department: KpiDepartment = DEFAULT_KPI_DEPARTMENT
 ): Promise<{ byCompany: KpiCompanyTotals[]; agents: KpiAgentRow[] }> {
-  await requireSession();
+  const session = await requireSession();
   const companies = await companiesService.getAllowedCompaniesForCurrentUser();
   const companyIds = companies.map((c) => c.id);
   const companyNameById = new Map(companies.map((c) => [c.id, c.name]));
 
   const since = sinceForPeriod(period);
-  const allContacts = await contactsRepo.findManyByCompanyIds(companyIds);
+  const allContacts = await getKpiScopedContacts(companyIds, session);
   const roleKeyByUserId = await getRoleKeyByUserId();
   const departmentContacts = allContacts.filter((c) => matchesDepartment(c.assignedUserId, department, roleKeyByUserId));
   const contactedIds = new Set(await activitiesRepo.findContactedContactIds(companyIds, since ?? undefined));
@@ -196,7 +208,7 @@ export async function getKpiTotals(
  * Still refetched on department change, since that changes which contacts
  * count at all. */
 export async function getKpiMonthlyTrend(department: KpiDepartment = DEFAULT_KPI_DEPARTMENT): Promise<KpiMonthlyRow[]> {
-  await requireSession();
+  const session = await requireSession();
   const companies = await companiesService.getAllowedCompaniesForCurrentUser();
   const companyIds = companies.map((c) => c.id);
   const companyNameById = new Map(companies.map((c) => [c.id, c.name]));
@@ -206,7 +218,7 @@ export async function getKpiMonthlyTrend(department: KpiDepartment = DEFAULT_KPI
   since.setDate(1);
   since.setHours(0, 0, 0, 0);
 
-  const contacts = await contactsRepo.findManyByCompanyIds(companyIds);
+  const contacts = await getKpiScopedContacts(companyIds, session);
   const roleKeyByUserId = await getRoleKeyByUserId();
   // A conversion event only carries companyId/contactId — look the contact
   // back up (regardless of its own createdAt) to know which agent, and

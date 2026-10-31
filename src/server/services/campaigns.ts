@@ -38,24 +38,44 @@ export async function listCampaignsForCurrentUser() {
   return campaignsRepo.findManyByCompanyIds(companyIds);
 }
 
+/** Manager-Based Team Isolation: a CALL_CENTER_LEAD caller's `ownerId` is
+ * always forced to their own session id, ignoring whatever the client sent
+ * — the "Create Campaign" form's owner dropdown already only ever offers a
+ * Manager themselves (see usersService.getManagersForCompany), but that's
+ * only a UI convenience; without this, a direct action call could still set
+ * an arbitrary ownerId (another Manager, or none at all), which is exactly
+ * the "a Manager could create a campaign that isn't theirs" gap. Director/
+ * Superuser keep full freedom to pick any manager (or leave it unowned),
+ * unchanged. */
 export async function createCampaign(input: { companyId: string; name: string; objective?: string | null; ownerId?: string | null }) {
-  await assertCompanyAccess(input.companyId);
+  const session = await assertCompanyAccess(input.companyId);
   const name = input.name.trim();
   if (!name) throw new Error("Campaign name is required.");
-  if (input.ownerId) await assertValidManager(input.ownerId, input.companyId);
+
+  const ownerId = session.user.roleKey === "CALL_CENTER_LEAD" ? session.user.id : input.ownerId || null;
+  if (ownerId) await assertValidManager(ownerId, input.companyId);
 
   return campaignsRepo.create({
     companyId: input.companyId,
     name,
     objective: input.objective?.trim() || null,
-    ownerId: input.ownerId || null,
+    ownerId,
   });
 }
 
+/** Manager-Based Team Isolation: a Manager may only change the status of a
+ * campaign they own — without this, a different Manager (or any role with
+ * company access) could pause/activate/complete another Manager's campaign.
+ * Director/Superuser unchanged. */
 export async function updateCampaignStatus(id: string, status: CampaignStatus) {
+  const session = await requireSession();
   const companyId = await campaignsRepo.findCompanyIdById(id);
   if (!companyId) throw new UnauthorizedError("Campaign not found.");
   await assertCompanyAccess(companyId);
+  if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    const ownerId = await campaignsRepo.findOwnerIdById(id);
+    if (ownerId !== session.user.id) throw new UnauthorizedError("You don't manage this campaign.");
+  }
   return campaignsRepo.updateStatus(id, status);
 }
 
@@ -120,7 +140,11 @@ export async function autoAssignCampaignLeads(campaignId: string): Promise<AutoA
 
     const eligible = await usersRepo.findEligibleForManagerRoundRobin(tx, companyId, ownerId);
     if (eligible.length === 0) {
-      return { assigned: 0, agentCount: 0, message: "This campaign's manager has no active agents to assign to." };
+      return {
+        assigned: 0,
+        agentCount: 0,
+        message: "This campaign's manager has no Online agents to assign to right now — leads are left unassigned.",
+      };
     }
 
     const picks = await campaignRoundRobinService.pickAndAdvance(
@@ -166,14 +190,25 @@ export async function autoAssignCampaignLeads(campaignId: string): Promise<AutoA
  * skipRoundRobin: true — campaign leads must land Unassigned, never grabbed
  * by the company-level Round Robin meant for manual/standalone CRM leads.
  * The campaign's manager distributes these via manual Assign Agent or the
- * manager-scoped "Auto Assign Leads" Round Robin instead. */
+ * manager-scoped "Auto Assign Leads" Round Robin instead.
+ *
+ * Manager-Based Team Isolation: a Manager may only import into a campaign
+ * they own — without this check, any Manager with company access could
+ * import leads straight into a DIFFERENT Manager's campaign. Mirrors the
+ * identical check already enforced by listContactsForCrm/getCampaignMembers
+ * right below. Director/Superuser unchanged. */
 export async function importCampaignMembers(
   campaignId: string,
   rows: Array<{ name: string; businessName?: string | null; phone?: string | null; email?: string | null; leadSource?: string | null }>
 ) {
+  const session = await requireSession();
   const companyId = await campaignsRepo.findCompanyIdById(campaignId);
   if (!companyId) throw new UnauthorizedError("Campaign not found.");
   await assertCompanyAccess(companyId);
+  if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    const ownerId = await campaignsRepo.findOwnerIdById(campaignId);
+    if (ownerId !== session.user.id) throw new UnauthorizedError("You don't manage this campaign.");
+  }
 
   const stages = await pipelineStagesRepo.findDefaultPipelineStages();
   const entryStage = stages[0];
@@ -257,12 +292,23 @@ export type CampaignPageStatsByCompany = {
  * pipeline stage buckets), returned per-company so the client can filter by
  * the top-right company selector the same way every other migrated page
  * does (Kpis/Soporte/Llamadas/Correo/RedesSociales). */
+/** Manager-Based Team Isolation: a Manager's stat cards must reflect only
+ * their own team's contacts, not the whole company's — swaps the contact
+ * source to the same findManyByManagerScope already used by
+ * listContactsForCurrentUser. contactedIds/opportunity/customer checks below
+ * are only ever tested via `.has(c.id)`/`.includes(...)` against contacts
+ * already drawn from this scoped list, so no separate scoping is needed for
+ * them — a different Manager's activity can never leak into the output.
+ * Director/Superuser/Marketing keep the full company-wide view, unchanged. */
 export async function getCampaignPageStats(): Promise<CampaignPageStatsByCompany[]> {
-  await requireSession();
+  const session = await requireSession();
   const allowed = await companiesService.getAllowedCompaniesForCurrentUser();
   const companyIds = allowed.map((c) => c.id);
 
-  const contacts = await contactsRepo.findManyByCompanyIds(companyIds);
+  const contacts =
+    session.user.roleKey === "CALL_CENTER_LEAD"
+      ? await contactsRepo.findManyByManagerScope(companyIds, session.user.id)
+      : await contactsRepo.findManyByCompanyIds(companyIds);
   const contactedIds = new Set(await activitiesRepo.findContactedContactIds(companyIds));
 
   const byCompany = new Map<string, Omit<CampaignPageStatsByCompany, "companyId" | "companyName">>();

@@ -4,7 +4,9 @@ import { revalidatePath } from "next/cache";
 import { signIn, signOut } from "@/auth";
 import { requireSession, UnauthorizedError } from "@/server/services/authorization";
 import * as usersRepo from "@/server/repositories/users";
+import * as usersService from "@/server/services/users";
 import { signImpersonationTicket } from "@/server/services/impersonationTicket";
+import type { AgentOnlineStatus } from "@/server/constants";
 
 export async function signOutAction() {
   await signOut({ redirectTo: "/login" });
@@ -77,5 +79,28 @@ export async function getImpersonatableUsersAction() {
     return { users: await usersRepo.findImpersonatableUsers() };
   } catch {
     return { users: [] };
+  }
+}
+
+export type SetMyOnlineStatusResult = { error?: string; ok?: true };
+
+export async function setMyOnlineStatusAction(status: AgentOnlineStatus): Promise<SetMyOnlineStatusResult> {
+  try {
+    await usersService.setMyOnlineStatus(status);
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
+    return { error: "Could not update status." };
+  }
+}
+
+/** Client-side companion read for AgentOnlineButton's initial render — null
+ * for any role except CALL_CENTER_AGENT (see getMyOnlineStatus's own doc
+ * comment), same scope as setMyOnlineStatusAction above. */
+export async function getMyOnlineStatusAction(): Promise<AgentOnlineStatus | null> {
+  try {
+    return await usersService.getMyOnlineStatus();
+  } catch {
+    return null;
   }
 }

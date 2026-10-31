@@ -51,6 +51,10 @@ export type UserRow = {
   email: string;
   roleKey: RoleKey;
   isActive: boolean;
+  // Agent Online button — null for every role except CALL_CENTER_AGENT (the
+  // only role setMyOnlineStatus ever lets set this). A simple manual
+  // self-reported signal, not a connection/heartbeat check.
+  isOnline: boolean | null;
 };
 
 const MODULE_LABEL: Record<ModuleKey, string> = {
@@ -128,7 +132,12 @@ export function ConfiguracionClient({
   const roleLabels = language === "es" ? ROLE_LABEL_ES : ROLE_LABEL;
   const moduleLabels = language === "es" ? MODULE_LABEL_ES : MODULE_LABEL;
   const [tab, setTab] = useState<"users" | "roles" | "companies" | "pipeline">("users");
-  const [selectedId, setSelectedId] = useState(users[0]?.id ?? "");
+  // Deactivated users are hidden from the Users list (see visibleUsers below) —
+  // there's no "reactivate" path in this UI (the deactivate button is disabled
+  // once !isActive, see the role-badge Card further down), so a hidden user is
+  // never reachable here, and the initial selection must skip straight past
+  // them to the first user that's actually visible.
+  const [selectedId, setSelectedId] = useState(users.find((u) => u.isActive)?.id ?? "");
   const [companyIds, setCompanyIds] = useState<Set<string>>(new Set());
   const [moduleKeys, setModuleKeys] = useState<Set<ModuleKey>>(new Set());
   const [isSuperuserSelected, setIsSuperuserSelected] = useState(false);
@@ -145,11 +154,19 @@ export function ConfiguracionClient({
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetPending, setResetPending] = useState(false);
 
+  // Deactivated accounts stay in the `users` array (the detail panel/role-
+  // badge/stat counts below still need to find them by id, e.g. if a stale
+  // selectedId somehow pointed at one), but the browsable list itself only
+  // ever shows active users — there's no reactivate flow in this UI, so a
+  // deactivated account showing here would just be permanent, actionless
+  // clutter.
+  const visibleUsers = useMemo(() => users.filter((u) => u.isActive), [users]);
+
   const filteredUsers = useMemo(() => {
     const q = userSearch.trim().toLowerCase();
-    if (!q) return users;
-    return users.filter((u) => u.fullName.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
-  }, [users, userSearch]);
+    if (!q) return visibleUsers;
+    return visibleUsers.filter((u) => u.fullName.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
+  }, [visibleUsers, userSearch]);
 
   const roleDescByKey: Record<RoleKey, string> = {
     SUPERUSER: t("Full access to all modules and companies.", "Acceso total a todos los módulos y empresas."),
@@ -360,6 +377,13 @@ export function ConfiguracionClient({
                   <p className="truncate text-[13.5px] font-semibold text-text-primary">{u.fullName}</p>
                   <p className="truncate text-[12px] text-text-secondary">{roleLabels[u.roleKey]}</p>
                 </div>
+                {u.isOnline !== null && (
+                  <span
+                    className={cn("ml-auto h-2 w-2 shrink-0 rounded-full", u.isOnline ? "bg-brand" : "bg-text-tertiary")}
+                    title={u.isOnline ? t("Online", "En línea") : t("Offline", "Desconectado")}
+                    aria-hidden="true"
+                  />
+                )}
               </button>
             ))}
             {filteredUsers.length === 0 && (
@@ -391,6 +415,17 @@ export function ConfiguracionClient({
                       <Badge tone={selected.isActive ? "green" : "gray"}>
                         {selected.isActive ? t("Active user", "Usuario activo") : t("Deactivated", "Desactivado")}
                       </Badge>
+                      {/* Agent Online button — self-reported, not a
+                       * connection/heartbeat check. Null for every role
+                       * except CALL_CENTER_AGENT. */}
+                      {selected.isOnline !== null && (
+                        <Badge tone={selected.isOnline ? "green" : "gray"}>
+                          <span
+                            className={cn("mr-1.5 inline-block h-2 w-2 rounded-full", selected.isOnline ? "bg-brand" : "bg-text-tertiary")}
+                          />
+                          {selected.isOnline ? t("Online", "En línea") : t("Offline", "Desconectado")}
+                        </Badge>
+                      )}
                       {/* Superuser-only, never on your own account — see
                        * usersService.updateUserRole for the full rationale
                        * (company/module access is intentionally left as-is;

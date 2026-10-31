@@ -4,6 +4,7 @@ import * as companiesRepo from "@/server/repositories/companies";
 import * as usersService from "@/server/services/users";
 import * as metricoolOnboardingService from "@/server/services/metricoolOnboarding";
 import * as whapiOnboardingService from "@/server/services/whapiOnboarding";
+import type { RoleKey } from "@/server/constants";
 import { ConfiguracionClient, type UserRow } from "./ConfiguracionClient";
 
 export default async function ConfiguracionPage() {
@@ -37,6 +38,12 @@ export default async function ConfiguracionPage() {
   // is re-checked regardless.
   const canManagePermissions = isSuperuser || isDirector;
 
+  // Agent Online button visibility (Manager Status panel) — null for every
+  // role except CALL_CENTER_AGENT, the only role setMyOnlineStatus ever lets
+  // set this. Computed directly from availabilityStatus; no extra query.
+  const toOnlineFlag = (u: { roleKey: RoleKey; availabilityStatus: string }) =>
+    u.roleKey === "CALL_CENTER_AGENT" ? u.availabilityStatus === "ONLINE" : null;
+
   let users: UserRow[];
   if (isSuperuser) {
     users = (await usersService.listUsers()).map((u) => ({
@@ -45,6 +52,7 @@ export default async function ConfiguracionPage() {
       email: u.email,
       roleKey: u.roleKey,
       isActive: u.isActive,
+      isOnline: toOnlineFlag(u),
     }));
   } else if (isDirector) {
     // Every Manager/Agent in the Director's own company — never another company's users.
@@ -54,6 +62,7 @@ export default async function ConfiguracionPage() {
       email: u.email,
       roleKey: u.roleKey,
       isActive: u.isActive,
+      isOnline: toOnlineFlag(u),
     }));
   } else if (isManager && session!.user.companyIds[0]) {
     // Only the Manager's own linked team — not the whole company's roster.
@@ -63,12 +72,22 @@ export default async function ConfiguracionPage() {
       email: u.email,
       roleKey: u.roleKey,
       isActive: u.isActive,
+      isOnline: toOnlineFlag(u),
     }));
   } else {
     // Everyone else (Agent, Marketing, or a Manager with no company yet)
     // can't list other accounts at all — fall back to just themselves.
     users = session
-      ? [{ id: session.user.id, fullName: session.user.name, email: session.user.email, roleKey: session.user.roleKey, isActive: true }]
+      ? [
+          {
+            id: session.user.id,
+            fullName: session.user.name,
+            email: session.user.email,
+            roleKey: session.user.roleKey,
+            isActive: true,
+            isOnline: null,
+          },
+        ]
       : [];
   }
 

@@ -1,3 +1,4 @@
+import { auth } from "@/auth";
 import * as contactsService from "@/server/services/contacts";
 import * as tasksService from "@/server/services/tasks";
 import * as campaignsService from "@/server/services/campaigns";
@@ -13,13 +14,19 @@ export default async function CrmPage({
   // contact instead of the CRM's own default (first-in-list) selection.
   searchParams: Promise<{ contact?: string }>;
 }) {
-  const [{ contact: deepLinkContactId }, contacts, stages, companies, campaigns] = await Promise.all([
+  const [{ contact: deepLinkContactId }, contacts, stages, companies, campaigns, session] = await Promise.all([
     searchParams,
     contactsService.listContactsForCurrentUser(),
     getActiveDefaultPipelineStages(),
     getAllowedCompaniesForCurrentUser(),
     campaignsService.listCampaignsForCurrentUser(),
+    auth(),
   ]);
+  // Agent Online-only lead assignment: only a Call Center Manager's
+  // assignment dropdowns restrict to Online team members — matches the
+  // server-side scope of assertManagerCanAssign in services/contacts.ts.
+  // Director/Superuser keep the full, unrestricted assignable list.
+  const isManager = session?.user.roleKey === "CALL_CENTER_LEAD";
 
   // Resolved against the same session-scoped `contacts` list the page
   // already renders from, so a deep link can never surface a contact outside
@@ -44,6 +51,7 @@ export default async function CrmPage({
       initialTasks={initialTasks}
       deepLinkContactId={deepLinkContactId ?? null}
       deepLinkResolved={deepLinkResolved}
+      isManager={isManager}
     />
   );
 }

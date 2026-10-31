@@ -85,6 +85,20 @@
       "when": 1792399226654,
       "tag": "0011_whapi_whatsapp_integration",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793171823162,
+      "tag": "0012_silky_pride",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793357990659,
+      "tag": "0013_careless_silhouette",
+      "breakpoints": true
     }
   ]
 }

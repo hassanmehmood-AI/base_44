@@ -10,21 +10,34 @@ import { assertCompanyAccess, requireSession } from "@/server/services/authoriza
 import { UnauthorizedError } from "@/server/services/authorization";
 
 /** Shared by every write path that can set contacts.assignedUserId
- * (assignContact, classifyContact): a Call Center Manager may only assign to
- * a user on their own team (manager_agent_assignments). Without this, a
- * manager could bypass the UI's already-scoped options via a direct action
- * call with a tampered assignedUserId — this is what actually makes
- * "Manager 1 cannot assign to Manager 2's agents" true server-side, not just
- * hidden in the dropdown. */
+ * (assignContact, classifyContact, createContact): a Call Center Manager may
+ * only assign to a user on their own team (manager_agent_assignments), and a
+ * NEW assignee must currently be marked Online (the Agent Online button's
+ * manual status — no heartbeat/connection check involved). Without the team
+ * check, a manager could bypass the UI's already-scoped options via a
+ * direct action call with a tampered assignedUserId — this is what actually
+ * makes "Manager 1 cannot assign to Manager 2's agents" true server-side,
+ * not just hidden in the dropdown. The Online check is skipped when
+ * assignedUserId already equals the contact's current assignee: re-saving
+ * or classifying a lead must never force a reassignment just because that
+ * agent has since gone Offline — "never change existing lead assignments"
+ * takes priority over the Online gate for an unchanged value. Unassigning
+ * (null) is always allowed, same as before. */
 async function assertManagerCanAssign(
   session: Awaited<ReturnType<typeof requireSession>>,
   assignedUserId: string | null,
-  companyId: string
+  companyId: string,
+  currentAssignedUserId: string | null
 ) {
   if (session.user.roleKey !== "CALL_CENTER_LEAD" || !assignedUserId) return;
   const link = await managerAgentRepo.findManagerForAgent(assignedUserId, companyId);
   if (link?.managerUserId !== session.user.id) {
     throw new UnauthorizedError("You can only assign leads to agents on your own team.");
+  }
+  if (assignedUserId === currentAssignedUserId) return;
+  const target = await usersRepo.findById(assignedUserId);
+  if (target?.availabilityStatus !== "ONLINE") {
+    throw new Error("You can only assign new leads to agents who are Online.");
   }
 }
 
@@ -72,10 +85,23 @@ export async function listManualContactsForCurrentUser() {
   return contactsRepo.findManualByCompanyIds(companyIds);
 }
 
+/** Manager-Based Team Isolation: direct record access must enforce the same
+ * ownership boundary as the list views (listContactsForCurrentUser), not
+ * just company access — otherwise a Manager could fetch a contact (and its
+ * full activity history) belonging to a different Manager's team purely by
+ * knowing or guessing its id, bypassing every list-level filter. Uses the
+ * exact same "owns the campaign, or owns the assigned agent" definition as
+ * findManyByManagerScope. Director/Superuser/Marketing/Agent are unaffected
+ * — only CALL_CENTER_LEAD gets this extra check. */
 export async function getContact(id: string) {
+  const session = await requireSession();
   const contact = await contactsRepo.findById(id);
   if (!contact) return undefined;
   await assertCompanyAccess(contact.companyId);
+  if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    const owned = await contactsRepo.isInManagerScope(id, session.user.id);
+    if (!owned) throw new UnauthorizedError("You don't have access to that contact.");
+  }
   const recentActivities = await activitiesRepo.findRecentByContactId(id);
   return { contact, activities: recentActivities };
 }
@@ -85,7 +111,19 @@ export async function getContact(id: string) {
  * one), the contact is automatically assigned via company Round Robin and
  * an AUTO_ASSIGNMENT activity is logged, atomically with the insert. If the
  * caller explicitly passes assignedUserId (including null), that's
- * respected as-is and Round Robin is skipped. */
+ * respected as-is and Round Robin is skipped.
+ *
+ * Manager-Based Team Isolation: company Round Robin draws from every Online
+ * agent in the company, regardless of manager — fine for Director/Superuser/
+ * Marketing (who have company-wide reach by design), but a Manager creating
+ * a standalone lead this way could have it land on a DIFFERENT Manager's
+ * agent, leaking it outside their own team. So for a CALL_CENTER_LEAD
+ * caller, auto-assignment is skipped entirely and the lead is left
+ * Unassigned — the same "don't auto-assign, leave Unassigned until Manual/
+ * Auto Assign" rule already used for campaign leads (see
+ * campaigns.ts's importCampaignMembers). The Manager then uses the existing,
+ * already team-scoped Manual Assign or (for campaign leads) Auto Assign to
+ * place it with their own Online agent. */
 export async function createContact(input: {
   companyId: string;
   name: string;
@@ -97,13 +135,16 @@ export async function createContact(input: {
   assignedUserId?: string | null;
 }) {
   const session = await assertCompanyAccess(input.companyId);
-  if (input.assignedUserId !== undefined) await assertAssignableUser(input.assignedUserId);
+  if (input.assignedUserId !== undefined) {
+    await assertAssignableUser(input.assignedUserId);
+    await assertManagerCanAssign(session, input.assignedUserId, input.companyId, null);
+  }
 
   return contactsRepo.withTransaction(async (tx) => {
     let assignedUserId = input.assignedUserId ?? null;
     let autoAssignedName: string | null = null;
 
-    if (input.assignedUserId === undefined) {
+    if (input.assignedUserId === undefined && session.user.roleKey !== "CALL_CENTER_LEAD") {
       const [picked] = await roundRobinService.pickNextAgents(tx, input.companyId, 1);
       if (picked) {
         assignedUserId = picked;
@@ -121,6 +162,13 @@ export async function createContact(input: {
         leadSource: input.leadSource,
         pipelineStageId: input.pipelineStageId,
         assignedUserId,
+        // Manager-Based Team Isolation: stamps the creator's own id as
+        // owner whenever a Manager creates the lead — this is what keeps it
+        // visible in their own CRM list/stats/KPIs (via
+        // findManyByManagerScope's managerId OR-condition) even while
+        // Unassigned and campaign-less. Left null for every other role,
+        // same as today.
+        managerId: session.user.roleKey === "CALL_CENTER_LEAD" ? session.user.id : null,
       },
       tx
     );
@@ -241,9 +289,19 @@ export async function importContacts(
   }
 
   return contactsRepo.withTransaction(async (tx) => {
-    const assignments = options?.skipRoundRobin
-      ? []
-      : await roundRobinService.pickNextAgents(tx, companyId, dedupedRows.length);
+    // Manager-Based Team Isolation: same reasoning as createContact above —
+    // a Manager's own CSV import must never draw from the company-wide
+    // Round Robin pool (could land a lead on a different Manager's agent).
+    const skipRoundRobin = options?.skipRoundRobin || session.user.roleKey === "CALL_CENTER_LEAD";
+    const assignments = skipRoundRobin ? [] : await roundRobinService.pickNextAgents(tx, companyId, dedupedRows.length);
+
+    // Manager-Based Team Isolation: same stamping as createContact — when a
+    // Manager is the one importing (standalone CRM CSV import, or their own
+    // campaign's CSV import via importCampaignMembers, which already
+    // verifies they own that campaign), every imported row is owned by
+    // them. For a campaign import this is additive to the existing
+    // campaign-ownership visibility path, not a replacement for it.
+    const managerId = session.user.roleKey === "CALL_CENTER_LEAD" ? session.user.id : null;
 
     const created = await contactsRepo.createMany(
       dedupedRows.map((r, i) => ({
@@ -255,6 +313,7 @@ export async function importContacts(
         email: r.email?.trim() || null,
         leadSource: r.leadSource?.trim() || null,
         assignedUserId: assignments[i] ?? null,
+        managerId,
       })),
       tx
     );
@@ -322,10 +381,11 @@ export async function classifyContact(
   }
 ) {
   const session = await requireSession();
-  const companyId = await contactsRepo.findCompanyIdById(id);
-  if (!companyId) throw new UnauthorizedError("Contact not found.");
+  const existing = await contactsRepo.findById(id);
+  if (!existing) throw new UnauthorizedError("Contact not found.");
+  const companyId = existing.companyId;
   await assertCompanyAccess(companyId);
-  await assertManagerCanAssign(session, input.assignedUserId, companyId);
+  await assertManagerCanAssign(session, input.assignedUserId, companyId, existing.assignedUserId);
   await assertAssignableUser(input.assignedUserId);
 
   return contactsRepo.withTransaction(async (tx) => {
@@ -383,10 +443,11 @@ export async function moveContactStage(id: string, pipelineStageId: string) {
  * logging a full interaction (channel/stage/notes). */
 export async function assignContact(id: string, assignedUserId: string | null) {
   const session = await requireSession();
-  const companyId = await contactsRepo.findCompanyIdById(id);
-  if (!companyId) throw new UnauthorizedError("Contact not found.");
+  const existing = await contactsRepo.findById(id);
+  if (!existing) throw new UnauthorizedError("Contact not found.");
+  const companyId = existing.companyId;
   await assertCompanyAccess(companyId);
-  await assertManagerCanAssign(session, assignedUserId, companyId);
+  await assertManagerCanAssign(session, assignedUserId, companyId, existing.assignedUserId);
   await assertAssignableUser(assignedUserId);
 
   const agentName = assignedUserId ? (await usersRepo.findById(assignedUserId))?.fullName ?? null : null;

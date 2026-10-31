@@ -4,12 +4,46 @@ import * as accessRepo from "@/server/repositories/access";
 import * as companiesRepo from "@/server/repositories/companies";
 import * as managerAgentRepo from "@/server/repositories/managerAgentAssignments";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
-import { DEFAULT_MODULES_BY_ROLE, type RoleKey, type ModuleKey } from "@/server/constants";
+import {
+  DEFAULT_MODULES_BY_ROLE,
+  AGENT_ONLINE_STATUSES,
+  type RoleKey,
+  type ModuleKey,
+  type AgentOnlineStatus,
+} from "@/server/constants";
 import type { UserWithRole } from "@/server/repositories/users";
 
 export async function getAssignableUsersForCompany(companyId: string) {
   await assertCompanyAccess(companyId);
   return usersRepo.findAssignableForCompany(companyId);
+}
+
+/** Agent Online button. Self-only by design — there is no userId parameter,
+ * so there's no tampered-client-request path to set someone else's status.
+ * Restricted to CALL_CENTER_AGENT: the only role whose online/offline state
+ * is ever shown to a Manager/Director/Superuser. Deliberately does not touch
+ * Round Robin eligibility or any assignment logic — purely a visibility
+ * signal (see constants.ts's AGENT_ONLINE_STATUSES comment). */
+export async function setMyOnlineStatus(status: AgentOnlineStatus): Promise<void> {
+  const session = await requireSession();
+  if (session.user.roleKey !== "CALL_CENTER_AGENT") {
+    throw new UnauthorizedError("Only Call Center Agents have an online status.");
+  }
+  if (!AGENT_ONLINE_STATUSES.includes(status)) {
+    throw new Error(`Invalid status: ${status}`);
+  }
+  await usersRepo.setOnlineStatus(session.user.id, status);
+}
+
+/** Companion read for the Sidebar button's initial value — same self-only,
+ * CALL_CENTER_AGENT-only scope as setMyOnlineStatus. Returns null for any
+ * other role so the UI can cleanly render nothing rather than a meaningless
+ * default. */
+export async function getMyOnlineStatus(): Promise<AgentOnlineStatus | null> {
+  const session = await requireSession();
+  if (session.user.roleKey !== "CALL_CENTER_AGENT") return null;
+  const user = await usersRepo.findById(session.user.id);
+  return (user?.availabilityStatus as AgentOnlineStatus | undefined) ?? "OFFLINE";
 }
 
 /** Server-side guard for every "assign this lead/conversation/ticket to a
