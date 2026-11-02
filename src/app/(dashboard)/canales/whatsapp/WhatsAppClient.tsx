@@ -447,7 +447,7 @@ function ChatPane({
               <div
                 key={m.id}
                 className={cn(
-                  "max-w-[70%] rounded-2xl px-4 py-2.5 text-[13.5px] shadow-sm",
+                  "w-fit max-w-[70%] rounded-2xl px-4 py-2.5 text-[13.5px] shadow-sm",
                   outbound ? "ml-auto rounded-tr-sm bg-brand text-white" : "rounded-tl-sm bg-white"
                 )}
               >

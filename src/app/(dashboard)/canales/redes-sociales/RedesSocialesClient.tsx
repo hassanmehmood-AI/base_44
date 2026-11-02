@@ -493,7 +493,7 @@ function ConversationPanel({
                 key={m.id}
                 style={outbound ? { background: theme.outgoingBubble } : undefined}
                 className={cn(
-                  "max-w-[75%] rounded-2xl px-4 py-3 text-[14px]",
+                  "w-fit max-w-[75%] rounded-2xl px-4 py-3 text-[14px]",
                   outbound ? "ml-auto rounded-br-md text-white" : "rounded-bl-md bg-surface-muted text-text-primary"
                 )}
               >
