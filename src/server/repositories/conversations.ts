@@ -106,6 +106,20 @@ export async function findByExternalThreadId(companyId: string, channel: string,
   return row;
 }
 
+/** The Unassigned Email Inbox (see services/email.ts and the Correo page's
+ * Unassigned tab): EMAIL conversations with no linked CRM contact —
+ * created when an inbound Gmail message's sender doesn't match any
+ * existing contact's email on file (see gmailSync.ts's processOneMessage).
+ * Ordered newest-first, same as findManyByCompanyIdsAndChannel, so the most
+ * recently active unreviewed thread surfaces first. */
+export async function findUnassignedEmailByCompanyIds(companyIds: string[]): Promise<ConversationWithJoins[]> {
+  if (companyIds.length === 0) return [];
+  const rows = await baseQuery()
+    .where(and(inArray(conversations.companyId, companyIds), eq(conversations.channel, "EMAIL"), isNull(conversations.contactId)))
+    .orderBy(desc(conversations.lastMessageAt), desc(conversations.createdAt));
+  return rows.map(toJoined);
+}
+
 export async function updateContactId(id: string, contactId: string): Promise<Conversation> {
   const [row] = await getDb().update(conversations).set({ contactId }).where(eq(conversations.id, id)).returning();
   return row;

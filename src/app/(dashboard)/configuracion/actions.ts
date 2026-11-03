@@ -6,6 +6,7 @@ import * as companiesService from "@/server/services/companies";
 import * as usersService from "@/server/services/users";
 import * as metricoolOnboardingService from "@/server/services/metricoolOnboarding";
 import * as whapiOnboardingService from "@/server/services/whapiOnboarding";
+import * as emailOnboardingService from "@/server/services/emailOnboarding";
 import { UnauthorizedError } from "@/server/services/authorization";
 import type { RoleKey, ModuleKey } from "@/server/constants";
 
@@ -152,6 +153,65 @@ export async function getWhapiQrAction(companyId: string) {
     const message = e instanceof UnauthorizedError || e instanceof Error ? e.message : "Unknown error.";
     return { ok: false as const, message };
   }
+}
+
+/** Returns the Google consent-screen URL for a "Connect Gmail" button to
+ * redirect the browser to — the button itself is not yet built (see
+ * emailOnboarding.ts's module comment on this increment's deferred scope);
+ * exposed now so the backend half of the flow is independently callable
+ * and testable ahead of that UI work. */
+export async function getGoogleAuthorizationUrlAction(companyId: string): Promise<ActionResult & { url?: string }> {
+  const result = await emailOnboardingService.startAuthorization(companyId).catch((e) => {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { ok: false as const, message: e.message };
+    throw e;
+  });
+  if (!result.ok) return { error: result.message };
+  return { ok: true, url: result.url };
+}
+
+export type GoogleEmailAccountRow = {
+  id: string;
+  emailAddress: string;
+  displayName: string | null;
+  status: string;
+  lastError: string | null;
+  createdAt: string;
+};
+
+/** Maps the repository's full row down to a safe DTO before it ever
+ * crosses the server/client boundary — deliberately excludes
+ * encryptedRefreshToken/encryptedAccessToken/grantedScopes/historyId/
+ * watchExpiration, none of which the browser has any legitimate reason to
+ * receive, same "never return the secret, only what the UI needs to
+ * render" convention as getWhapiQrAction (which returns just the rendered
+ * QR image, never the channel's token). */
+export async function getGoogleEmailAccountsForCompanyAction(companyId: string): Promise<{ accounts: GoogleEmailAccountRow[] }> {
+  try {
+    const accounts = await emailOnboardingService.listAccountsForCompany(companyId);
+    return {
+      accounts: accounts.map((a) => ({
+        id: a.id,
+        emailAddress: a.emailAddress,
+        displayName: a.displayName,
+        status: a.status,
+        lastError: a.lastError,
+        createdAt: a.createdAt.toISOString(),
+      })),
+    };
+  } catch {
+    return { accounts: [] };
+  }
+}
+
+export async function disconnectGoogleEmailAccountAction(accountId: string): Promise<ActionResult> {
+  try {
+    await emailOnboardingService.disconnectAccount(accountId);
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  return { ok: true };
 }
 
 export async function createUserAction(input: {

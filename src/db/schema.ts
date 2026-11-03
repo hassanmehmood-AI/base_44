@@ -320,6 +320,84 @@ export const campaignContacts = pgTable("campaign_contacts", {
 // Communications
 // ---------------------------------------------------------------------------
 
+/** One connected mailbox (Google Workspace via OAuth today; SMTP/IMAP is a
+ * planned second `provider` value, not yet implemented). Deliberately NOT
+ * unique on companyId alone — unlike whapiChannels (one WhatsApp number per
+ * company), a company can connect several mailboxes at once (e.g. sales@,
+ * support@), so the real company-scoped uniqueness constraint is
+ * (companyId, emailAddress): the same address can't be connected twice to
+ * the same company, but the same Workspace user CAN legitimately be
+ * connected under more than one company in this system.
+ *
+ * encryptedRefreshToken is the durable secret (long-lived, what actually
+ * lets this app act as the mailbox indefinitely) — encrypted at rest via
+ * server/crypto/secretBox.ts, the same AES-256-GCM scheme already used for
+ * whapiChannels.encryptedToken, for the same reason: unlike Metricool's
+ * single shared account token, every connected mailbox has its own distinct
+ * credential. encryptedAccessToken is the short-lived (~1hr) token cached
+ * alongside it purely to avoid re-exchanging the refresh token on every
+ * single send/sync call; accessTokenExpiresAt is what tells the service
+ * layer when that cached value is stale and a fresh exchange is needed.
+ *
+ * historyId is Gmail's own incremental-sync cursor (Users.history.list) —
+ * this is literally the mechanism that makes "sync new mail only, never
+ * historical" correct and cheap: each sync pass resumes from this value
+ * instead of re-scanning the mailbox. watchExpiration tracks the Gmail
+ * Pub/Sub push-notification subscription's expiry (Google caps these at 7
+ * days), so a renewal job knows which rows are coming due — same
+ * "scheduled renewal" shape as this app's other recurring Railway cron
+ * jobs (see scripts/whapi-pending-trigger). */
+export const companyEmailAccounts = pgTable("company_email_accounts", {
+  id: id(),
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  // GOOGLE_WORKSPACE | (future) SMTP_IMAP
+  provider: text("provider").notNull(),
+  // Always stored normalized (trim().toLowerCase()) by the service layer —
+  // same convention as contactsService's normalizeEmail — so the
+  // case-insensitive uniqueness guaranteed by the index below (lower(...))
+  // actually matches what every write path puts in this column; the index
+  // is the hard guarantee, this is what keeps lookups/comparisons
+  // consistent with it rather than relying on lower() at read time too.
+  emailAddress: text("email_address").notNull(),
+  displayName: text("display_name"),
+  // PENDING -> ACTIVE | FAILED | NEEDS_REAUTH -> DISCONNECTED. DISCONNECTED
+  // is the one terminal state excluded from the uniqueness index below — a
+  // disconnected row is kept (never deleted) so conversations.
+  // companyEmailAccountId keeps resolving for historical messages, but it
+  // must not permanently block that same address from being reconnected,
+  // by this company or any other.
+  status: text("status").notNull().default("PENDING"),
+  encryptedRefreshToken: text("encrypted_refresh_token"),
+  encryptedAccessToken: text("encrypted_access_token"),
+  accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true }),
+  // Space-separated OAuth scopes actually granted at consent time — lets the
+  // service layer detect a reconnect that narrowed access (e.g. a user
+  // re-authorizing but declining the send scope) rather than assuming
+  // whatever scopes the app currently requests were actually granted.
+  grantedScopes: text("granted_scopes"),
+  historyId: text("history_id"),
+  watchExpiration: timestamp("watch_expiration", { withTimezone: true }),
+  lastError: text("last_error"),
+  createdAt: createdAt(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  // Global (not per-company) + case-insensitive + partial: a given mailbox
+  // can only have ONE non-disconnected connection anywhere in the system —
+  // the exact "one company per Gmail address" requirement — while still
+  // letting the SAME company connect many different addresses (nothing
+  // here constrains companyId) and letting a disconnected address be
+  // reconnected later (by the same or a different company) without a
+  // leftover DISCONNECTED row blocking it, since the index only covers
+  // live/pending/reauth-needed rows. lower(...) is the hard, DB-level
+  // case-insensitivity guarantee — not just an application convention — so
+  // "Sales@x.com" and "sales@x.com" can never both be active at once even
+  // if some future write path forgets to normalize first.
+  uniqueIndex("company_email_accounts_active_address_idx")
+    .on(sql`lower(${t.emailAddress})`)
+    .where(sql`${t.status} <> 'DISCONNECTED'`),
+  index("company_email_accounts_company_id_idx").on(t.companyId),
+]);
+
 export const conversations = pgTable("conversations", {
   id: id(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "restrict" }),
@@ -378,6 +456,18 @@ export const conversations = pgTable("conversations", {
   // rather than overloading company_social_accounts, which only ever held
   // plain, non-secret external ids.
   whapiChannelId: uuid("whapi_channel_id").references(() => whapiChannels.id, { onDelete: "set null" }),
+  // Which connected mailbox this EMAIL conversation came from/replies go out
+  // through — the email equivalent of whapiChannelId above, same reasoning
+  // (a distinct per-connection secret deserves its own table, not reuse of
+  // companySocialAccounts). Needed specifically because a company can have
+  // MULTIPLE connected mailboxes (see companyEmailAccounts' doc comment) —
+  // without this, a reply would have no way to know which of a company's
+  // several connected addresses it should be sent from. Null for existing
+  // EMAIL conversations created before this column existed (legacy rows —
+  // today's single-global-sender Resend path is the fallback when null).
+  companyEmailAccountId: uuid("company_email_account_id").references(() => companyEmailAccounts.id, {
+    onDelete: "set null",
+  }),
   lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
   createdAt: createdAt(),
 }, (t) => [

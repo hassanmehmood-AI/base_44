@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Plus, CheckCircle2, Trash2, RotateCcw, ArrowUp, ArrowDown, Power, Building2 } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Plus, CheckCircle2, Trash2, RotateCcw, ArrowUp, ArrowDown, Power, Building2, Mail, Unlink } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -41,6 +41,10 @@ import {
   confirmNoWhapiChannelWasCreatedAction,
   getLiveWhapiChannelStatusAction,
   getWhapiQrAction,
+  getGoogleAuthorizationUrlAction,
+  getGoogleEmailAccountsForCompanyAction,
+  disconnectGoogleEmailAccountAction,
+  type GoogleEmailAccountRow,
 } from "./actions";
 import type { CompanyProvisioningStatus, LinkableBrand } from "@/server/services/metricoolOnboarding";
 import type { CompanyChannelStatus as WhapiChannelStatus } from "@/server/services/whapiOnboarding";
@@ -129,6 +133,7 @@ export function ConfiguracionClient({
   const isSuperuser = viewerRoleKey === "SUPERUSER";
   const { t, language } = useLanguage();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const roleLabels = language === "es" ? ROLE_LABEL_ES : ROLE_LABEL;
   const moduleLabels = language === "es" ? MODULE_LABEL_ES : MODULE_LABEL;
   const [tab, setTab] = useState<"users" | "roles" | "companies" | "pipeline">("users");
@@ -153,6 +158,27 @@ export function ConfiguracionClient({
   const [roleError, setRoleError] = useState<string | undefined>();
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetPending, setResetPending] = useState(false);
+  const [gmailResult, setGmailResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  // Reads the one-shot ?gmail_connected=<address> / ?gmail_error=<message>
+  // query params the OAuth callback route redirects back with (see
+  // api/oauth/google/callback/route.ts), shows them as a banner, switches to
+  // the Companies tab where the connection actually lives, then strips the
+  // params from the URL so a page refresh doesn't keep re-showing the same
+  // result.
+  useEffect(() => {
+    const connected = searchParams.get("gmail_connected");
+    const gmailError = searchParams.get("gmail_error");
+    if (!connected && !gmailError) return;
+    setGmailResult(
+      connected
+        ? { ok: true, message: t(`Connected ${connected}.`, `${connected} conectado.`) }
+        : { ok: false, message: gmailError! }
+    );
+    setTab("companies");
+    router.replace("/configuracion");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- read the URL exactly once on mount, not on every searchParams identity change
+  }, []);
 
   // Deactivated accounts stay in the `users` array (the detail panel/role-
   // badge/stat counts below still need to find them by id, e.g. if a stale
@@ -286,6 +312,19 @@ export function ConfiguracionClient({
 
   return (
     <div className="flex flex-col gap-6">
+      {gmailResult && (
+        <div
+          className={cn(
+            "flex items-center justify-between gap-3 rounded-xl border px-4 py-2.5 text-[13px]",
+            gmailResult.ok ? "border-success/30 bg-success/10 text-success" : "border-danger/30 bg-danger/10 text-danger"
+          )}
+        >
+          <span>{gmailResult.message}</span>
+          <button type="button" onClick={() => setGmailResult(null)} className="shrink-0 opacity-70 hover:opacity-100">
+            ✕
+          </button>
+        </div>
+      )}
       <PageHeader
         title={t("Settings", "Configuración")}
         subtitle={t("Manage users, roles and access permissions", "Gestiona usuarios, roles y permisos de acceso")}
@@ -630,6 +669,7 @@ export function ConfiguracionClient({
                   initialStatus={whapiStatuses.find((s) => s.companyId === c.id)?.status ?? "NONE"}
                 />
               )}
+              {canManageAdmin && <CompanyGmailAccounts companyId={c.id} />}
             </Card>
           ))}
           {realCompanies.length === 0 && (
@@ -1068,6 +1108,125 @@ function WhapiQrModal({ open, companyId, onClose }: { open: boolean; companyId: 
         </Button>
       </div>
     </Modal>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Google Workspace / Gmail onboarding — per-company mailbox connections, the
+// email equivalent of CompanyWhapiStatus above. Unlike Whapi (one channel per
+// company), a company can connect SEVERAL mailboxes at once (see db/schema.ts's
+// company_email_accounts comment) — this renders a list, not a single status.
+// -----------------------------------------------------------------------------
+
+const GMAIL_STATUS_TONE: Record<string, "green" | "amber" | "red" | "gray"> = {
+  ACTIVE: "green",
+  PENDING: "amber",
+  NEEDS_REAUTH: "red",
+  FAILED: "red",
+  DISCONNECTED: "gray",
+};
+
+function CompanyGmailAccounts({ companyId }: { companyId: string }) {
+  const { t } = useLanguage();
+  const [accounts, setAccounts] = useState<GoogleEmailAccountRow[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | undefined>();
+
+  async function refresh() {
+    const result = await getGoogleEmailAccountsForCompanyAction(companyId);
+    // DISCONNECTED accounts are kept in the database for conversation
+    // history (see db/schema.ts), but have nothing actionable left to show
+    // here — a disconnected mailbox can always just be reconnected fresh via
+    // "Connect Gmail" again, which creates a new row rather than reviving
+    // the old one, so the old row would only ever clutter this list.
+    setAccounts(result.accounts.filter((a) => a.status !== "DISCONNECTED"));
+    setLoaded(true);
+  }
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch once per company card mount, same convention as CompanyWhapiStatus
+  }, [companyId]);
+
+  async function handleConnect() {
+    setConnecting(true);
+    setError(undefined);
+    const result = await getGoogleAuthorizationUrlAction(companyId);
+    if (result.error || !result.url) {
+      setConnecting(false);
+      setError(result.error ?? t("Could not start the connection.", "No se pudo iniciar la conexión."));
+      return;
+    }
+    // A full top-level navigation, not a fetch — this is a real OAuth
+    // redirect to accounts.google.com, which an in-app request can't
+    // represent; the user returns to /configuracion via the server-side
+    // callback route's own redirect once consent completes.
+    window.location.href = result.url;
+  }
+
+  async function handleDisconnect(accountId: string) {
+    setDisconnectingId(accountId);
+    setError(undefined);
+    const result = await disconnectGoogleEmailAccountAction(accountId);
+    setDisconnectingId(null);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    await refresh();
+  }
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-semibold tracking-wide text-text-tertiary">GMAIL / GOOGLE WORKSPACE</p>
+        <Button type="button" size="sm" variant="outline" disabled={connecting} onClick={handleConnect}>
+          <Mail className="h-3.5 w-3.5" />
+          {connecting
+            ? t("Connecting...", "Conectando...")
+            : accounts.length > 0
+              ? t("Connect another Gmail account", "Conectar otra cuenta de Gmail")
+              : t("Connect Gmail", "Conectar Gmail")}
+        </Button>
+      </div>
+
+      {loaded && accounts.length === 0 && (
+        <p className="text-[12px] text-text-tertiary">{t("No mailboxes connected yet.", "Aún no hay buzones conectados.")}</p>
+      )}
+
+      {accounts.map((a) => (
+        <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg bg-surface-muted/60 px-2.5 py-1.5">
+          <div className="min-w-0">
+            <p className="truncate text-[12.5px] font-medium text-text-primary">{a.displayName || a.emailAddress}</p>
+            {a.displayName && <p className="truncate text-[11px] text-text-tertiary">{a.emailAddress}</p>}
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Badge tone={GMAIL_STATUS_TONE[a.status] ?? "gray"}>
+              {a.status === "ACTIVE"
+                ? t("Connected", "Conectado")
+                : a.status === "NEEDS_REAUTH"
+                  ? t("Needs reconnect", "Requiere reconexión")
+                  : a.status === "PENDING"
+                    ? t("Pending", "Pendiente")
+                    : a.status}
+            </Badge>
+            <button
+              type="button"
+              disabled={disconnectingId === a.id}
+              onClick={() => handleDisconnect(a.id)}
+              title={t("Disconnect", "Desconectar")}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-text-tertiary hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+            >
+              <Unlink className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {error && <p className="text-[12px] text-danger">{error}</p>}
+    </div>
   );
 }
 

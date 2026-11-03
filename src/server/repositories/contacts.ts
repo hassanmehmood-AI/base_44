@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, notExists, exists, or } from "drizzle-orm";
+import { and, desc, eq, inArray, notExists, exists, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { contacts, companies, pipelineStages, users, campaignContacts, campaigns, managerAgentAssignments } from "@/db/schema";
 
@@ -271,6 +271,22 @@ export async function findById(id: string): Promise<ContactWithJoins | undefined
 
 /** Plain (unjoined) row — used internally to check a contact's companyId
  * before authorizing a write, without paying for the full join. */
+/** Case/whitespace-insensitive match scoped to one company — contact emails
+ * aren't stored normalized (see findEmailsAndPhonesByCompanyId's doc comment
+ * just above), so this compares via SQL lower(trim(...)) rather than an
+ * exact eq() that would silently miss equivalent values. Used by
+ * gmailSync.ts to resolve which (if any) CRM contact an inbound email's
+ * sender address matches — scoped to the receiving mailbox's own company,
+ * never across companies. */
+export async function findByEmail(companyId: string, email: string): Promise<Contact | undefined> {
+  const [row] = await getDb()
+    .select()
+    .from(contacts)
+    .where(and(eq(contacts.companyId, companyId), sql`lower(trim(${contacts.email})) = lower(trim(${email}))`))
+    .limit(1);
+  return row;
+}
+
 export async function findCompanyIdById(id: string): Promise<string | undefined> {
   const [row] = await getDb().select({ companyId: contacts.companyId }).from(contacts).where(eq(contacts.id, id)).limit(1);
   return row?.companyId;

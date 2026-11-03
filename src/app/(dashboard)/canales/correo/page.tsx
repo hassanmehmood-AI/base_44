@@ -3,24 +3,27 @@ import * as emailService from "@/server/services/email";
 import { CorreoClient } from "./CorreoClient";
 
 export default async function CorreoPage() {
-  const [contacts, senderStatus] = await Promise.all([
+  const [contacts, senderStatus, unassignedConversations] = await Promise.all([
     contactsService.listContactsForCurrentUser(),
     emailService.getEmailSenderStatus(),
+    emailService.listUnassignedEmailConversations(),
   ]);
   const queue = contacts.filter((c) => c.email);
   const initialSelectedId = queue[0]?.id ?? null;
 
   const initialDetail = initialSelectedId
     ? await emailService.getConversationForContact(initialSelectedId)
-    : { conversation: null, messages: [] };
+    : { conversation: null, messages: [], senderStatus };
 
   return (
     <CorreoClient
       queue={queue}
+      allContacts={contacts}
       initialSelectedId={initialSelectedId}
       initialConversation={initialDetail.conversation}
       initialMessages={initialDetail.messages}
-      senderStatus={senderStatus}
+      senderStatus={initialDetail.senderStatus}
+      initialUnassignedConversations={unassignedConversations}
     />
   );
 }
