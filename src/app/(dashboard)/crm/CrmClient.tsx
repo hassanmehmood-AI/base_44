@@ -24,10 +24,6 @@ import {
   ChevronLeft,
   ChevronRight,
   RotateCcw,
-  CalendarClock,
-  ChevronDown,
-  ChevronUp,
-  Bell,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardTitle } from "@/components/ui/Card";
@@ -55,7 +51,6 @@ import type { PipelineStage } from "@/server/repositories/pipelineStages";
 import type { ActivityWithAuthor } from "@/server/repositories/activities";
 import type { UserWithRole } from "@/server/repositories/users";
 import type { TaskWithAssignee } from "@/server/repositories/tasks";
-import type { ContactFollowUp } from "@/server/services/contacts";
 import {
   createContactAction,
   updateContactAction,
@@ -63,11 +58,7 @@ import {
   addNoteAction,
   moveContactStageAction,
   reopenContactAction,
-  getFollowUpsAction,
-  completeFollowUpAction,
-  rescheduleFollowUpAction,
   assignContactAction,
-  type ActionResult,
   getContactActivitiesAction,
   getAssignableUsersAction,
   getContactTasksAction,
@@ -144,7 +135,6 @@ export function CrmClient({
   deepLinkContactId,
   deepLinkResolved,
   isManager,
-  initialFollowUps,
 }: {
   contacts: ContactWithJoins[];
   stages: PipelineStage[];
@@ -166,13 +156,6 @@ export function CrmClient({
    * Center Manager's "Assign agent"/"Responsable" dropdowns disable Offline
    * team members; Director/Superuser keep the full, unrestricted list. */
   isManager: boolean;
-  /** Step 4: every contact (already role-scoped — Agent/Manager/else, same
-   * as `contacts` above) with a scheduled follow-up, bucketed overdue/today/
-   * upcoming. Server-rendered on first load; refetched in full after any
-   * complete/reschedule (see handleFollowUpsChanged) rather than patched
-   * locally, same "something changed, refetch the authoritative list"
-   * pattern already used by Correo/WhatsApp/Social's realtime layers. */
-  initialFollowUps: ContactFollowUp[];
 }) {
   const { t, language } = useLanguage();
   const { activeCompany } = useCompany();
@@ -199,48 +182,7 @@ export function CrmClient({
   const [importOpen, setImportOpen] = useState(false);
   const [view, setView] = useState<"list" | "board">("list");
   const [reopening, setReopening] = useState(false);
-  const [followUps, setFollowUps] = useState<ContactFollowUp[]>(initialFollowUps);
-  const [followUpsExpanded, setFollowUpsExpanded] = useState(false);
-  const [completingFollowUpId, setCompletingFollowUpId] = useState<string | null>(null);
-  const [reschedulingContact, setReschedulingContact] = useState<ContactFollowUp | null>(null);
   const [, startTransition] = useTransition();
-
-  // Re-fetches the authoritative, already role-scoped follow-up list —
-  // same "something changed, refetch" idiom this app's realtime layers
-  // already use, rather than patching bucket/date math in on the client.
-  async function refreshFollowUps() {
-    const result = await getFollowUpsAction();
-    setFollowUps(result.followUps);
-  }
-
-  async function handleCompleteFollowUp(contactId: string) {
-    setCompletingFollowUpId(contactId);
-    const result = await completeFollowUpAction(contactId);
-    setCompletingFollowUpId(null);
-    if (result.ok) {
-      if (result.activity && selected?.id === contactId) {
-        startTransition(() => setActivities((prev) => [result.activity!, ...prev]));
-      }
-      await refreshFollowUps();
-      router.refresh();
-    }
-  }
-
-  async function handleRescheduleFollowUp(
-    contactId: string,
-    input: { followUpAt: string; nextAction: string }
-  ): Promise<ActionResult & { activity?: ActivityWithAuthor }> {
-    const result = await rescheduleFollowUpAction(contactId, input);
-    if (result.ok) {
-      setReschedulingContact(null);
-      if (result.activity && selected?.id === contactId) {
-        startTransition(() => setActivities((prev) => [result.activity!, ...prev]));
-      }
-      await refreshFollowUps();
-      router.refresh();
-    }
-    return result;
-  }
 
   const stageLabels = language === "es" ? STAGE_LABEL_ES : STAGE_LABEL;
 
@@ -493,19 +435,6 @@ export function CrmClient({
           </button>
         </div>
       </div>
-
-      <FollowUpsWidget
-        followUps={followUps}
-        expanded={followUpsExpanded}
-        onToggleExpanded={() => setFollowUpsExpanded((v) => !v)}
-        completingId={completingFollowUpId}
-        onSelect={(id) => {
-          selectContact(id);
-          setView("list");
-        }}
-        onComplete={handleCompleteFollowUp}
-        onReschedule={setReschedulingContact}
-      />
 
       {view === "board" && (
         <PipelineBoard
@@ -803,19 +732,6 @@ export function CrmClient({
           submitLabel={t("Create contact", "Crear contacto")}
         />
       </Modal>
-
-      {reschedulingContact && (
-        <Modal
-          open={!!reschedulingContact}
-          onClose={() => setReschedulingContact(null)}
-          title={t("Reschedule follow-up", "Reprogramar seguimiento")}
-        >
-          <RescheduleFollowUpForm
-            contact={reschedulingContact}
-            onSubmit={(input) => handleRescheduleFollowUp(reschedulingContact.id, input)}
-          />
-        </Modal>
-      )}
 
       {selected && (
         <Modal open={editOpen} onClose={() => setEditOpen(false)} title={t("Edit contact", "Editar contacto")}>
@@ -1127,170 +1043,6 @@ function TaskList({ tasks, onCompleted }: { tasks: TaskWithAssignee[]; onComplet
   );
 }
 
-const FOLLOW_UP_BUCKET_TONE: Record<ContactFollowUp["followUpBucket"], "red" | "amber" | "blue"> = {
-  OVERDUE: "red",
-  TODAY: "amber",
-  UPCOMING: "blue",
-};
-
-const FOLLOW_UP_BUCKET_LABEL: Record<ContactFollowUp["followUpBucket"], { en: string; es: string }> = {
-  OVERDUE: { en: "Overdue", es: "Vencido" },
-  TODAY: { en: "Today", es: "Hoy" },
-  UPCOMING: { en: "Upcoming", es: "Próximo" },
-};
-
-const FOLLOW_UPS_COLLAPSED_LIMIT = 5;
-
-/** Lead management workflow Step 4: the agent's/manager's "what needs
- * attention" dashboard widget — every contact with a follow-up due, overdue
- * ones sorting first (see contactsService.listFollowUpsForCurrentUser),
- * with one-click Complete/Reschedule right here instead of requiring a
- * detour through the Classify panel. Sits above both the List and Board
- * views (not inside either), so it's visible regardless of which one the
- * user is currently on — the literal "in the agent's existing dashboard"
- * requirement, not a separate page. Renders nothing when there's nothing
- * due, same as TaskList's own empty-state convention. */
-function FollowUpsWidget({
-  followUps,
-  expanded,
-  onToggleExpanded,
-  completingId,
-  onSelect,
-  onComplete,
-  onReschedule,
-}: {
-  followUps: ContactFollowUp[];
-  expanded: boolean;
-  onToggleExpanded: () => void;
-  completingId: string | null;
-  onSelect: (id: string) => void;
-  onComplete: (id: string) => void;
-  onReschedule: (contact: ContactFollowUp) => void;
-}) {
-  const { t, language } = useLanguage();
-  if (followUps.length === 0) return null;
-
-  const overdueCount = followUps.filter((f) => f.followUpBucket === "OVERDUE").length;
-  const todayCount = followUps.filter((f) => f.followUpBucket === "TODAY").length;
-  const visible = expanded ? followUps : followUps.slice(0, FOLLOW_UPS_COLLAPSED_LIMIT);
-  const hiddenCount = followUps.length - visible.length;
-
-  return (
-    <Card className="flex flex-col gap-3 p-5">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2 text-[14px] font-semibold text-text-primary">
-          <Bell className="h-4 w-4 text-brand" /> {t("Follow-ups", "Seguimientos")}
-        </div>
-        {overdueCount > 0 && <Badge tone="red">{t(`${overdueCount} overdue`, `${overdueCount} vencidos`)}</Badge>}
-        {todayCount > 0 && <Badge tone="amber">{t(`${todayCount} due today`, `${todayCount} vencen hoy`)}</Badge>}
-      </div>
-
-      <div className="flex flex-col gap-2">
-        {visible.map((f) => (
-          <div key={f.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-border p-3">
-            <button
-              onClick={() => onComplete(f.id)}
-              disabled={completingId === f.id}
-              aria-label={t("Mark follow-up complete", "Marcar seguimiento como completado")}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border text-text-tertiary hover:border-brand hover:text-brand disabled:opacity-40"
-            >
-              <CheckCircle2 className="h-4 w-4" />
-            </button>
-            <button onClick={() => onSelect(f.id)} className="min-w-0 flex-1 text-left">
-              <p className="truncate text-[13.5px] font-medium text-text-primary">{f.name}</p>
-              <p className="truncate text-[12px] text-text-secondary">
-                {f.companyName}
-                {f.nextAction ? ` · ${f.nextAction}` : ""}
-              </p>
-            </button>
-            <span className="shrink-0 text-[12px] text-text-tertiary" suppressHydrationWarning>
-              {formatDateTime(f.followUpAt, language)}
-            </span>
-            <Badge tone={FOLLOW_UP_BUCKET_TONE[f.followUpBucket]}>
-              {language === "es" ? FOLLOW_UP_BUCKET_LABEL[f.followUpBucket].es : FOLLOW_UP_BUCKET_LABEL[f.followUpBucket].en}
-            </Badge>
-            <button
-              onClick={() => onReschedule(f)}
-              aria-label={t("Reschedule follow-up", "Reprogramar seguimiento")}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary hover:bg-surface-muted hover:text-text-primary"
-            >
-              <CalendarClock className="h-4 w-4" />
-            </button>
-          </div>
-        ))}
-      </div>
-
-      {followUps.length > FOLLOW_UPS_COLLAPSED_LIMIT && (
-        <button
-          onClick={onToggleExpanded}
-          className="flex w-fit items-center gap-1 text-[12.5px] font-medium text-text-secondary hover:text-text-primary"
-        >
-          {expanded ? (
-            <>
-              <ChevronUp className="h-3.5 w-3.5" /> {t("Show less", "Mostrar menos")}
-            </>
-          ) : (
-            <>
-              <ChevronDown className="h-3.5 w-3.5" /> {t(`Show ${hiddenCount} more`, `Mostrar ${hiddenCount} más`)}
-            </>
-          )}
-        </button>
-      )}
-    </Card>
-  );
-}
-
-function RescheduleFollowUpForm({
-  contact,
-  onSubmit,
-}: {
-  contact: ContactFollowUp;
-  onSubmit: (input: { followUpAt: string; nextAction: string }) => Promise<ActionResult>;
-}) {
-  const { t } = useLanguage();
-  // Pre-filled from the current value (datetime-local wants "YYYY-MM-DDTHH:mm",
-  // not a full ISO string) so rescheduling starts from where it already is,
-  // not blank.
-  const toLocalInputValue = (d: Date) => {
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
-  const [followUpAt, setFollowUpAt] = useState(toLocalInputValue(contact.followUpAt));
-  const [nextAction, setNextAction] = useState(contact.nextAction ?? "");
-  const [error, setError] = useState<string | undefined>();
-  const [saving, setSaving] = useState(false);
-
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setSaving(true);
-    setError(undefined);
-    const result = await onSubmit({ followUpAt, nextAction });
-    setSaving(false);
-    if (result.error) setError(result.error);
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-      <p className="text-[13.5px] text-text-secondary">{contact.name}</p>
-      <Field label={t("NEW FOLLOW-UP DATE", "NUEVA FECHA DE SEGUIMIENTO")}>
-        <input
-          type="datetime-local"
-          required
-          value={followUpAt}
-          onChange={(e) => setFollowUpAt(e.target.value)}
-          className="h-10 w-full rounded-lg border border-border bg-white px-3.5 text-[14px] text-text-primary outline-none focus:border-brand focus:ring-2 focus:ring-brand/15"
-        />
-      </Field>
-      <Field label={t("NEXT ACTION", "PRÓXIMA ACCIÓN")}>
-        <Input value={nextAction} onChange={(e) => setNextAction(e.target.value)} placeholder={t("e.g. Send quote", "ej. Enviar presupuesto")} />
-      </Field>
-      {error && <p className="text-[13px] text-danger">{error}</p>}
-      <Button type="submit" disabled={saving} className="mt-1 w-full">
-        {saving ? t("Saving...", "Guardando...") : t("Reschedule", "Reprogramar")}
-      </Button>
-    </form>
-  );
-}
 
 function TaskForm({
   users,

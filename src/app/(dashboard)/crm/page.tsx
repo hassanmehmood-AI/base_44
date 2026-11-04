@@ -14,14 +14,13 @@ export default async function CrmPage({
   // contact instead of the CRM's own default (first-in-list) selection.
   searchParams: Promise<{ contact?: string }>;
 }) {
-  const [{ contact: deepLinkContactId }, contacts, stages, companies, campaigns, session, followUps] = await Promise.all([
+  const [{ contact: deepLinkContactId }, contacts, stages, companies, campaigns, session] = await Promise.all([
     searchParams,
     contactsService.listContactsForCurrentUser(),
     getActiveDefaultPipelineStages(),
     getAllowedCompaniesForCurrentUser(),
     campaignsService.listCampaignsForCurrentUser(),
     auth(),
-    contactsService.listFollowUpsForCurrentUser(),
   ]);
   // Agent Online-only lead assignment: only a Call Center Manager's
   // assignment dropdowns restrict to Online team members — matches the
@@ -53,7 +52,6 @@ export default async function CrmPage({
       deepLinkContactId={deepLinkContactId ?? null}
       deepLinkResolved={deepLinkResolved}
       isManager={isManager}
-      initialFollowUps={followUps}
     />
   );
 }
