@@ -51,12 +51,28 @@ export async function createContactAndLinkEmailConversationAction(
   }
 }
 
-export async function sendEmailAction(input: { contactId: string; subject: string; body: string }): Promise<ActionResult> {
+/** attachments arrive as real File objects — Next.js Server Actions
+ * support passing File directly as an argument (not just via a <form>
+ * submission), so the composer can call this straight from its onClick
+ * handler with whatever the user picked. Converted to plain bytes here,
+ * at the request boundary, before anything server-side needs to reason
+ * about them — the service layer (sendEmailToContact) only ever deals in
+ * {filename, mimeType, bytes}, never a browser-specific File type. */
+export async function sendEmailAction(
+  input: { contactId: string; subject: string; bodyText: string; bodyHtml?: string | null; attachments?: File[] }
+): Promise<ActionResult> {
   if (!input.subject.trim()) return { error: "Subject is required." };
-  if (!input.body.trim()) return { error: "Message body can't be empty." };
+  if (!input.bodyText.trim()) return { error: "Message body can't be empty." };
 
   try {
-    await emailService.sendEmailToContact(input);
+    const attachments = await Promise.all(
+      (input.attachments ?? []).map(async (file) => ({
+        filename: file.name,
+        mimeType: file.type || "application/octet-stream",
+        bytes: new Uint8Array(await file.arrayBuffer()),
+      }))
+    );
+    await emailService.sendEmailToContact({ ...input, attachments });
   } catch (e) {
     if (e instanceof ProviderNotConfiguredError) return { error: e.message };
     if (e instanceof UnauthorizedError) return { error: "You don't have access to that contact." };

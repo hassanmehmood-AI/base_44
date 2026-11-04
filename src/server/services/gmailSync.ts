@@ -10,6 +10,10 @@ import * as googleProvider from "@/server/integrations/google";
 import { GoogleApiError } from "@/server/integrations/google";
 import { ProviderNotConfiguredError } from "@/server/integrations/errors";
 import { getValidAccessToken } from "@/server/services/emailOnboarding";
+import { sanitizeEmailHtml } from "@/lib/emailHtml";
+import { validateAttachment } from "@/lib/emailAttachments";
+import * as attachmentStorage from "@/server/integrations/emailAttachmentStorage";
+import type { StoredEmailAttachment } from "@/lib/emailAttachments";
 
 const CHANNEL = "EMAIL";
 
@@ -358,6 +362,47 @@ async function resolveConversation(
   return { conversationId: created.id, contactId: null };
 }
 
+/** Downloads and permanently stores every attachment on a message that
+ * passes validation — best-effort, mirroring avatarCapture.ts's own
+ * philosophy: a storage failure or a rejected attachment (wrong type, too
+ * large) is logged and that ONE attachment is skipped, never allowed to
+ * fail the message itself (the message's text/HTML content still matters
+ * even if one attachment can't be kept). Returns [] immediately, with no
+ * API calls at all, when storage isn't configured — attachments metadata
+ * (filename/size seen in Gmail) still isn't lost in that case, it's simply
+ * never downloaded; see gmailSync.ts's module-level behavior: the message
+ * itself is still stored normally either way. */
+async function downloadAndStoreAttachments(
+  account: CompanyEmailAccount,
+  accessToken: string,
+  message: googleProvider.GmailMessage
+): Promise<StoredEmailAttachment[]> {
+  if (message.attachments.length === 0) return [];
+  if (!attachmentStorage.isAttachmentStorageConfigured()) {
+    console.warn(`[gmail sync] message ${message.id} has ${message.attachments.length} attachment(s) but attachment storage isn't configured — skipping.`);
+    return [];
+  }
+
+  const stored: StoredEmailAttachment[] = [];
+  for (const [index, meta] of message.attachments.entries()) {
+    const validationError = validateAttachment(meta.mimeType, meta.size);
+    if (validationError) {
+      console.warn(`[gmail sync] skipping attachment "${meta.filename}" on message ${message.id}: ${validationError}`);
+      continue;
+    }
+
+    try {
+      const { bytes } = await googleProvider.getAttachment(accessToken, message.id, meta.attachmentId);
+      const key = attachmentStorage.buildAttachmentKey(account.companyId, message.id, index, meta.filename);
+      await attachmentStorage.putAttachment(key, bytes, meta.mimeType);
+      stored.push({ filename: meta.filename, mimeType: meta.mimeType, size: meta.size, key });
+    } catch (e) {
+      console.error(`[gmail sync] failed to download/store attachment "${meta.filename}" on message ${message.id}:`, e instanceof Error ? e.message : e);
+    }
+  }
+  return stored;
+}
+
 async function processOneMessage(account: CompanyEmailAccount, accessToken: string, messageId: string): Promise<void> {
   let message: googleProvider.GmailMessage;
   try {
@@ -381,17 +426,25 @@ async function processOneMessage(account: CompanyEmailAccount, accessToken: stri
   const alreadyStored = existing.some((m) => (m.metadata as { externalId?: string } | null)?.externalId === message.id);
   if (alreadyStored) return; // e.g. the echo of a message this CRM already sent via sendFromAccount
 
+  // message.bodyHtml is raw/unsanitized (see integrations/google.ts's doc
+  // comment on GmailMessage.bodyHtml) — sanitized here, once, before it is
+  // ever stored, so every reader (the inbound renderer, a future export,
+  // anything else) only ever sees the safe version. messages.body (plain
+  // text) is untouched by any of this, same as before HTML support existed.
+  const safeHtml = message.bodyHtml ? sanitizeEmailHtml(message.bodyHtml) : null;
+  const attachments = await downloadAndStoreAttachments(account, accessToken, message);
+
+  const metadata: Record<string, unknown> = { externalId: message.id };
+  if (direction === "INBOUND" && message.from.email) metadata.senderEmail = message.from.email;
+  if (safeHtml) metadata.bodyHtml = safeHtml;
+  if (attachments.length > 0) metadata.attachments = attachments;
+
   await messagesRepo.create({
     conversationId,
     direction,
     senderLabel: resolveSenderLabel(message.from),
     body: message.body,
-    // senderEmail is kept even when a contact was already matched (cheap,
-    // and harmless) — it's what lets createContactAndLinkConversation
-    // (services/email.ts) prefill a new contact's email address when an
-    // Unassigned conversation is later linked by creating a brand-new
-    // contact rather than picking an existing one.
-    metadata: direction === "INBOUND" ? { externalId: message.id, senderEmail: message.from.email } : { externalId: message.id },
+    metadata,
     sentAt: message.internalDate,
   });
   await conversationsRepo.updateLastMessageAt(conversationId, message.internalDate);

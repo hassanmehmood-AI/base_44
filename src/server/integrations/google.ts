@@ -169,11 +169,92 @@ export async function getProfile(accessToken: string): Promise<{ emailAddress: s
  * attachments) — matches this app's existing Resend-based sendEmail
  * exactly in shape (to/subject/body), so services/email.ts's call sites
  * don't need to change when this provider is wired in. */
-function buildRawMessage(input: { to: string; subject: string; body: string }): string {
-  const message = [`To: ${input.to}`, `Subject: ${input.subject}`, "Content-Type: text/plain; charset=utf-8", "", input.body].join(
-    "\r\n"
-  );
-  return Buffer.from(message).toString("base64url");
+export type OutboundAttachment = { filename: string; mimeType: string; bytes: Uint8Array };
+
+function uniqueBoundary(label: string): string {
+  return `growthon_${label}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
+/** Just the body part(s) — plain-only, or multipart/alternative when HTML
+ * is present — identical to this module's pre-attachment-support shape.
+ * Factored out so buildRawMessage can nest it unchanged inside a
+ * multipart/mixed envelope when attachments are present, without
+ * duplicating the text/html-part logic. */
+function buildBodyMime(input: { bodyText: string; bodyHtml?: string | null }): string {
+  if (!input.bodyHtml) {
+    return `Content-Type: text/plain; charset=utf-8\r\n\r\n${input.bodyText}`;
+  }
+  const boundary = uniqueBoundary("alt");
+  return [
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    input.bodyText,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    input.bodyHtml,
+    "",
+    `--${boundary}--`,
+  ].join("\r\n");
+}
+
+/** bodyHtml, when provided, must already be sanitized by the caller (see
+ * lib/emailHtml.ts) — this function has no opinion on sanitization, it
+ * only assembles MIME. attachments bytes must already be
+ * validated/size-checked by the caller (see lib/emailAttachments.ts) —
+ * same division of responsibility. With no attachments, output is
+ * byte-identical to this function's pre-attachment-support behavior
+ * (plain text/plain, or multipart/alternative when bodyHtml is set) —
+ * every existing caller keeps working completely unchanged. */
+function buildRawMessage(input: {
+  to: string;
+  subject: string;
+  bodyText: string;
+  bodyHtml?: string | null;
+  attachments?: OutboundAttachment[];
+}): string {
+  const attachments = input.attachments ?? [];
+
+  if (attachments.length === 0) {
+    const message = [`To: ${input.to}`, `Subject: ${input.subject}`, buildBodyMime(input)].join("\r\n");
+    return Buffer.from(message).toString("base64url");
+  }
+
+  const boundary = uniqueBoundary("mixed");
+  const lines = [
+    `To: ${input.to}`,
+    `Subject: ${input.subject}`,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    buildBodyMime(input),
+    "",
+  ];
+
+  for (const attachment of attachments) {
+    // Strip quotes from the filename so it can never break out of the
+    // quoted filename="..." header value — the stored copy (what the CRM
+    // actually serves back for download) keeps the real original name
+    // regardless; this only affects what the RECIPIENT's mail client sees
+    // as the suggested filename.
+    const safeFilename = attachment.filename.replace(/"/g, "");
+    lines.push(
+      `--${boundary}`,
+      `Content-Type: ${attachment.mimeType}; name="${safeFilename}"`,
+      `Content-Disposition: attachment; filename="${safeFilename}"`,
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from(attachment.bytes).toString("base64"),
+      ""
+    );
+  }
+  lines.push(`--${boundary}--`);
+
+  return Buffer.from(lines.join("\r\n")).toString("base64url");
 }
 
 /** Sends via Gmail's users.messages.send — the connected mailbox is the
@@ -182,7 +263,7 @@ function buildRawMessage(input: { to: string; subject: string; body: string }): 
  * there is no separate "from" parameter to get wrong). */
 export async function sendGmailMessage(
   accessToken: string,
-  input: { to: string; subject: string; body: string }
+  input: { to: string; subject: string; bodyText: string; bodyHtml?: string | null; attachments?: OutboundAttachment[] }
 ): Promise<{ externalId: string | null }> {
   const res = await fetch(`${GMAIL_API_BASE}/users/me/messages/send`, {
     method: "POST",
@@ -302,41 +383,112 @@ export type GmailMessage = {
    * header happens to list first. */
   to: { name: string | null; email: string | null };
   subject: string | null;
+  /** Always a usable plain-text rendering — derived from the real
+   * text/plain part when the message has one, else from bodyHtml below
+   * with tags stripped (same best-effort conversion as before HTML
+   * support existed). Every existing reader of a message's plain body
+   * (search, previews, messages.body in the DB) keeps working unchanged. */
   body: string;
+  /** Raw text/html part, completely UNSANITIZED — callers (gmailSync.ts)
+   * must run this through lib/emailHtml.ts's sanitizeEmailHtml before it
+   * is ever stored or rendered. null when the message has no HTML part
+   * (a plain-text-only email) — this is the normal, common case, not an
+   * error. Kept separate from extractBody's plain-text extraction so
+   * neither extraction mode is lossy: a plain-text email never
+   * synthesizes fake HTML, and an HTML email's formatting is never
+   * destroyed just because a plain-text rendering was also needed. */
+  bodyHtml: string | null;
+  attachments: GmailAttachmentMeta[];
+};
+
+/** A MIME part counts as an attachment when it has a filename AND its
+ * content lives behind attachmentId rather than being inlined as body.data
+ * — this matches how Gmail itself distinguishes "a file you attached" from
+ * "the message body" or "an inline image referenced by the body" (the
+ * latter also sometimes carries a filename but is excluded here by
+ * requiring attachmentId, same reasoning Gmail's own web client uses). No
+ * extra API call is needed just to know a message HAS attachments — this
+ * metadata is already present in the same format=full response getMessage
+ * already fetches; only downloading the bytes needs getAttachment below. */
+export type GmailAttachmentMeta = {
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
 };
 
 function decodeBase64Url(data: string): string {
   return Buffer.from(data, "base64url").toString("utf8");
 }
 
-type GmailMessagePart = { mimeType?: string; body?: { data?: string }; parts?: GmailMessagePart[] };
+type GmailMessagePart = {
+  mimeType?: string;
+  filename?: string;
+  body?: { data?: string; attachmentId?: string; size?: number };
+  parts?: GmailMessagePart[];
+};
 
-/** Breadth-first search for the best human-readable body: prefers the
- * first text/plain part; falls back to the first text/html part (tags
- * stripped, best-effort — this is for CRM display, not rendering) when no
- * plain-text part exists, which is common for marketing-style HTML-only
- * emails. */
-export function extractBody(payload: GmailMessagePart | undefined): string {
+/** Breadth-first search collecting the first text/plain part, the first
+ * text/html part, and every attachment part found anywhere in the MIME
+ * tree (most messages are multipart/alternative with both text parts;
+ * some are HTML-only or plain-only). Returns the raw decoded text/html —
+ * callers decide what to do with each; see extractBody (plain-text
+ * derivation, unchanged public behavior) and gmailSync.ts (HTML storage,
+ * sanitized before use; attachment download, size/type validated before
+ * use). */
+function extractParts(
+  payload: GmailMessagePart | undefined
+): { text: string | null; html: string | null; attachments: GmailAttachmentMeta[] } {
   const queue: GmailMessagePart[] = payload ? [payload] : [];
-  let htmlFallback: string | null = null;
+  let text: string | null = null;
+  let html: string | null = null;
+  const attachments: GmailAttachmentMeta[] = [];
 
   while (queue.length) {
     const part = queue.shift()!;
     const data = part.body?.data;
-    if (part.mimeType === "text/plain" && data) return decodeBase64Url(data);
-    if (part.mimeType === "text/html" && data && !htmlFallback) htmlFallback = decodeBase64Url(data);
+    if (part.mimeType === "text/plain" && data && !text) text = decodeBase64Url(data);
+    if (part.mimeType === "text/html" && data && !html) html = decodeBase64Url(data);
+    if (part.filename && part.body?.attachmentId) {
+      attachments.push({
+        attachmentId: part.body.attachmentId,
+        filename: part.filename,
+        mimeType: part.mimeType ?? "application/octet-stream",
+        size: part.body.size ?? 0,
+      });
+    }
     if (part.parts) queue.push(...part.parts);
   }
 
-  if (htmlFallback) {
-    return htmlFallback
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
+  return { text, html, attachments };
+}
+
+function stripHtmlToText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** The plain-text rendering of a message — prefers the real text/plain
+ * part; falls back to the text/html part with tags stripped (best-effort)
+ * when no plain-text part exists, which is common for marketing-style
+ * HTML-only emails. Unchanged behavior from before HTML support existed —
+ * see getMessage's bodyHtml field for the (separate, unsanitized) raw HTML. */
+export function extractBody(payload: GmailMessagePart | undefined): string {
+  const { text, html } = extractParts(payload);
+  if (text) return text;
+  if (html) return stripHtmlToText(html);
   return "";
+}
+
+/** Attachment metadata for one message — pure wrapper around extractParts
+ * so gmailSync.ts doesn't need to know about the MIME-tree-walking
+ * internals just to list what's attached. */
+export function extractAttachments(payload: GmailMessagePart | undefined): GmailAttachmentMeta[] {
+  return extractParts(payload).attachments;
 }
 
 /** Parses `"Name" <email@x.com>` / `email@x.com` header formats — Gmail's
@@ -379,6 +531,7 @@ export async function getMessage(accessToken: string, messageId: string): Promis
   if (!res.ok) throw new GoogleApiError(res.status, data.error?.message ?? res.statusText);
 
   const headers: Array<{ name: string; value: string }> = data.payload?.headers ?? [];
+  const { text, html, attachments } = extractParts(data.payload);
   return {
     id: data.id,
     threadId: data.threadId,
@@ -387,6 +540,28 @@ export async function getMessage(accessToken: string, messageId: string): Promis
     from: parseFromHeader(getHeader(headers, "From")),
     to: parseFirstAddress(getHeader(headers, "To")),
     subject: getHeader(headers, "Subject") ?? null,
-    body: extractBody(data.payload),
+    body: text ?? (html ? stripHtmlToText(html) : ""),
+    bodyHtml: html,
+    attachments,
   };
+}
+
+/** Downloads one attachment's raw bytes — a separate call from getMessage
+ * on purpose: Gmail's format=full response already includes every
+ * attachment's filename/mimeType/size for free (see extractParts), but
+ * never the bytes themselves, so this is only called for attachments that
+ * actually pass gmailSync.ts's size/type validation, never speculatively
+ * for every attachment on every message. Covered by the existing
+ * gmail.readonly scope — no new OAuth consent/scope needed for this. */
+export async function getAttachment(
+  accessToken: string,
+  messageId: string,
+  attachmentId: string
+): Promise<{ bytes: Uint8Array; size: number }> {
+  const res = await fetch(`${GMAIL_API_BASE}/users/me/messages/${messageId}/attachments/${attachmentId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new GoogleApiError(res.status, data.error?.message ?? res.statusText);
+  return { bytes: Buffer.from(data.data, "base64url"), size: data.size ?? 0 };
 }

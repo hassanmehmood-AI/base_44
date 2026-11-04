@@ -2,14 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   extractBody,
+  extractAttachments,
   parseFromHeader,
   parseFirstAddress,
   buildAuthorizationUrl,
   watchMailbox,
   listHistory,
   getMessage,
+  getAttachment,
   getProfile,
   isGmailPubSubConfigured,
+  sendGmailMessage,
   GoogleApiError,
 } from "./google";
 
@@ -217,6 +220,62 @@ test("getMessage: maps headers/body/labels into the GmailMessage shape", async (
     assert.deepEqual(message.to, { name: "Support", email: "support@example.com" });
     assert.equal(message.subject, "Hello there");
     assert.equal(message.body, "Message body");
+    assert.equal(message.bodyHtml, null);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("getMessage: a multipart message with both text/plain and text/html parts exposes both — body stays plain text, bodyHtml carries the raw (unsanitized) HTML", async () => {
+  const mock = mockFetchSequence([
+    {
+      status: 200,
+      body: {
+        id: "msg-2",
+        threadId: "thread-2",
+        labelIds: ["INBOX"],
+        internalDate: "1700000000000",
+        payload: {
+          headers: [{ name: "From", value: "jane@example.com" }],
+          mimeType: "multipart/alternative",
+          parts: [
+            { mimeType: "text/plain", body: { data: Buffer.from("Plain version").toString("base64url") } },
+            { mimeType: "text/html", body: { data: Buffer.from("<p>HTML <b>version</b></p>").toString("base64url") } },
+          ],
+        },
+      },
+    },
+  ]);
+  try {
+    const message = await getMessage("access-token", "msg-2");
+    assert.equal(message.body, "Plain version");
+    assert.equal(message.bodyHtml, "<p>HTML <b>version</b></p>");
+  } finally {
+    mock.restore();
+  }
+});
+
+test("getMessage: an HTML-only message derives body (plain text, tags stripped) AND keeps the original bodyHtml intact", async () => {
+  const mock = mockFetchSequence([
+    {
+      status: 200,
+      body: {
+        id: "msg-3",
+        threadId: "thread-3",
+        labelIds: ["INBOX"],
+        internalDate: "1700000000000",
+        payload: {
+          headers: [{ name: "From", value: "jane@example.com" }],
+          mimeType: "text/html",
+          body: { data: Buffer.from("<p>Only <i>HTML</i> here</p>").toString("base64url") },
+        },
+      },
+    },
+  ]);
+  try {
+    const message = await getMessage("access-token", "msg-3");
+    assert.equal(message.body, "Only HTML here");
+    assert.equal(message.bodyHtml, "<p>Only <i>HTML</i> here</p>");
   } finally {
     mock.restore();
   }
@@ -256,6 +315,217 @@ test("getProfile: a Google API error throws GoogleApiError", async () => {
   const mock = mockFetchSequence([{ status: 401, body: { error: { message: "Invalid credentials" } } }]);
   try {
     await assert.rejects(() => getProfile("access-token"), GoogleApiError);
+  } finally {
+    mock.restore();
+  }
+});
+
+// sendGmailMessage / the MIME message it builds — decodes the base64url
+// "raw" field sent to Gmail's API to verify the actual MIME structure,
+// not just that a request was made.
+
+function decodeSentRawMessage(mock: ReturnType<typeof mockFetchSequence>): string {
+  const sentBody = JSON.parse(mock.calls[0].init!.body as string);
+  return Buffer.from(sentBody.raw, "base64url").toString("utf8");
+}
+
+test("sendGmailMessage: with no bodyHtml, sends a plain text/plain message — unchanged from before HTML support existed", async () => {
+  const mock = mockFetchSequence([{ status: 200, body: { id: "sent-1" } }]);
+  try {
+    const result = await sendGmailMessage("access-token", { to: "jane@example.com", subject: "Hi", bodyText: "Hello there" });
+    assert.equal(result.externalId, "sent-1");
+    const raw = decodeSentRawMessage(mock);
+    assert.match(raw, /Content-Type: text\/plain; charset=utf-8/);
+    assert.ok(!raw.includes("multipart/alternative"));
+    assert.ok(raw.includes("Hello there"));
+  } finally {
+    mock.restore();
+  }
+});
+
+test("sendGmailMessage: with bodyHtml, sends a multipart/alternative message containing both the plain-text and HTML parts", async () => {
+  const mock = mockFetchSequence([{ status: 200, body: { id: "sent-2" } }]);
+  try {
+    await sendGmailMessage("access-token", {
+      to: "jane@example.com",
+      subject: "Hi",
+      bodyText: "Hello there",
+      bodyHtml: "<p>Hello <b>there</b></p>",
+    });
+    const raw = decodeSentRawMessage(mock);
+    assert.match(raw, /Content-Type: multipart\/alternative; boundary="/);
+    assert.match(raw, /Content-Type: text\/plain; charset=utf-8/);
+    assert.match(raw, /Content-Type: text\/html; charset=utf-8/);
+    assert.ok(raw.includes("Hello there"));
+    assert.ok(raw.includes("<p>Hello <b>there</b></p>"));
+  } finally {
+    mock.restore();
+  }
+});
+
+test("sendGmailMessage: a Google API error (e.g. revoked token) throws GoogleApiError", async () => {
+  const mock = mockFetchSequence([{ status: 401, body: { error: { message: "Invalid credentials" } } }]);
+  try {
+    await assert.rejects(
+      () => sendGmailMessage("access-token", { to: "jane@example.com", subject: "Hi", bodyText: "Hello" }),
+      GoogleApiError
+    );
+  } finally {
+    mock.restore();
+  }
+});
+
+test("sendGmailMessage: with attachments, sends a multipart/mixed message containing the body part AND each attachment as a base64 part with Content-Disposition: attachment", async () => {
+  const mock = mockFetchSequence([{ status: 200, body: { id: "sent-3" } }]);
+  try {
+    await sendGmailMessage("access-token", {
+      to: "jane@example.com",
+      subject: "Invoice attached",
+      bodyText: "See attached",
+      attachments: [{ filename: "invoice.pdf", mimeType: "application/pdf", bytes: Buffer.from("fake pdf bytes") }],
+    });
+    const raw = decodeSentRawMessage(mock);
+    assert.match(raw, /Content-Type: multipart\/mixed; boundary="/);
+    assert.match(raw, /Content-Disposition: attachment; filename="invoice.pdf"/);
+    assert.match(raw, /Content-Type: application\/pdf; name="invoice.pdf"/);
+    assert.match(raw, /Content-Transfer-Encoding: base64/);
+    assert.ok(raw.includes(Buffer.from("fake pdf bytes").toString("base64")));
+    assert.ok(raw.includes("See attached"));
+  } finally {
+    mock.restore();
+  }
+});
+
+test("sendGmailMessage: with bodyHtml AND attachments, nests multipart/alternative inside multipart/mixed correctly", async () => {
+  const mock = mockFetchSequence([{ status: 200, body: { id: "sent-4" } }]);
+  try {
+    await sendGmailMessage("access-token", {
+      to: "jane@example.com",
+      subject: "Hi",
+      bodyText: "Plain",
+      bodyHtml: "<p>HTML</p>",
+      attachments: [{ filename: "photo.png", mimeType: "image/png", bytes: Buffer.from("fake png bytes") }],
+    });
+    const raw = decodeSentRawMessage(mock);
+    assert.match(raw, /Content-Type: multipart\/mixed; boundary="/);
+    assert.match(raw, /Content-Type: multipart\/alternative; boundary="/);
+    assert.ok(raw.includes("Plain"));
+    assert.ok(raw.includes("<p>HTML</p>"));
+    assert.match(raw, /Content-Disposition: attachment; filename="photo.png"/);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("sendGmailMessage: strips double-quotes from an attachment filename so it can't break the MIME header", async () => {
+  const mock = mockFetchSequence([{ status: 200, body: { id: "sent-5" } }]);
+  try {
+    await sendGmailMessage("access-token", {
+      to: "jane@example.com",
+      subject: "Hi",
+      bodyText: "Hello",
+      attachments: [{ filename: 'evil".pdf', mimeType: "application/pdf", bytes: Buffer.from("x") }],
+    });
+    const raw = decodeSentRawMessage(mock);
+    assert.match(raw, /Content-Disposition: attachment; filename="evil\.pdf"/);
+  } finally {
+    mock.restore();
+  }
+});
+
+// extractAttachments / getMessage's attachment metadata — the "list what's
+// attached" half, which needs no extra API call beyond the format=full
+// response already fetched.
+
+test("extractAttachments: a part with filename + body.attachmentId is an attachment", () => {
+  const attachments = extractAttachments({
+    mimeType: "multipart/mixed",
+    parts: [
+      { mimeType: "text/plain", body: { data: Buffer.from("body").toString("base64url") } },
+      { mimeType: "application/pdf", filename: "report.pdf", body: { attachmentId: "att-1", size: 12345 } },
+    ],
+  });
+  assert.deepEqual(attachments, [{ attachmentId: "att-1", filename: "report.pdf", mimeType: "application/pdf", size: 12345 }]);
+});
+
+test("extractAttachments: a part with a filename but inline body.data (no attachmentId) is NOT treated as an attachment", () => {
+  const attachments = extractAttachments({
+    mimeType: "multipart/related",
+    parts: [{ mimeType: "image/png", filename: "signature.png", body: { data: Buffer.from("inline").toString("base64url") } }],
+  });
+  assert.deepEqual(attachments, []);
+});
+
+test("extractAttachments: a message with no attachments returns an empty array, never throws", () => {
+  assert.deepEqual(extractAttachments({ mimeType: "text/plain", body: { data: Buffer.from("x").toString("base64url") } }), []);
+  assert.deepEqual(extractAttachments(undefined), []);
+});
+
+test("extractAttachments: finds multiple attachments across nested parts", () => {
+  const attachments = extractAttachments({
+    mimeType: "multipart/mixed",
+    parts: [
+      {
+        mimeType: "multipart/alternative",
+        parts: [{ mimeType: "text/plain", body: { data: Buffer.from("body").toString("base64url") } }],
+      },
+      { mimeType: "application/pdf", filename: "a.pdf", body: { attachmentId: "att-a", size: 100 } },
+      { mimeType: "image/jpeg", filename: "b.jpg", body: { attachmentId: "att-b", size: 200 } },
+    ],
+  });
+  assert.equal(attachments.length, 2);
+  assert.deepEqual(attachments.map((a) => a.filename), ["a.pdf", "b.jpg"]);
+});
+
+test("getMessage: includes attachment metadata in the returned GmailMessage", async () => {
+  const mock = mockFetchSequence([
+    {
+      status: 200,
+      body: {
+        id: "msg-4",
+        threadId: "thread-4",
+        labelIds: ["INBOX"],
+        internalDate: "1700000000000",
+        payload: {
+          headers: [{ name: "From", value: "jane@example.com" }],
+          mimeType: "multipart/mixed",
+          parts: [
+            { mimeType: "text/plain", body: { data: Buffer.from("See attached").toString("base64url") } },
+            { mimeType: "application/pdf", filename: "invoice.pdf", body: { attachmentId: "att-xyz", size: 5000 } },
+          ],
+        },
+      },
+    },
+  ]);
+  try {
+    const message = await getMessage("access-token", "msg-4");
+    assert.equal(message.attachments.length, 1);
+    assert.deepEqual(message.attachments[0], { attachmentId: "att-xyz", filename: "invoice.pdf", mimeType: "application/pdf", size: 5000 });
+  } finally {
+    mock.restore();
+  }
+});
+
+// getAttachment — the "download the bytes" half, only ever called for
+// attachments that already passed size/type validation.
+
+test("getAttachment: decodes the base64url data field into raw bytes", async () => {
+  const fakeBytes = Buffer.from("fake attachment content");
+  const mock = mockFetchSequence([{ status: 200, body: { size: fakeBytes.length, data: fakeBytes.toString("base64url") } }]);
+  try {
+    const result = await getAttachment("access-token", "msg-1", "att-1");
+    assert.equal(Buffer.from(result.bytes).toString(), "fake attachment content");
+    assert.equal(result.size, fakeBytes.length);
+    assert.match(mock.calls[0].url, /\/messages\/msg-1\/attachments\/att-1$/);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("getAttachment: a Google API error throws GoogleApiError", async () => {
+  const mock = mockFetchSequence([{ status: 404, body: { error: { message: "Attachment not found" } } }]);
+  try {
+    await assert.rejects(() => getAttachment("access-token", "msg-1", "att-missing"), GoogleApiError);
   } finally {
     mock.restore();
   }

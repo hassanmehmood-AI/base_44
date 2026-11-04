@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import * as conversationsRepo from "@/server/repositories/conversations";
 import type { Conversation } from "@/server/repositories/conversations";
@@ -12,6 +13,11 @@ import * as emailOnboardingService from "@/server/services/emailOnboarding";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import * as emailProvider from "@/server/integrations/email";
 import { isValidEmailFormat } from "@/lib/email";
+import { sanitizeEmailHtml } from "@/lib/emailHtml";
+import { validateAttachment, MAX_TOTAL_ATTACHMENT_BYTES, formatFileSize } from "@/lib/emailAttachments";
+import type { StoredEmailAttachment } from "@/lib/emailAttachments";
+import * as attachmentStorage from "@/server/integrations/emailAttachmentStorage";
+import { ProviderNotConfiguredError } from "@/server/integrations/errors";
 
 const CHANNEL = "EMAIL";
 
@@ -111,7 +117,66 @@ export async function getConversationForContact(contactId: string) {
  * A brand-new conversation (no companyEmailAccountId yet — the common
  * case) keeps using the single global Resend sender, completely
  * unchanged. */
-export async function sendEmailToContact(input: { contactId: string; subject: string; body: string }) {
+/** Validates every candidate attachment (type + per-file size + combined
+ * size, see lib/emailAttachments.ts) and, only if ALL pass, uploads each to
+ * permanent storage before returning both the metadata to persist on the
+ * created message (storedAttachments) and the raw bytes to actually
+ * transmit (outboundAttachments) — kept as two separate shapes rather than
+ * one, since the message record should reference the storage key (never
+ * raw bytes in the DB), while the provider send call needs the opposite.
+ * Throws a clear, specific error (naming the offending file) on the first
+ * validation failure, before uploading anything — see sendEmailToContact's
+ * doc comment on why this fails closed rather than best-effort. */
+async function validateAndStoreOutboundAttachments(
+  companyId: string,
+  attachments: { filename: string; mimeType: string; bytes: Uint8Array }[]
+): Promise<{ storedAttachments: StoredEmailAttachment[]; outboundAttachments: { filename: string; mimeType: string; bytes: Uint8Array }[] }> {
+  if (attachments.length === 0) return { storedAttachments: [], outboundAttachments: [] };
+
+  if (!attachmentStorage.isAttachmentStorageConfigured()) {
+    throw new ProviderNotConfiguredError("Email attachment storage", [
+      "AVATAR_STORAGE_ENDPOINT",
+      "AVATAR_STORAGE_BUCKET",
+      "AVATAR_STORAGE_ACCESS_KEY_ID",
+      "AVATAR_STORAGE_SECRET_ACCESS_KEY",
+    ]);
+  }
+
+  const totalSize = attachments.reduce((sum, a) => sum + a.bytes.byteLength, 0);
+  if (totalSize > MAX_TOTAL_ATTACHMENT_BYTES) {
+    throw new Error(`Attachments total ${formatFileSize(totalSize)}, which is over the ${formatFileSize(MAX_TOTAL_ATTACHMENT_BYTES)} limit.`);
+  }
+  for (const attachment of attachments) {
+    const validationError = validateAttachment(attachment.mimeType, attachment.bytes.byteLength);
+    if (validationError === "TYPE_NOT_ALLOWED") {
+      throw new Error(`"${attachment.filename}" isn't a supported file type. Allowed: PDF, DOCX, XLSX, JPG, PNG.`);
+    }
+    if (validationError === "TOO_LARGE") {
+      throw new Error(`"${attachment.filename}" (${formatFileSize(attachment.bytes.byteLength)}) is too large.`);
+    }
+  }
+
+  // One batch id for this whole send — see emailAttachmentStorage.ts's
+  // buildAttachmentKey doc comment on why a real message id isn't
+  // available yet at this point.
+  const batchId = randomUUID();
+  const storedAttachments: StoredEmailAttachment[] = [];
+  for (const [index, attachment] of attachments.entries()) {
+    const key = attachmentStorage.buildAttachmentKey(companyId, batchId, index, attachment.filename);
+    await attachmentStorage.putAttachment(key, attachment.bytes, attachment.mimeType);
+    storedAttachments.push({ filename: attachment.filename, mimeType: attachment.mimeType, size: attachment.bytes.byteLength, key });
+  }
+
+  return { storedAttachments, outboundAttachments: attachments };
+}
+
+export async function sendEmailToContact(input: {
+  contactId: string;
+  subject: string;
+  bodyText: string;
+  bodyHtml?: string | null;
+  attachments?: { filename: string; mimeType: string; bytes: Uint8Array }[];
+}) {
   const session = await requireSession();
   const contact = await contactsRepo.findById(input.contactId);
   if (!contact) throw new UnauthorizedError("Contact not found.");
@@ -119,7 +184,23 @@ export async function sendEmailToContact(input: { contactId: string; subject: st
   if (!contact.email) throw new Error("This contact has no email address.");
   if (!isValidEmailFormat(contact.email)) throw new Error("This contact's email address isn't valid.");
   if (!input.subject.trim()) throw new Error("Subject is required.");
-  if (!input.body.trim()) throw new Error("Message body can't be empty.");
+  if (!input.bodyText.trim()) throw new Error("Message body can't be empty.");
+
+  // Never trust client-supplied HTML, even from our own composer — sanitize
+  // here too (see lib/emailHtml.ts), same as inbound messages, before it is
+  // ever sent or stored.
+  const safeHtml = input.bodyHtml ? sanitizeEmailHtml(input.bodyHtml) : null;
+
+  // Validated and uploaded BEFORE the send call — deliberately fail-closed
+  // here: an email must never actually go out with an attachment the CRM
+  // then can't display, and the user gets a clear, actionable error (wrong
+  // type / too large) instead of a silently dropped file. Unlike inbound
+  // sync's best-effort per-attachment skip (see gmailSync.ts), this is a
+  // user-initiated action with no "mostly worked" acceptable outcome.
+  const { storedAttachments, outboundAttachments } = await validateAndStoreOutboundAttachments(
+    contact.companyId,
+    input.attachments ?? []
+  );
 
   let conversation = await conversationsRepo.findByContactIdAndChannel(input.contactId, CHANNEL);
 
@@ -131,14 +212,18 @@ export async function sendEmailToContact(input: { contactId: string; subject: st
     const result = await emailOnboardingService.sendFromAccount(account.id, {
       to: contact.email,
       subject: input.subject,
-      body: input.body,
+      bodyText: input.bodyText,
+      bodyHtml: safeHtml,
+      attachments: outboundAttachments,
     });
     externalId = result.externalId;
   } else {
     const result = await emailProvider.sendEmail({
       to: contact.email,
       subject: input.subject,
-      body: input.body,
+      bodyText: input.bodyText,
+      bodyHtml: safeHtml,
+      attachments: outboundAttachments,
     });
     externalId = result.externalId;
   }
@@ -154,12 +239,17 @@ export async function sendEmailToContact(input: { contactId: string; subject: st
   }
 
   const now = new Date();
+  const metadata: Record<string, unknown> = {};
+  if (externalId) metadata.externalId = externalId;
+  if (safeHtml) metadata.bodyHtml = safeHtml;
+  if (storedAttachments.length > 0) metadata.attachments = storedAttachments;
+
   await messagesRepo.create({
     conversationId: conversation.id,
     direction: "OUTBOUND",
     senderLabel: session.user.name,
-    body: input.body,
-    metadata: externalId ? { externalId } : null,
+    body: input.bodyText,
+    metadata: Object.keys(metadata).length > 0 ? metadata : null,
     createdBy: session.user.id,
     sentAt: now,
   });

@@ -33,7 +33,19 @@ export function getEmailSenderAddress(): string | null {
   return process.env.EMAIL_FROM_ADDRESS ?? null;
 }
 
-export async function sendEmail(input: { to: string; subject: string; body: string }): Promise<{ externalId: string | null }> {
+export type OutboundAttachment = { filename: string; mimeType: string; bytes: Uint8Array };
+
+/** bodyHtml, when provided, must already be sanitized by the caller (see
+ * lib/emailHtml.ts) — this function has no opinion on sanitization, it
+ * just forwards it to Resend's API alongside the plain-text fallback.
+ * Resend (like every real mail client) prefers the html part when both are
+ * present; text is what shows for a plain-text-only recipient/client.
+ * attachments bytes must already be validated/size-checked by the caller
+ * (see lib/emailAttachments.ts) — this function only base64-encodes and
+ * forwards them, same division of responsibility as bodyHtml above. */
+export async function sendEmail(
+  input: { to: string; subject: string; bodyText: string; bodyHtml?: string | null; attachments?: OutboundAttachment[] }
+): Promise<{ externalId: string | null }> {
   const { apiKey, from } = getConfig();
 
   const res = await fetch(`${API_BASE}/emails`, {
@@ -46,7 +58,11 @@ export async function sendEmail(input: { to: string; subject: string; body: stri
       from,
       to: [input.to],
       subject: input.subject,
-      text: input.body,
+      text: input.bodyText,
+      ...(input.bodyHtml ? { html: input.bodyHtml } : {}),
+      ...(input.attachments?.length
+        ? { attachments: input.attachments.map((a) => ({ filename: a.filename, content: Buffer.from(a.bytes).toString("base64") })) }
+        : {}),
     }),
   });
 

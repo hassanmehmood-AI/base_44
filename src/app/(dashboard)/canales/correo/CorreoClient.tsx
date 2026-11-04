@@ -1,11 +1,32 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Bold, Italic, Link2, Paperclip, Send, Inbox } from "lucide-react";
+import { useEditor, EditorContent, type Editor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import TiptapUnderline from "@tiptap/extension-underline";
+import TiptapLink from "@tiptap/extension-link";
+import TiptapPlaceholder from "@tiptap/extension-placeholder";
+import {
+  Bold,
+  Italic,
+  Underline as UnderlineIcon,
+  Link2,
+  List,
+  ListOrdered,
+  Paperclip,
+  Send,
+  Inbox,
+  FileText,
+  FileSpreadsheet,
+  Image as ImageIcon,
+  File as FileIcon,
+  X,
+  ChevronDown,
+} from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
-import { SearchInput, Select, Textarea, Input } from "@/components/ui/Input";
+import { SearchInput, Select, Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/PageHeader";
 import { useLanguage } from "@/context/LanguageContext";
 import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
@@ -14,6 +35,9 @@ import { formatDateTime, formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { loadDraft, saveDraft, clearDraft } from "@/lib/drafts";
 import { isValidEmailFormat } from "@/lib/email";
+import { sanitizeEmailHtml } from "@/lib/emailHtml";
+import { validateAttachment, formatFileSize, ALLOWED_ATTACHMENT_TYPES } from "@/lib/emailAttachments";
+import type { StoredEmailAttachment } from "@/lib/emailAttachments";
 import { contactSecondaryLine, disambiguationSuffixes } from "@/lib/contactIdentity";
 import type { ContactWithJoins } from "@/server/repositories/contacts";
 import type { Conversation, ConversationWithJoins } from "@/server/repositories/conversations";
@@ -29,8 +53,199 @@ import {
 } from "./actions";
 import { useEmailRealtime } from "./useEmailRealtime";
 
-type EmailDraft = { subject: string; body: string };
+/** New shape: bodyHtml, not body — see EmailPanel's draft-loading effect
+ * for how an OLD {subject, body} draft (plain text, from before formatted
+ * composing existed) is still read and upgraded losslessly rather than
+ * discarded. */
+type EmailDraft = { subject: string; bodyHtml: string };
+/** The pre-rich-text draft shape — only ever read, never written again,
+ * kept solely so a draft saved before this change still loads correctly. */
+type LegacyEmailDraft = { subject?: string; body?: string };
 type Tab = "contacts" | "unassigned";
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Upgrades a legacy plain-text draft into HTML Tiptap can load, without
+ * losing any of the user's previously-saved text. Never used for anything
+ * else — new drafts are always saved as real HTML from the editor itself. */
+function legacyDraftToHtml(body: string): string {
+  const paragraphs = body.split(/\n{2,}/).map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`);
+  return paragraphs.join("");
+}
+
+/** Plain-text emails carry their quoted reply history inline (Gmail's own
+ * "On <date>, <sender> wrote:" header followed by "> "-prefixed lines, or
+ * Outlook's "-----Original Message-----"), unlike HTML emails where Gmail
+ * puts that history in a separate, visually-collapsed <div class="gmail_
+ * quote">. Without this split, a plain-text reply renders as one long wall
+ * of quote-marked text instead of just the new reply — purely a display
+ * concern, the full original `body` is never altered or re-stored. */
+function splitQuotedText(text: string): { main: string; quoted: string | null } {
+  const lines = text.split("\n");
+  const headerRegex = /^(on .{0,300}wrote:|-{2,}\s*(original|forwarded) message\s*-{2,})\s*$/i;
+  let quoteStart = lines.findIndex((line) => headerRegex.test(line.trim()));
+  if (quoteStart === -1) {
+    quoteStart = lines.findIndex((line) => line.trim().startsWith(">"));
+  }
+  if (quoteStart === -1) return { main: text, quoted: null };
+  const main = lines.slice(0, quoteStart).join("\n").trimEnd();
+  const quoted = lines.slice(quoteStart).join("\n").trim();
+  // No real reply text above the quote (e.g. a bare forward) — nothing
+  // meaningful to collapse, show the original body as-is.
+  if (!main || !quoted) return { main: text, quoted: null };
+  return { main, quoted };
+}
+
+/** Gmail-style "..." toggle for the collapsed quoted history — closed by
+ * default so the thread reads as just the new replies, same as Gmail's
+ * own inbox view. */
+function QuotedTextToggle({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label={open ? "Hide quoted text" : "Show quoted text"}
+        aria-expanded={open}
+        className="inline-flex h-6 w-9 items-center justify-center rounded border border-border bg-background-secondary text-text-secondary hover:bg-background-tertiary"
+      >
+        {open ? <ChevronDown className="h-3.5 w-3.5 rotate-180" /> : "···"}
+      </button>
+      {open && (
+        <p className="mt-2 whitespace-pre-line border-l-2 border-border pl-3 text-sm text-text-secondary">
+          {text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Renders a stored message's body: sanitized HTML when present (stored
+ * already-sanitized server-side — see gmailSync.ts/email.ts — and
+ * re-sanitized here too, defense-in-depth, before dangerouslySetInnerHTML
+ * ever touches it), else the existing plain-text rendering, with its
+ * quoted reply history collapsed behind a toggle (see splitQuotedText). */
+function EmailMessageBody({ body, metadata }: { body: string; metadata: unknown }) {
+  const bodyHtml = (metadata as { bodyHtml?: string } | null)?.bodyHtml;
+  if (bodyHtml) {
+    const safe = sanitizeEmailHtml(bodyHtml);
+    return (
+      <div
+        className={cn(
+          "break-words text-text-primary",
+          "[&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0",
+          "[&_a]:text-brand [&_a]:underline",
+          "[&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5",
+          "[&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-text-secondary",
+          "[&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:p-1.5 [&_th]:border [&_th]:border-border [&_th]:p-1.5",
+          "[&_h1]:text-[18px] [&_h1]:font-semibold [&_h2]:text-[16px] [&_h2]:font-semibold [&_h3]:text-[14px] [&_h3]:font-semibold"
+        )}
+        // eslint-disable-next-line react/no-danger -- sanitized twice (server at storage time, client here) via the same DOMPurify allow-list; see lib/emailHtml.ts
+        dangerouslySetInnerHTML={{ __html: safe }}
+      />
+    );
+  }
+  const { main, quoted } = splitQuotedText(body);
+  return (
+    <div>
+      <p className="whitespace-pre-line text-text-primary">{main}</p>
+      {quoted && <QuotedTextToggle text={quoted} />}
+    </div>
+  );
+}
+
+const ATTACHMENT_ICON: Record<string, typeof FileIcon> = {
+  "application/pdf": FileText,
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": FileText,
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": FileSpreadsheet,
+  "image/jpeg": ImageIcon,
+  "image/png": ImageIcon,
+};
+
+/** Attachments stored on a message (inbound or sent) — each one links to
+ * api/email-attachments/[messageId]/[index], the authenticated serving
+ * route (company access checked server-side on every request, same as
+ * avatars) that's the only path to the actual bytes. Renders nothing when
+ * a message has none, same as EmailMessageBody falling back silently when
+ * there's no HTML. */
+function EmailAttachmentList({ messageId, metadata }: { messageId: string; metadata: unknown }) {
+  const attachments = (metadata as { attachments?: StoredEmailAttachment[] } | null)?.attachments;
+  if (!attachments || attachments.length === 0) return null;
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {attachments.map((attachment, index) => {
+        const Icon = ATTACHMENT_ICON[attachment.mimeType] ?? FileIcon;
+        return (
+          <a
+            key={index}
+            href={`/api/email-attachments/${messageId}/${index}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 rounded-lg border border-border bg-white px-2.5 py-1.5 text-[12px] text-text-primary hover:bg-surface-muted"
+          >
+            <Icon className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
+            <span className="max-w-[160px] truncate">{attachment.filename}</span>
+            <span className="shrink-0 text-text-tertiary">{formatFileSize(attachment.size)}</span>
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Minimal Gmail-style formatting toolbar bound to real Tiptap commands —
+ * the icons themselves (and which ones exist) are unchanged from before;
+ * only their functionality is new. */
+function ComposerToolbar({ editor, onAttachClick }: { editor: Editor | null; onAttachClick: () => void }) {
+  const { t } = useLanguage();
+  if (!editor) return null;
+
+  function setLink() {
+    if (!editor) return;
+    const previousUrl = editor.getAttributes("link").href as string | undefined;
+    const url = window.prompt(t("Link URL", "URL del enlace"), previousUrl ?? "https://");
+    if (url === null) return; // cancelled
+    if (!url.trim()) {
+      editor.chain().focus().extendMarkRange("link").unsetLink().run();
+      return;
+    }
+    editor.chain().focus().extendMarkRange("link").setLink({ href: url.trim() }).run();
+  }
+
+  const buttonClass = (active: boolean) =>
+    cn("cursor-pointer hover:text-text-primary", active ? "text-brand" : "text-text-secondary");
+
+  return (
+    <div className="flex items-center gap-3">
+      <Bold
+        className={cn("h-4 w-4", buttonClass(editor.isActive("bold")))}
+        onClick={() => editor.chain().focus().toggleBold().run()}
+      />
+      <Italic
+        className={cn("h-4 w-4", buttonClass(editor.isActive("italic")))}
+        onClick={() => editor.chain().focus().toggleItalic().run()}
+      />
+      <UnderlineIcon
+        className={cn("h-4 w-4", buttonClass(editor.isActive("underline")))}
+        onClick={() => editor.chain().focus().toggleUnderline().run()}
+      />
+      <List
+        className={cn("h-4 w-4", buttonClass(editor.isActive("bulletList")))}
+        onClick={() => editor.chain().focus().toggleBulletList().run()}
+      />
+      <ListOrdered
+        className={cn("h-4 w-4", buttonClass(editor.isActive("orderedList")))}
+        onClick={() => editor.chain().focus().toggleOrderedList().run()}
+      />
+      <Link2 className={cn("h-4 w-4", buttonClass(editor.isActive("link")))} onClick={setLink} />
+      <Paperclip className="h-4 w-4 cursor-pointer text-text-secondary hover:text-text-primary" onClick={onAttachClick} />
+    </div>
+  );
+}
 
 export function CorreoClient({
   queue,
@@ -362,37 +577,104 @@ function EmailPanel({
   const { t, language } = useLanguage();
   const userId = useCurrentUserId();
   const [subject, setSubject] = useState(conversation?.subject ?? "");
-  const [body, setBody] = useState("");
+  const [bodyHtml, setBodyHtml] = useState("");
+  const [bodyText, setBodyText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [draftWarning, setDraftWarning] = useState<string | undefined>();
   const [draftLoaded, setDraftLoaded] = useState(false);
+  // Deliberately NOT part of the localStorage draft: a browser File object
+  // can't be serialized/restored across a page reload (its bytes only ever
+  // live in memory for this one session) — attachments are lost on
+  // refresh/contact-switch exactly like an in-progress Gmail compose
+  // window would be if you navigated away mid-attach, a known, acceptable
+  // V1 limitation rather than a bug.
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | undefined>();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function handleFilesSelected(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setAttachmentError(undefined);
+    const accepted: File[] = [];
+    for (const file of Array.from(files)) {
+      const validationError = validateAttachment(file.type, file.size);
+      if (validationError === "TYPE_NOT_ALLOWED") {
+        setAttachmentError(t(`"${file.name}" isn't a supported file type.`, `"${file.name}" no es un tipo de archivo compatible.`));
+        continue;
+      }
+      if (validationError === "TOO_LARGE") {
+        setAttachmentError(t(`"${file.name}" is too large.`, `"${file.name}" es demasiado grande.`));
+        continue;
+      }
+      accepted.push(file);
+    }
+    if (accepted.length > 0) setAttachedFiles((prev) => [...prev, ...accepted]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function removeAttachedFile(index: number) {
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  // immediatelyRender: false is required for Tiptap under Next.js SSR —
+  // without it, the editor renders its initial (empty) content during SSR
+  // and again, differently, on the client's first paint, which is exactly
+  // the class of hydration mismatch that made Send reply unresponsive
+  // before (see the draft-loading effect below's own doc comment on that
+  // earlier bug) — this setting exists specifically to prevent a repeat.
+  const editor = useEditor({
+    extensions: [
+      StarterKit,
+      TiptapUnderline,
+      TiptapLink.configure({ openOnClick: false, autolink: true, HTMLAttributes: { rel: "noopener noreferrer", target: "_blank" } }),
+      TiptapPlaceholder.configure({ placeholder: t("Write a reply...", "Escribe una respuesta...") }),
+    ],
+    content: "",
+    immediatelyRender: false,
+    onUpdate: ({ editor }) => {
+      setBodyHtml(editor.getHTML());
+      setBodyText(editor.getText());
+    },
+  });
 
   // Restored once per contact (this component remounts on every contact
   // switch via its `key={selected.id}` in CorreoClient — see below), never
   // copied from a different contact's draft: the lookup is keyed by this
   // exact contact.id/companyId, nothing else. Deliberately loaded in an
-  // effect rather than the useState initializer above: localStorage
-  // doesn't exist during SSR, so reading it synchronously during render
-  // made the server's first render (always "no draft") disagree with the
-  // client's very first render (the real draft, already in localStorage)
-  // — a genuine hydration mismatch that made React discard and regenerate
-  // this subtree, which is what made Send reply (and every other control
-  // in this panel) appear unresponsive right after a fresh page load.
-  // Loading it a tick later, after the SSR-identical first paint, avoids
-  // the mismatch entirely while still restoring the draft before the user
-  // can realistically have typed anything.
+  // effect rather than synchronously during render: localStorage doesn't
+  // exist during SSR, so reading it synchronously made the server's first
+  // render (always "no draft") disagree with the client's very first
+  // render (the real draft, already in localStorage) — a genuine hydration
+  // mismatch that made React discard and regenerate this subtree, which is
+  // what made Send reply (and every other control in this panel) appear
+  // unresponsive right after a fresh page load. Loading it a tick later,
+  // after the SSR-identical first paint, avoids the mismatch entirely.
+  // Also waits on `editor` specifically (null until Tiptap finishes its
+  // own deferred first render, per immediatelyRender: false above) since
+  // editor.commands.setContent needs a real editor instance to call.
+  //
+  // Backward compatible with a draft saved BEFORE formatted composing
+  // existed: an old draft has `body` (plain text), a new one has
+  // `bodyHtml` — either is read and loaded losslessly; nothing is ever
+  // silently discarded just because the storage shape changed.
   useEffect(() => {
-    const draft = loadDraft<EmailDraft>("email", userId, contact.companyId, contact.id);
+    if (!editor || draftLoaded) return;
+    const draft = loadDraft<EmailDraft & LegacyEmailDraft>("email", userId, contact.companyId, contact.id);
     if (draft?.subject) setSubject(draft.subject);
-    if (draft?.body) setBody(draft.body);
+    if (draft?.bodyHtml) {
+      editor.commands.setContent(draft.bodyHtml);
+    } else if (draft?.body) {
+      editor.commands.setContent(legacyDraftToHtml(draft.body));
+    }
+    setBodyHtml(editor.getHTML());
+    setBodyText(editor.getText());
     setDraftLoaded(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally once per mount (this component remounts per contact via key={selected.id})
-  }, []);
+  }, [editor, draftLoaded, userId, contact.companyId, contact.id]);
 
   const recipientValid = !!contact.email && isValidEmailFormat(contact.email);
   const subjectValid = subject.trim().length > 0;
-  const bodyValid = body.trim().length > 0;
+  const bodyValid = bodyText.trim().length > 0;
   const emailAvailable = senderStatus.status !== "NOT_CONFIGURED";
   const canSend = emailAvailable && recipientValid && subjectValid && bodyValid;
   const validationMessage = !emailAvailable
@@ -415,14 +697,14 @@ function EmailPanel({
   // yet — this effect's first real run is always AFTER the load effect's.
   useEffect(() => {
     if (!draftLoaded) return;
-    const hasContent = subject.trim().length > 0 || body.trim().length > 0;
+    const hasContent = subject.trim().length > 0 || bodyText.trim().length > 0;
     if (!hasContent) {
       clearDraft("email", userId, contact.companyId, contact.id);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs a warning banner to an external system (localStorage write outcome), not a reactive cascade
       setDraftWarning(undefined);
       return;
     }
-    const ok = saveDraft("email", userId, contact.companyId, contact.id, { subject, body });
+    const ok = saveDraft("email", userId, contact.companyId, contact.id, { subject, bodyHtml });
     setDraftWarning(
       ok
         ? undefined
@@ -431,21 +713,25 @@ function EmailPanel({
             "No se pudo guardar tu borrador localmente: copia el texto antes de cambiar de contacto."
           )
     );
-  }, [subject, body, userId, contact.companyId, contact.id, t, draftLoaded]);
+  }, [subject, bodyHtml, bodyText, userId, contact.companyId, contact.id, t, draftLoaded]);
 
   async function handleSend() {
     if (!canSend || sending) return;
     setSending(true);
     setError(undefined);
-    const result = await sendEmailAction({ contactId: contact.id, subject, body });
+    const result = await sendEmailAction({ contactId: contact.id, subject, bodyText, bodyHtml, attachments: attachedFiles });
     setSending(false);
     if (result.error) {
-      // Send failed — keep the draft exactly as-is so the user can retry.
+      // Send failed — keep the draft (and selected attachments) exactly
+      // as-is so the user can retry without re-picking files.
       setError(result.error);
       return;
     }
     clearDraft("email", userId, contact.companyId, contact.id);
-    setBody("");
+    editor?.commands.clearContent();
+    setBodyHtml("");
+    setBodyText("");
+    setAttachedFiles([]);
     onSent();
   }
 
@@ -494,7 +780,8 @@ function EmailPanel({
               <p className="mb-1 text-[12px] font-medium text-text-secondary">
                 {m.senderLabel ?? (m.direction === "OUTBOUND" ? t("You", "Tú") : contact.name)} · {formatDateTime(m.sentAt, language)}
               </p>
-              <p className="whitespace-pre-line text-text-primary">{m.body}</p>
+              <EmailMessageBody body={m.body} metadata={m.metadata} />
+              <EmailAttachmentList messageId={m.id} metadata={m.metadata} />
             </div>
           ))
         )}
@@ -508,18 +795,45 @@ function EmailPanel({
             onChange={(e) => setSubject(e.target.value)}
           />
         )}
-        <div className="flex items-center gap-3 text-text-secondary">
-          <Bold className="h-4 w-4 cursor-pointer hover:text-text-primary" />
-          <Italic className="h-4 w-4 cursor-pointer hover:text-text-primary" />
-          <Link2 className="h-4 w-4 cursor-pointer hover:text-text-primary" />
-          <Paperclip className="h-4 w-4 cursor-pointer hover:text-text-primary" />
-        </div>
-        <Textarea
-          rows={3}
-          placeholder={t("Write a reply...", "Escribe una respuesta...")}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
+        <ComposerToolbar editor={editor} onAttachClick={() => fileInputRef.current?.click()} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={Object.keys(ALLOWED_ATTACHMENT_TYPES).join(",")}
+          className="hidden"
+          onChange={(e) => handleFilesSelected(e.target.files)}
         />
+        <EditorContent
+          editor={editor}
+          className={cn(
+            "min-h-[76px] rounded-xl border border-border px-3 py-2 text-[14px] text-text-primary",
+            "[&_.ProseMirror]:min-h-[60px] [&_.ProseMirror]:outline-none",
+            "[&_.ProseMirror_p]:my-1 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-5 [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ol]:pl-5 [&_.ProseMirror_a]:text-brand [&_.ProseMirror_a]:underline",
+            // Tiptap's Placeholder extension marks the empty paragraph with
+            // a data-placeholder attribute + is-editor-empty class but
+            // deliberately injects no CSS of its own — this is the
+            // standard Tailwind-based rule that actually displays it.
+            "[&_.is-editor-empty:first-child::before]:pointer-events-none [&_.is-editor-empty:first-child::before]:float-left [&_.is-editor-empty:first-child::before]:h-0 [&_.is-editor-empty:first-child::before]:text-text-tertiary [&_.is-editor-empty:first-child::before]:content-[attr(data-placeholder)]"
+          )}
+        />
+        {attachedFiles.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {attachedFiles.map((file, index) => (
+              <div
+                key={`${file.name}-${index}`}
+                className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-muted px-2.5 py-1.5 text-[12px] text-text-primary"
+              >
+                <span className="max-w-[160px] truncate">{file.name}</span>
+                <span className="text-text-tertiary">{formatFileSize(file.size)}</span>
+                <button type="button" onClick={() => removeAttachedFile(index)} className="text-text-tertiary hover:text-danger">
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {attachmentError && <p className="text-[12px] text-danger">{attachmentError}</p>}
         {draftWarning && <p className="text-[12px] text-warning-700">{draftWarning}</p>}
         {error ? (
           <p className="text-[13px] text-danger">{error}</p>
@@ -639,7 +953,8 @@ function UnassignedEmailPanel({
                 {m.senderLabel ?? (m.direction === "OUTBOUND" ? t("You", "Tú") : t("Unknown sender", "Remitente desconocido"))} ·{" "}
                 {formatDateTime(m.sentAt, language)}
               </p>
-              <p className="whitespace-pre-line text-text-primary">{m.body}</p>
+              <EmailMessageBody body={m.body} metadata={m.metadata} />
+              <EmailAttachmentList messageId={m.id} metadata={m.metadata} />
             </div>
           ))
         )}

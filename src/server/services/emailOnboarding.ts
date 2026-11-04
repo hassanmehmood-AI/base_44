@@ -214,17 +214,23 @@ export async function getValidAccessToken(account: CompanyEmailAccount): Promise
   }
 }
 
-/** Sends through this specific connected mailbox. Deliberately NOT wired
- * into services/email.ts's existing sendEmailToContact yet — that remains
- * on the single global Resend sender until a company has a connected
- * mailbox AND a company-level "preferred sender" decision is made (which
- * mailbox a reply goes out from when a company has more than one, mirrored
- * by conversations.companyEmailAccountId — see that column's doc comment).
- * Exposed here as a standalone function so it can be tested and wired in
- * deliberately, not accidentally. */
+/** Sends through this specific connected mailbox — called by
+ * services/email.ts's sendEmailToContact whenever a conversation's
+ * companyEmailAccountId points at an ACTIVE account; otherwise that
+ * function still uses the single global Resend sender. bodyHtml, when
+ * provided, must already be sanitized (see lib/emailHtml.ts) — this
+ * function has no opinion on sanitization, only on sending. attachments
+ * bytes must already be validated/size-checked by the caller (see
+ * lib/emailAttachments.ts) — same division of responsibility. */
 export async function sendFromAccount(
   accountId: string,
-  input: { to: string; subject: string; body: string }
+  input: {
+    to: string;
+    subject: string;
+    bodyText: string;
+    bodyHtml?: string | null;
+    attachments?: { filename: string; mimeType: string; bytes: Uint8Array }[];
+  }
 ): Promise<{ externalId: string | null }> {
   const account = await companyEmailAccountsRepo.findById(accountId);
   if (!account) throw new Error("Email account not found.");

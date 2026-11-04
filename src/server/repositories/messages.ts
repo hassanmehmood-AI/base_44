@@ -9,6 +9,15 @@ export async function findByConversationId(conversationId: string): Promise<Mess
   return getDb().select().from(messages).where(eq(messages.conversationId, conversationId)).orderBy(asc(messages.sentAt));
 }
 
+/** Used by the attachment-serving route to resolve which conversation (and
+ * therefore which company) a given message's attachment belongs to, for
+ * the same assertCompanyAccess check api/avatars/[conversationId] already
+ * uses — see api/email-attachments/[messageId]/[index]/route.ts. */
+export async function findById(id: string): Promise<Message | undefined> {
+  const [row] = await getDb().select().from(messages).where(eq(messages.id, id)).limit(1);
+  return row;
+}
+
 /** Active Campaigns page channel summary: bulk fetch across many conversations
  * at once (one query per channel) rather than N+1'ing findByConversationId. */
 export async function findByConversationIds(conversationIds: string[]): Promise<Message[]> {
