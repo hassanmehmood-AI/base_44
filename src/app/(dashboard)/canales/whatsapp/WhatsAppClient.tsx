@@ -6,7 +6,7 @@ import { Send, MoreHorizontal, Building2, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { SearchInput, Select } from "@/components/ui/Input";
+import { SearchInput, Select, Input } from "@/components/ui/Input";
 import { Avatar } from "@/components/ui/Avatar";
 import { useLanguage, type Language } from "@/context/LanguageContext";
 import { useCompany, ALL_COMPANIES } from "@/context/CompanyContext";
@@ -15,10 +15,13 @@ import { formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import type { ConversationWithJoins } from "@/server/repositories/conversations";
 import type { Message } from "@/server/repositories/messages";
+import type { ContactWithJoins } from "@/server/repositories/contacts";
 import {
   listWhatsappConversationsAction,
   getWhatsappConversationDetailAction,
   replyToWhatsappConversationAction,
+  linkWhatsappConversationToContactAction,
+  createContactAndLinkWhatsappConversationAction,
 } from "./actions";
 import { useWhatsappRealtime } from "./useWhatsappRealtime";
 import { type WhatsappView, buildWhatsappSearchParams } from "./whatsappUrlState";
@@ -44,11 +47,20 @@ const STAGE_COLUMNS: Stage[] = [
 
 export function WhatsAppClient({
   conversations: initialConversations,
+  contacts,
   initialSelectedId,
   initialMessages,
   initialView,
 }: {
   conversations: ConversationWithJoins[];
+  /** Same role as Email's/Social's own `contacts`/`allContacts` prop — the
+   * current user's already role-scoped contact list (Agent: own leads,
+   * Manager: own team, else: company-wide — see contactsService.
+   * listContactsForCurrentUser), filtered client-side by company for the
+   * "link to existing contact" dropdown. Unfiltered by phone/email on
+   * purpose: a WhatsApp sender may match a contact that was created without
+   * a phone number on file yet. */
+  contacts: ContactWithJoins[];
   initialSelectedId: string | null;
   initialMessages: Message[];
   /** Resolved server-side (see page.tsx) from the URL's `view` query param
@@ -297,7 +309,14 @@ export function WhatsAppClient({
 
           <div className="flex flex-1 flex-col">
             {selected ? (
-              <ChatPane key={selected.id} conversation={selected} messages={messages} loadingDetail={loadingDetail} onSent={refreshDetail} />
+              <ChatPane
+                key={selected.id}
+                conversation={selected}
+                contacts={contacts}
+                messages={messages}
+                loadingDetail={loadingDetail}
+                onSent={refreshDetail}
+              />
             ) : (
               <div className="flex flex-1 items-center justify-center text-text-tertiary">
                 <div className="text-center">
@@ -375,11 +394,13 @@ function PipelineColumn({
 
 function ChatPane({
   conversation,
+  contacts,
   messages,
   loadingDetail,
   onSent,
 }: {
   conversation: ConversationWithJoins;
+  contacts: ContactWithJoins[];
   messages: Message[];
   loadingDetail: boolean;
   onSent: () => void;
@@ -433,6 +454,9 @@ function ChatPane({
           </p>
         </div>
       </div>
+      {!conversation.contactId && (
+        <WhatsappLinkPanel conversation={conversation} contacts={contacts} onLinked={onSent} />
+      )}
       <div ref={messagesRef} className="flex-1 space-y-3 overflow-y-auto bg-surface-muted/60 p-5">
         {loadingDetail ? (
           <p className="py-6 text-center text-[13.5px] text-text-tertiary">{t("Loading...", "Cargando...")}</p>
@@ -481,5 +505,119 @@ function ChatPane({
         {error && <p className="text-[12.5px] text-danger">{error}</p>}
       </div>
     </>
+  );
+}
+
+/** The "no CRM contact yet" bar shown above a WhatsApp thread — direct
+ * WhatsApp equivalent of Correo's UnassignedEmailPanel and Redes Sociales'
+ * link panel, adapted to sit inline above an already-functional chat
+ * (unlike Email's Unassigned tab, a WhatsApp conversation can already be
+ * replied to before it's linked — see ChatPane above — so this never
+ * blocks or replaces the existing reply box, only adds the missing
+ * contact-association step next to it). "Link" is offered first and
+ * "Create new" second, same ordering as Correo, so an agent checks for an
+ * existing match before adding a new one. */
+function WhatsappLinkPanel({
+  conversation,
+  contacts,
+  onLinked,
+}: {
+  conversation: ConversationWithJoins;
+  contacts: ContactWithJoins[];
+  onLinked: () => void;
+}) {
+  const { t } = useLanguage();
+  const sameCompanyContacts = contacts.filter((c) => c.companyId === conversation.companyId);
+  const [mode, setMode] = useState<"link" | "create">("link");
+  const [contactId, setContactId] = useState("");
+  const [linking, setLinking] = useState(false);
+  const [linkError, setLinkError] = useState<string | undefined>();
+  const [newName, setNewName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | undefined>();
+
+  async function handleLink() {
+    if (!contactId) return;
+    setLinking(true);
+    setLinkError(undefined);
+    const result = await linkWhatsappConversationToContactAction(conversation.id, contactId);
+    setLinking(false);
+    if (result.error) {
+      setLinkError(result.error);
+      return;
+    }
+    onLinked();
+  }
+
+  async function handleCreateAndLink() {
+    if (!newName.trim()) return;
+    setCreating(true);
+    setCreateError(undefined);
+    const result = await createContactAndLinkWhatsappConversationAction(conversation.id, { name: newName.trim() });
+    setCreating(false);
+    if (result.error) {
+      setCreateError(result.error);
+      return;
+    }
+    onLinked();
+  }
+
+  return (
+    <div className="border-b border-warning-100 bg-warning-50 p-4">
+      <p className="mb-3 text-[11px] font-semibold tracking-wide text-warning-700">
+        {t("NO CRM CONTACT LINKED YET", "AÚN SIN CONTACTO CRM ASOCIADO")}
+      </p>
+      <div className="mb-3 flex w-fit rounded-lg border border-border bg-white p-0.5">
+        <button
+          type="button"
+          onClick={() => setMode("link")}
+          className={cn(
+            "rounded-md px-3 py-1 text-[12.5px] font-medium transition-colors",
+            mode === "link" ? "bg-brand-50 text-brand" : "text-text-secondary hover:text-text-primary"
+          )}
+        >
+          {t("Link existing", "Asociar existente")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("create")}
+          className={cn(
+            "rounded-md px-3 py-1 text-[12.5px] font-medium transition-colors",
+            mode === "create" ? "bg-brand-50 text-brand" : "text-text-secondary hover:text-text-primary"
+          )}
+        >
+          {t("Create new", "Crear nuevo")}
+        </button>
+      </div>
+      {mode === "link" ? (
+        <div className="flex items-center gap-2">
+          <Select value={contactId} onChange={(e) => setContactId(e.target.value)} className="max-w-xs">
+            <option value="">{t("Select a contact...", "Selecciona un contacto...")}</option>
+            {sameCompanyContacts.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </Select>
+          <Button size="sm" disabled={!contactId || linking} onClick={handleLink}>
+            {linking ? t("Linking...", "Asociando...") : t("Link", "Asociar")}
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Input
+            placeholder={t("Full name", "Nombre completo")}
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            className="max-w-xs"
+          />
+          <Button size="sm" variant="outline" disabled={!newName.trim() || creating} onClick={handleCreateAndLink}>
+            {creating ? t("Creating...", "Creando...") : t("Create & link", "Crear y asociar")}
+          </Button>
+        </div>
+      )}
+      {linkError && <p className="mt-2 text-[12.5px] text-danger">{linkError}</p>}
+      {createError && <p className="mt-2 text-[12.5px] text-danger">{createError}</p>}
+    </div>
   );
 }

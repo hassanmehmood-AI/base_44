@@ -3,43 +3,14 @@ import * as activitiesRepo from "@/server/repositories/activities";
 import * as companiesRepo from "@/server/repositories/companies";
 import * as pipelineStagesRepo from "@/server/repositories/pipelineStages";
 import * as usersRepo from "@/server/repositories/users";
-import * as managerAgentRepo from "@/server/repositories/managerAgentAssignments";
 import * as roundRobinService from "@/server/services/roundRobin";
-import { assertAssignableUser } from "@/server/services/users";
+import { assertAssignableUser, assertManagerCanAssign } from "@/server/services/users";
 import { assertCompanyAccess, requireSession } from "@/server/services/authorization";
 import { UnauthorizedError } from "@/server/services/authorization";
+import { LOST_STAGE_KEYS, STAGE_LABEL, type Stage } from "@/lib/pipeline";
 
-/** Shared by every write path that can set contacts.assignedUserId
- * (assignContact, classifyContact, createContact): a Call Center Manager may
- * only assign to a user on their own team (manager_agent_assignments), and a
- * NEW assignee must currently be marked Online (the Agent Online button's
- * manual status — no heartbeat/connection check involved). Without the team
- * check, a manager could bypass the UI's already-scoped options via a
- * direct action call with a tampered assignedUserId — this is what actually
- * makes "Manager 1 cannot assign to Manager 2's agents" true server-side,
- * not just hidden in the dropdown. The Online check is skipped when
- * assignedUserId already equals the contact's current assignee: re-saving
- * or classifying a lead must never force a reassignment just because that
- * agent has since gone Offline — "never change existing lead assignments"
- * takes priority over the Online gate for an unchanged value. Unassigning
- * (null) is always allowed, same as before. */
-async function assertManagerCanAssign(
-  session: Awaited<ReturnType<typeof requireSession>>,
-  assignedUserId: string | null,
-  companyId: string,
-  currentAssignedUserId: string | null
-) {
-  if (session.user.roleKey !== "CALL_CENTER_LEAD" || !assignedUserId) return;
-  const link = await managerAgentRepo.findManagerForAgent(assignedUserId, companyId);
-  if (link?.managerUserId !== session.user.id) {
-    throw new UnauthorizedError("You can only assign leads to agents on your own team.");
-  }
-  if (assignedUserId === currentAssignedUserId) return;
-  const target = await usersRepo.findById(assignedUserId);
-  if (target?.availabilityStatus !== "ONLINE") {
-    throw new Error("You can only assign new leads to agents who are Online.");
-  }
-}
+const VALID_STAGE_KEYS = new Set(Object.keys(STAGE_LABEL));
+const LOST_KEY_SET = new Set<string>(LOST_STAGE_KEYS);
 
 async function getAllowedCompanyIds(session: Awaited<ReturnType<typeof requireSession>>) {
   if (session.user.roleKey === "SUPERUSER") {
@@ -83,6 +54,110 @@ export async function listManualContactsForCurrentUser() {
     return contactsRepo.findManualByManagerScope(companyIds, session.user.id);
   }
   return contactsRepo.findManualByCompanyIds(companyIds);
+}
+
+export type FollowUpBucket = "OVERDUE" | "TODAY" | "UPCOMING";
+// followUpAt narrowed to non-null (every row in listFollowUpsForCurrentUser's
+// result has already been filtered to have one) — callers never need an
+// `!`/null-check for a value that's definitionally always present here.
+export type ContactFollowUp = Omit<contactsRepo.ContactWithJoins, "followUpAt"> & {
+  followUpAt: Date;
+  followUpBucket: FollowUpBucket;
+};
+
+function followUpBucket(followUpAt: Date, now: Date): FollowUpBucket {
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const startOfTomorrow = new Date(startOfToday);
+  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
+  if (followUpAt < startOfToday) return "OVERDUE";
+  if (followUpAt < startOfTomorrow) return "TODAY";
+  return "UPCOMING";
+}
+
+/** Lead management workflow Step 4: every contact with a scheduled next
+ * follow-up (contacts.followUpAt, set via the Classify panel — unchanged),
+ * categorized overdue / due today / upcoming so an agent's dashboard can
+ * surface what needs attention without opening every contact one by one.
+ * Same role-scoped source as listContactsForCurrentUser (Agent: own leads;
+ * Manager: own team; else: company-wide) — "managers can monitor their
+ * team's pending follow-ups" falls out of that existing scoping for free,
+ * no new authorization rule needed. Sorted soonest-first, so the most
+ * urgent items lead the list regardless of bucket.
+ *
+ * There is structurally only ever ONE next follow-up per contact
+ * (followUpAt is a single column, not a list/table) — this IS what
+ * prevents duplicate reminders, by construction, not by a dedupe check:
+ * scheduling a new one (classifyContact, or rescheduleFollowUp below)
+ * always overwrites the one before it, never adds a second. */
+export async function listFollowUpsForCurrentUser(): Promise<ContactFollowUp[]> {
+  const session = await requireSession();
+  const companyIds = await getAllowedCompanyIds(session);
+  let contacts: contactsRepo.ContactWithJoins[];
+  if (session.user.roleKey === "CALL_CENTER_AGENT") {
+    contacts = await contactsRepo.findManyByAssignedUserId(companyIds, session.user.id);
+  } else if (session.user.roleKey === "CALL_CENTER_LEAD") {
+    contacts = await contactsRepo.findManyByManagerScope(companyIds, session.user.id);
+  } else {
+    contacts = await contactsRepo.findManyByCompanyIds(companyIds);
+  }
+
+  const now = new Date();
+  return contacts
+    .filter((c): c is contactsRepo.ContactWithJoins & { followUpAt: Date } => c.followUpAt !== null)
+    .map((c) => ({ ...c, followUpBucket: followUpBucket(c.followUpAt, now) }))
+    .sort((a, b) => a.followUpAt.getTime() - b.followUpAt.getTime());
+}
+
+/** Marks a contact's current follow-up as done — clears followUpAt/
+ * nextAction (there's nothing else to "complete," since this isn't a
+ * separate row like tasks.ts's Task) and logs it to the permanent activity
+ * trail, same transactional shape as every other contact mutation here. */
+export async function completeFollowUp(id: string) {
+  const session = await requireSession();
+  const companyId = await contactsRepo.findCompanyIdById(id);
+  if (!companyId) throw new UnauthorizedError("Contact not found.");
+  await assertCompanyAccess(companyId);
+
+  return contactsRepo.withTransaction(async (tx) => {
+    const contact = await contactsRepo.updateInTx(tx, id, { followUpAt: null, nextAction: null });
+    const activity = await activitiesRepo.create(tx, {
+      companyId,
+      contactId: id,
+      type: "FOLLOW_UP_COMPLETED",
+      channel: null,
+      outcome: null,
+      notes: null,
+      createdBy: session.user.id,
+    });
+    return { contact, activity };
+  });
+}
+
+/** Moves a contact's follow-up to a new date (optionally updating the next
+ * action text too) without requiring the full Classify panel — the
+ * dedicated "Reschedule" action for the new Follow-ups list. Overwrites
+ * followUpAt in place (never appends), which is what keeps "one follow-up
+ * per contact" true after a reschedule, same as before one. */
+export async function rescheduleFollowUp(id: string, followUpAt: Date, nextAction: string | null) {
+  const session = await requireSession();
+  const companyId = await contactsRepo.findCompanyIdById(id);
+  if (!companyId) throw new UnauthorizedError("Contact not found.");
+  await assertCompanyAccess(companyId);
+
+  return contactsRepo.withTransaction(async (tx) => {
+    const contact = await contactsRepo.updateInTx(tx, id, { followUpAt, nextAction });
+    const activity = await activitiesRepo.create(tx, {
+      companyId,
+      contactId: id,
+      type: "FOLLOW_UP_RESCHEDULED",
+      channel: null,
+      outcome: null,
+      notes: nextAction,
+      createdBy: session.user.id,
+    });
+    return { contact, activity };
+  });
 }
 
 /** Manager-Based Team Isolation: direct record access must enforce the same
@@ -432,6 +507,52 @@ export async function moveContactStage(id: string, pipelineStageId: string) {
       channel: null,
       outcome: stage.key,
       notes: null,
+      createdBy: session.user.id,
+    });
+    return { contact, activity };
+  });
+}
+
+/** Lead management workflow Step 3: moves a Lost contact back into the
+ * active pipeline. "Reopening" is never a separate flag to clear —
+ * membership in LOST_STAGE_KEYS is the one and only signal anywhere in the
+ * app that a contact is lost (see pipeline.ts), so reopening is just an
+ * ordinary stage move, logged the exact same way moveContactStage logs any
+ * other one. Picks up where the lead actually left off rather than
+ * resetting progress: scans the recent activity trail for the last real
+ * stage this contact held before being marked Lost — classifyContact and
+ * moveContactStage both already store the stage they moved TO in an
+ * activity's `outcome` field, so the first non-Lost, valid-stage outcome
+ * found (most-recent-first) is where it was headed before the loss. Falls
+ * back to the pipeline's first stage only if no such entry turns up in the
+ * recent trail (e.g. an unusually old contact, or one whose history predates
+ * this feature). */
+export async function reopenContact(id: string) {
+  const session = await requireSession();
+  const existing = await contactsRepo.findById(id);
+  if (!existing) throw new UnauthorizedError("Contact not found.");
+  const companyId = existing.companyId;
+  await assertCompanyAccess(companyId);
+  if (!LOST_KEY_SET.has(existing.stageKey)) throw new Error("Only a Lost contact can be reopened.");
+
+  const recentActivities = await activitiesRepo.findRecentByContactId(id);
+  const priorStageKey = recentActivities.find(
+    (a) => a.outcome && VALID_STAGE_KEYS.has(a.outcome) && !LOST_KEY_SET.has(a.outcome)
+  )?.outcome as Stage | undefined;
+
+  const stages = await pipelineStagesRepo.findDefaultPipelineStages();
+  const targetStage = (priorStageKey && stages.find((s) => s.key === priorStageKey)) || stages[0];
+  if (!targetStage) throw new Error("No pipeline stages are configured — contact an administrator.");
+
+  return contactsRepo.withTransaction(async (tx) => {
+    const contact = await contactsRepo.updateInTx(tx, id, { pipelineStageId: targetStage.id });
+    const activity = await activitiesRepo.create(tx, {
+      companyId,
+      contactId: id,
+      type: "STATUS_CHANGE",
+      channel: null,
+      outcome: targetStage.key,
+      notes: "Reopened from Lost",
       createdBy: session.user.id,
     });
     return { contact, activity };

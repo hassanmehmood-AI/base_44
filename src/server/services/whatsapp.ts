@@ -1,12 +1,15 @@
 import { timingSafeEqual } from "node:crypto";
 import * as conversationsRepo from "@/server/repositories/conversations";
 import * as messagesRepo from "@/server/repositories/messages";
+import * as contactsRepo from "@/server/repositories/contacts";
+import * as pipelineStagesRepo from "@/server/repositories/pipelineStages";
 import * as whapiChannelsRepo from "@/server/repositories/whapiChannels";
 import * as whapiInboundEventsRepo from "@/server/repositories/whapiInboundEvents";
 import type { WhapiChannel } from "@/server/repositories/whapiChannels";
 import * as whapiProvider from "@/server/integrations/whapi";
 import * as avatarCapture from "@/server/services/avatarCapture";
-import { isGroupJid } from "@/server/services/whatsappJid";
+import * as contactsService from "@/server/services/contacts";
+import { isGroupJid, extractPersonalPhoneNumber } from "@/server/services/whatsappJid";
 import { decryptSecret } from "@/server/crypto/secretBox";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import { getAllowedCompaniesForCurrentUser } from "@/server/services/companies";
@@ -296,6 +299,75 @@ export async function getWhatsappConversation(id: string) {
   await assertCompanyAccess(conversation.companyId);
   const messages = await messagesRepo.findByConversationId(id);
   return { conversation, messages };
+}
+
+/** The "contact association" step for WhatsApp — a brand-new inbound
+ * WhatsApp conversation arrives with no CRM contact (just a chat_id/JID), so
+ * an agent links it to an existing contact once identified. Deliberately
+ * the same two guards as email.ts's equivalent linkConversationToContact:
+ * a conversation can only be linked once, and — since messages are
+ * append-only (see db/migrations/0001_append_only_triggers.sql), a
+ * message's conversationId can never be reassigned — a contact that
+ * already has a WhatsApp conversation can't take a second one, since
+ * there'd be no safe way to merge the two threads' histories into one. */
+export async function linkConversationToContact(conversationId: string, contactId: string) {
+  const conversation = await conversationsRepo.findById(conversationId);
+  if (!conversation) throw new UnauthorizedError("Conversation not found.");
+  await assertCompanyAccess(conversation.companyId);
+  if (conversation.contactId) throw new Error("This conversation is already linked to a contact.");
+
+  const contactCompanyId = await contactsRepo.findCompanyIdById(contactId);
+  if (!contactCompanyId || contactCompanyId !== conversation.companyId) {
+    throw new Error("Contact must belong to the same company as this WhatsApp conversation.");
+  }
+
+  const existing = await conversationsRepo.findByContactIdAndChannel(contactId, CHANNEL);
+  if (existing) {
+    throw new Error(
+      "This contact already has a WhatsApp conversation — open it from the Contacts list instead of linking a second thread."
+    );
+  }
+
+  return conversationsRepo.updateContactId(conversationId, contactId);
+}
+
+/** Companion to linkConversationToContact above, for the "no matching
+ * contact yet" case — creates a brand-new Contact and links it in one step.
+ * Reuses contactsService.createContact as-is (same function the CRM's own
+ * "New Contact" button and email.ts's equivalent use), so a WhatsApp-
+ * originated contact gets the exact same round-robin auto-assignment and
+ * Manager-ownership stamping as any other manually-created contact — no
+ * parallel/competing assignment path. Deliberately does NOT add a new
+ * duplicate-contact check beyond what createContact already does (none,
+ * today — see its own doc comment): the agent reviewing this specific
+ * conversation is the one asserting "this is a new contact," exactly
+ * mirroring email.ts's identical create-and-link flow, and the "link to
+ * existing" option above is offered first in the UI for exactly this
+ * reason. The new contact's phone is pre-filled from the conversation's own
+ * JID when it's a resolvable personal chat; left blank for a group chat or
+ * any unresolvable JID shape. */
+export async function createContactAndLinkConversation(conversationId: string, input: { name: string }) {
+  const conversation = await conversationsRepo.findById(conversationId);
+  if (!conversation) throw new UnauthorizedError("Conversation not found.");
+  await assertCompanyAccess(conversation.companyId);
+  if (conversation.contactId) throw new Error("This conversation is already linked to a contact.");
+  if (!input.name.trim()) throw new Error("Name is required.");
+
+  const stages = await pipelineStagesRepo.findDefaultPipelineStages();
+  const defaultStage = stages[0];
+  if (!defaultStage) throw new Error("No pipeline stages are configured — contact an administrator.");
+
+  const phone = extractPersonalPhoneNumber(conversation.externalThreadId);
+
+  const contact = await contactsService.createContact({
+    companyId: conversation.companyId,
+    name: input.name.trim(),
+    phone,
+    pipelineStageId: defaultStage.id,
+  });
+
+  await conversationsRepo.updateContactId(conversationId, contact.id);
+  return contact;
 }
 
 export async function replyToWhatsappConversation(conversationId: string, body: string) {

@@ -134,9 +134,10 @@ export function KpisClient({
         leadsWorked: acc.leadsWorked + c.leadsWorked,
         opportunities: acc.opportunities + c.opportunities,
         customers: acc.customers + c.customers,
+        lost: acc.lost + c.lost,
         unassignedLeads: acc.unassignedLeads + c.unassignedLeads,
       }),
-      { leadsWorked: 0, opportunities: 0, customers: 0, unassignedLeads: 0 }
+      { leadsWorked: 0, opportunities: 0, customers: 0, lost: 0, unassignedLeads: 0 }
     );
   }, [byCompany, activeCompany]);
 
@@ -169,6 +170,7 @@ export function KpisClient({
       [t("Leads worked", "Leads trabajados"), totals.leadsWorked],
       [t("Opportunities generated", "Oportunidades generadas"), totals.opportunities],
       [t("Customers", "Clientes"), totals.customers],
+      [t("Lost", "Perdidos"), totals.lost],
       [t("Conversion rate (leads)", "Tasa de conversión (leads)"), pct(totals.customers, totals.leadsWorked)],
       [t("Conversion rate (opportunities)", "Tasa de conversión (oportunidades)"), pct(totals.customers, totals.opportunities)],
       [t("Unassigned leads (excluded from totals)", "Leads sin asignar (excluidos de los totales)"), totals.unassignedLeads],
@@ -183,6 +185,7 @@ export function KpisClient({
         t("Contacted", "Contactados"),
         t("Opportunities", "Oportunidades"),
         t("Sales won", "Ventas ganadas"),
+        t("Lost", "Perdidos"),
         t("Rate %", "Tasa %"),
       ],
       ...filteredAgents.map((a) => [
@@ -192,6 +195,7 @@ export function KpisClient({
         a.contacted,
         a.opportunities,
         a.sales,
+        a.lost,
         pct(a.sales, a.assigned),
       ]),
     ];
@@ -270,10 +274,11 @@ export function KpisClient({
         </p>
       )}
 
-      <div className={cn("grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-5 transition-opacity", loadingDashboard && "opacity-50")}>
+      <div className={cn("grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-6 transition-opacity", loadingDashboard && "opacity-50")}>
         <StatCard label={t("Leads worked", "Leads trabajados")} value={totals.leadsWorked.toLocaleString("en-US")} />
         <StatCard label={t("Opportunities generated", "Oportunidades generadas")} value={totals.opportunities.toLocaleString("en-US")} />
         <StatCard label={t("Customers", "Clientes")} value={totals.customers.toLocaleString("en-US")} />
+        <StatCard label={t("Lost", "Perdidos")} value={totals.lost.toLocaleString("en-US")} />
         <StatCard
           label={t("Conversion rate (leads)", "Tasa de conversión (leads)")}
           value={pct(totals.customers, totals.leadsWorked)}
@@ -311,6 +316,7 @@ export function KpisClient({
                   <th className="pb-3 pr-4">{t("CONTACTED", "CONTACTADOS")}</th>
                   <th className="pb-3 pr-4">{t("OPPORTUNITIES", "OPORTUNIDADES")}</th>
                   <th className="pb-3 pr-4">{t("SALES WON", "VENTAS GANADAS")}</th>
+                  <th className="pb-3 pr-4">{t("LOST", "PERDIDOS")}</th>
                   <th className="pb-3">{t("RATE %", "TASA %")}</th>
                 </tr>
               </thead>
@@ -322,6 +328,7 @@ export function KpisClient({
                     <td className="py-3.5 pr-4 text-text-secondary">{a.contacted}</td>
                     <td className="py-3.5 pr-4 text-text-secondary">{a.opportunities}</td>
                     <td className="py-3.5 pr-4 text-text-secondary">{a.sales}</td>
+                    <td className="py-3.5 pr-4 text-text-secondary">{a.lost}</td>
                     <td className="py-3.5 font-medium text-brand-700">{pct(a.sales, a.assigned)}</td>
                   </tr>
                 ))}

@@ -18,6 +18,42 @@ export async function getAssignableUsersForCompany(companyId: string) {
   return usersRepo.findAssignableForCompany(companyId);
 }
 
+/** Shared by every write path that can assign a user as the owner of a lead
+ * OR a conversation (contacts.assignContact/classifyContact/createContact,
+ * social.updateConversationAssignee — and, going forward, any equivalent
+ * Email/WhatsApp conversation-assignee path): a Call Center Manager may only
+ * assign to a user on their own team (manager_agent_assignments), and a NEW
+ * assignee must currently be marked Online (the Agent Online button's manual
+ * status — no heartbeat/connection check involved). Without the team check,
+ * a manager could bypass the UI's already-scoped options via a direct action
+ * call with a tampered assignedUserId — this is what actually makes
+ * "Manager 1 cannot assign to Manager 2's agents" true server-side, not just
+ * hidden in the dropdown. The Online check is skipped when assignedUserId
+ * already equals the current assignee: re-saving or classifying a lead must
+ * never force a reassignment just because that agent has since gone
+ * Offline — "never change an existing assignment" takes priority over the
+ * Online gate for an unchanged value. Unassigning (null) is always allowed.
+ * Kept here (not in contacts.ts, where it originated) specifically so it has
+ * one single owner usable by both the contact-level and the conversation-
+ * level assignment paths — never two competing copies of this rule. */
+export async function assertManagerCanAssign(
+  session: Awaited<ReturnType<typeof requireSession>>,
+  assignedUserId: string | null,
+  companyId: string,
+  currentAssignedUserId: string | null
+): Promise<void> {
+  if (session.user.roleKey !== "CALL_CENTER_LEAD" || !assignedUserId) return;
+  const link = await managerAgentRepo.findManagerForAgent(assignedUserId, companyId);
+  if (link?.managerUserId !== session.user.id) {
+    throw new UnauthorizedError("You can only assign leads to agents on your own team.");
+  }
+  if (assignedUserId === currentAssignedUserId) return;
+  const target = await usersRepo.findById(assignedUserId);
+  if (target?.availabilityStatus !== "ONLINE") {
+    throw new Error("You can only assign new leads to agents who are Online.");
+  }
+}
+
 /** Agent Online button. Self-only by design — there is no userId parameter,
  * so there's no tampered-client-request path to set someone else's status.
  * Restricted to CALL_CENTER_AGENT: the only role whose online/offline state

@@ -15,7 +15,7 @@ async function getKpiScopedContacts(companyIds: string[], session: Awaited<Retur
     ? contactsRepo.findManyByManagerScope(companyIds, session.user.id)
     : contactsRepo.findManyByCompanyIds(companyIds);
 }
-import { OPPORTUNITY_STAGE_KEYS, CUSTOMER_STAGE_KEYS, type Stage } from "@/lib/pipeline";
+import { OPPORTUNITY_STAGE_KEYS, CUSTOMER_STAGE_KEYS, LOST_STAGE_KEYS, type Stage } from "@/lib/pipeline";
 import { KPI_DEPARTMENT_ROLE_KEYS, DEFAULT_KPI_DEPARTMENT, type KpiPeriod, type KpiDepartment, type RoleKey } from "@/server/constants";
 
 const MONTHLY_WINDOW_MONTHS = 6;
@@ -26,6 +26,13 @@ export type KpiCompanyTotals = {
   leadsWorked: number;
   opportunities: number;
   customers: number;
+  // Lead management workflow Step 3: contacts currently sitting in the
+  // Lost stage (or, for a period filter, that crossed INTO it during that
+  // period) — same computation shape as opportunities/customers below,
+  // just against LOST_STAGE_KEYS instead. Never double-counts against
+  // opportunities/customers, since PERDIDO is never a member of either of
+  // those arrays.
+  lost: number;
   // Leads in this company/period with no assigned agent — can't be
   // attributed to any department, so they're excluded from the totals
   // above whenever a specific department is selected. Surfaced in the UI
@@ -62,6 +69,7 @@ export type KpiAgentRow = {
   contacted: number;
   opportunities: number;
   sales: number;
+  lost: number;
 };
 
 export type KpiMonthlyRow = {
@@ -125,14 +133,18 @@ export async function getKpiTotals(
 
   let opportunityContactIds: Set<string>;
   let customerContactIds: Set<string>;
+  let lostContactIds: Set<string>;
   if (since) {
     const oppRows = await activitiesRepo.findStatusChangeContactIds(companyIds, [...OPPORTUNITY_STAGE_KEYS], since);
     const custRows = await activitiesRepo.findStatusChangeContactIds(companyIds, [...CUSTOMER_STAGE_KEYS], since);
+    const lostRows = await activitiesRepo.findStatusChangeContactIds(companyIds, [...LOST_STAGE_KEYS], since);
     opportunityContactIds = new Set(oppRows.map((r) => r.contactId));
     customerContactIds = new Set(custRows.map((r) => r.contactId));
+    lostContactIds = new Set(lostRows.map((r) => r.contactId));
   } else {
     opportunityContactIds = new Set(allContacts.filter((c) => OPPORTUNITY_STAGE_KEYS.includes(c.stageKey as Stage)).map((c) => c.id));
     customerContactIds = new Set(allContacts.filter((c) => CUSTOMER_STAGE_KEYS.includes(c.stageKey as Stage)).map((c) => c.id));
+    lostContactIds = new Set(allContacts.filter((c) => LOST_STAGE_KEYS.includes(c.stageKey as Stage)).map((c) => c.id));
   }
 
   const leadsWorkedContacts = since ? departmentContacts.filter((c) => c.createdAt >= since) : departmentContacts;
@@ -143,22 +155,31 @@ export async function getKpiTotals(
     (c) => !c.assignedUserId
   );
 
+  const emptyTotals = (): Omit<KpiCompanyTotals, "companyId" | "companyName"> => ({
+    leadsWorked: 0,
+    opportunities: 0,
+    customers: 0,
+    lost: 0,
+    unassignedLeads: 0,
+  });
+
   const byCompanyMap = new Map<string, Omit<KpiCompanyTotals, "companyId" | "companyName">>();
   for (const c of leadsWorkedContacts) {
-    const totals = byCompanyMap.get(c.companyId) ?? { leadsWorked: 0, opportunities: 0, customers: 0, unassignedLeads: 0 };
+    const totals = byCompanyMap.get(c.companyId) ?? emptyTotals();
     totals.leadsWorked += 1;
     byCompanyMap.set(c.companyId, totals);
   }
   for (const c of unassignedLeadsContacts) {
-    const totals = byCompanyMap.get(c.companyId) ?? { leadsWorked: 0, opportunities: 0, customers: 0, unassignedLeads: 0 };
+    const totals = byCompanyMap.get(c.companyId) ?? emptyTotals();
     totals.unassignedLeads += 1;
     byCompanyMap.set(c.companyId, totals);
   }
   for (const c of departmentContacts) {
-    if (!opportunityContactIds.has(c.id) && !customerContactIds.has(c.id)) continue;
-    const totals = byCompanyMap.get(c.companyId) ?? { leadsWorked: 0, opportunities: 0, customers: 0, unassignedLeads: 0 };
+    if (!opportunityContactIds.has(c.id) && !customerContactIds.has(c.id) && !lostContactIds.has(c.id)) continue;
+    const totals = byCompanyMap.get(c.companyId) ?? emptyTotals();
     if (opportunityContactIds.has(c.id)) totals.opportunities += 1;
     if (customerContactIds.has(c.id)) totals.customers += 1;
+    if (lostContactIds.has(c.id)) totals.lost += 1;
     byCompanyMap.set(c.companyId, totals);
   }
 
@@ -174,6 +195,7 @@ export async function getKpiTotals(
       contacted: 0,
       opportunities: 0,
       sales: 0,
+      lost: 0,
     };
     agentMap.set(key, agent);
     return agent;
@@ -183,13 +205,15 @@ export async function getKpiTotals(
     if (agent) agent.assigned += 1;
   }
   for (const c of departmentContacts) {
-    const touchedThisPeriod = contactedIds.has(c.id) || opportunityContactIds.has(c.id) || customerContactIds.has(c.id);
+    const touchedThisPeriod =
+      contactedIds.has(c.id) || opportunityContactIds.has(c.id) || customerContactIds.has(c.id) || lostContactIds.has(c.id);
     if (!touchedThisPeriod) continue;
     const agent = getAgent(c);
     if (!agent) continue;
     if (contactedIds.has(c.id)) agent.contacted += 1;
     if (opportunityContactIds.has(c.id)) agent.opportunities += 1;
     if (customerContactIds.has(c.id)) agent.sales += 1;
+    if (lostContactIds.has(c.id)) agent.lost += 1;
   }
 
   return {

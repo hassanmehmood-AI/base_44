@@ -32,3 +32,30 @@ export async function replyToWhatsappConversationAction(conversationId: string, 
   revalidatePath("/canales/whatsapp");
   return { ok: true };
 }
+
+export async function linkWhatsappConversationToContactAction(conversationId: string, contactId: string): Promise<ActionResult> {
+  try {
+    await whatsappService.linkConversationToContact(conversationId, contactId);
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "You don't have access to that conversation." };
+    if (e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/canales/whatsapp");
+  return { ok: true };
+}
+
+export async function createContactAndLinkWhatsappConversationAction(
+  conversationId: string,
+  input: { name: string }
+): Promise<ActionResult & { contactId?: string }> {
+  try {
+    const contact = await whatsappService.createContactAndLinkConversation(conversationId, input);
+    revalidatePath("/canales/whatsapp");
+    return { ok: true, contactId: contact.id };
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "You don't have access to that conversation." };
+    if (e instanceof Error) return { error: e.message };
+    throw e;
+  }
+}

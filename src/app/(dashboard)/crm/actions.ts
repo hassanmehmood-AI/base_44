@@ -16,6 +16,47 @@ export async function getContactActivitiesAction(contactId: string) {
   return { activities: result?.activities ?? [] };
 }
 
+export async function getFollowUpsAction() {
+  try {
+    return { followUps: await contactsService.listFollowUpsForCurrentUser() };
+  } catch {
+    return { followUps: [] };
+  }
+}
+
+export async function completeFollowUpAction(contactId: string): Promise<ActionResult & { activity?: ActivityWithAuthor }> {
+  let activity;
+  try {
+    const session = await requireSession();
+    const result = await contactsService.completeFollowUp(contactId);
+    activity = { ...result.activity, authorName: session.user.name };
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "You don't have access to that contact." };
+    throw e;
+  }
+  revalidatePath("/crm");
+  return { ok: true, activity };
+}
+
+export async function rescheduleFollowUpAction(
+  contactId: string,
+  input: { followUpAt: string; nextAction: string }
+): Promise<ActionResult & { activity?: ActivityWithAuthor }> {
+  if (!input.followUpAt) return { error: "A follow-up date is required." };
+
+  let activity;
+  try {
+    const session = await requireSession();
+    const result = await contactsService.rescheduleFollowUp(contactId, new Date(input.followUpAt), input.nextAction.trim() || null);
+    activity = { ...result.activity, authorName: session.user.name };
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "You don't have access to that contact." };
+    throw e;
+  }
+  revalidatePath("/crm");
+  return { ok: true, activity };
+}
+
 export async function getContactsForCampaignAction(campaignId: string) {
   try {
     return { contacts: await campaignsService.listContactsForCrm(campaignId) };
@@ -211,6 +252,22 @@ export async function moveContactStageAction(
     activity = { ...result.activity, authorName: session.user.name };
   } catch (e) {
     if (e instanceof UnauthorizedError) return { error: "You don't have access to that contact." };
+    throw e;
+  }
+
+  revalidatePath("/crm");
+  return { ok: true, activity };
+}
+
+export async function reopenContactAction(contactId: string): Promise<ActionResult & { activity?: ActivityWithAuthor }> {
+  let activity;
+  try {
+    const session = await requireSession();
+    const result = await contactsService.reopenContact(contactId);
+    activity = { ...result.activity, authorName: session.user.name };
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "You don't have access to that contact." };
+    if (e instanceof Error) return { error: e.message };
     throw e;
   }
 

@@ -5,7 +5,10 @@ import { getDb } from "./index";
 import { roles, pipelines, pipelineStages, companies, users, userCompanyAccess, userModuleAccess } from "./schema";
 import { ROLE_KEYS } from "@/server/constants";
 
-// Matches the Stage keys already used by the frontend in src/lib/pipeline.ts
+// Matches the Stage keys already used by the frontend in src/lib/pipeline.ts.
+// PERDIDO (Lost) is last by convention, not because it's a late pipeline
+// step — see pipeline.ts's LOST_STAGE_KEYS doc comment for why it's
+// deliberately excluded from OPPORTUNITY_STAGE_KEYS/CUSTOMER_STAGE_KEYS.
 const STAGE_KEYS = [
   "NUEVO_LEAD",
   "CONTACTADO",
@@ -14,6 +17,7 @@ const STAGE_KEYS = [
   "PEDIDO_EN_CURSO",
   "CLIENTE",
   "SEGUIMIENTO",
+  "PERDIDO",
 ];
 
 // Matches the company names already used throughout src/lib/mock-data.ts —

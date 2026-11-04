@@ -12,7 +12,9 @@ export type ActivityType =
   | "STATUS_CHANGE"
   | "AI_CLASSIFICATION"
   | "ASSIGNMENT"
-  | "AUTO_ASSIGNMENT";
+  | "AUTO_ASSIGNMENT"
+  | "FOLLOW_UP_COMPLETED"
+  | "FOLLOW_UP_RESCHEDULED";
 
 export const ACTIVITY_TYPE_LABEL: Record<ActivityType, string> = {
   CALL: "Call",
@@ -24,6 +26,8 @@ export const ACTIVITY_TYPE_LABEL: Record<ActivityType, string> = {
   AI_CLASSIFICATION: "AI Classification",
   ASSIGNMENT: "Assigned",
   AUTO_ASSIGNMENT: "Auto Assigned",
+  FOLLOW_UP_COMPLETED: "Follow-up completed",
+  FOLLOW_UP_RESCHEDULED: "Follow-up rescheduled",
 };
 
 export const ACTIVITY_TYPE_LABEL_ES: Record<ActivityType, string> = {
@@ -36,6 +40,8 @@ export const ACTIVITY_TYPE_LABEL_ES: Record<ActivityType, string> = {
   AI_CLASSIFICATION: "Clasificación IA",
   ASSIGNMENT: "Asignado",
   AUTO_ASSIGNMENT: "Asignado automáticamente",
+  FOLLOW_UP_COMPLETED: "Seguimiento completado",
+  FOLLOW_UP_RESCHEDULED: "Seguimiento reprogramado",
 };
 
 /** Activity `channel` column — a finer-grained signal than `type` (e.g. a

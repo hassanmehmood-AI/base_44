@@ -5,7 +5,7 @@ import * as companySocialAccountsRepo from "@/server/repositories/companySocialA
 import * as contactsRepo from "@/server/repositories/contacts";
 import * as activitiesRepo from "@/server/repositories/activities";
 import * as companiesService from "@/server/services/companies";
-import { assertAssignableUser } from "@/server/services/users";
+import { assertAssignableUser, assertManagerCanAssign } from "@/server/services/users";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
 import * as metaProvider from "@/server/integrations/meta";
 import * as metricoolProvider from "@/server/integrations/metricool";
@@ -312,11 +312,23 @@ export async function linkConversationToContact(conversationId: string, contactI
   return conversationsRepo.updateContactId(conversationId, contactId);
 }
 
+/** Security fix (Step 2): this previously only ran assertAssignableUser —
+ * unlike every OTHER assignment path in the app (contacts.assignContact/
+ * classifyContact/createContact), it never checked assertManagerCanAssign,
+ * so a Call Center Manager could assign a Social Media conversation to an
+ * agent on a DIFFERENT manager's team simply by calling this action with a
+ * tampered assignedUserId — the UI's own dropdown was already correctly
+ * team-scoped (see getAssignableUsersAction in redes-sociales/actions.ts),
+ * but nothing enforced that server-side. Now uses the exact same shared
+ * guard contacts.ts uses, so "a Manager can only assign within their own
+ * team" is one single rule enforced identically at both the contact level
+ * and the conversation level — never two competing definitions of it. */
 export async function updateConversationAssignee(conversationId: string, assignedUserId: string | null) {
   const conversation = await conversationsRepo.findById(conversationId);
   if (!conversation) throw new UnauthorizedError("Conversation not found.");
-  await assertCompanyAccess(conversation.companyId);
+  const session = await assertCompanyAccess(conversation.companyId);
   await assertAssignableUser(assignedUserId);
+  await assertManagerCanAssign(session, assignedUserId, conversation.companyId, conversation.assignedUserId);
   return conversationsRepo.updateAssignee(conversationId, assignedUserId);
 }
 

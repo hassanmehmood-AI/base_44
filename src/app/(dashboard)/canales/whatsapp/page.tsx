@@ -1,4 +1,5 @@
 import * as whatsappService from "@/server/services/whatsapp";
+import * as contactsService from "@/server/services/contacts";
 import { WhatsAppClient } from "./WhatsAppClient";
 import { resolveInitialView, resolveInitialSelectedId } from "./whatsappUrlState";
 
@@ -13,9 +14,10 @@ export default async function WhatsAppPage({
   // crm/page.tsx and the Social Media page already use.
   searchParams: Promise<{ view?: string; conversationId?: string }>;
 }) {
-  const [{ view: requestedView, conversationId: requestedConversationId }, conversations] = await Promise.all([
+  const [{ view: requestedView, conversationId: requestedConversationId }, conversations, contacts] = await Promise.all([
     searchParams,
     whatsappService.listWhatsappConversationsForCurrentUser(),
+    contactsService.listContactsForCurrentUser(),
   ]);
 
   const initialView = resolveInitialView(requestedView);
@@ -31,6 +33,7 @@ export default async function WhatsAppPage({
   return (
     <WhatsAppClient
       conversations={conversations}
+      contacts={contacts}
       initialSelectedId={initialSelectedId}
       initialMessages={initialDetail?.messages ?? []}
       initialView={initialView}
