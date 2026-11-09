@@ -7,8 +7,26 @@ import { ProviderNotConfiguredError } from "@/server/integrations/errors";
 
 export type ActionResult = { error?: string; ok?: true };
 
-export async function getContactEmailDetailAction(contactId: string) {
-  return emailService.getConversationForContact(contactId);
+/** conversationId is only needed once a contact has more than one EMAIL
+ * conversation (see getConversationForContact's own doc comment) — the
+ * thread picker passes it when switching between a contact's Gmail/Webmail
+ * threads; omitted on the initial contact-select, which defaults to the
+ * most recent one. */
+export async function getContactEmailDetailAction(contactId: string, conversationId?: string) {
+  return emailService.getConversationForContact(contactId, conversationId);
+}
+
+/** Only ever has a non-empty result when the contact's company has 2+
+ * active mailboxes AND this contact has no existing email conversation yet
+ * — see getAvailableSenderAccountsForContact's own doc comment. The
+ * composer calls this once per contact selection to decide whether to show
+ * a "Send from" picker at all. */
+export async function getAvailableSenderAccountsAction(contactId: string) {
+  try {
+    return { accounts: await emailService.getAvailableSenderAccountsForContact(contactId) };
+  } catch {
+    return { accounts: [] };
+  }
 }
 
 /** Re-fetches the authoritative Unassigned list — used both for the initial
@@ -17,6 +35,18 @@ export async function getContactEmailDetailAction(contactId: string) {
  * listConversationsAction. */
 export async function listUnassignedEmailConversationsAction() {
   return emailService.listUnassignedEmailConversations();
+}
+
+/** Refetched alongside the Unassigned list on every realtime event, same
+ * "something changed, go refetch the authoritative map" pattern — keeps the
+ * Contacts tab's provider badges/filter correct without a full page reload
+ * when a brand-new conversation (Gmail or Webmail) gets its first message. */
+export async function getEmailProvidersByContactAction() {
+  try {
+    return await emailService.getEmailProvidersByContact();
+  } catch {
+    return {};
+  }
 }
 
 export async function getUnassignedConversationDetailAction(id: string) {
@@ -59,7 +89,15 @@ export async function createContactAndLinkEmailConversationAction(
  * about them — the service layer (sendEmailToContact) only ever deals in
  * {filename, mimeType, bytes}, never a browser-specific File type. */
 export async function sendEmailAction(
-  input: { contactId: string; subject: string; bodyText: string; bodyHtml?: string | null; attachments?: File[] }
+  input: {
+    contactId: string;
+    subject: string;
+    bodyText: string;
+    bodyHtml?: string | null;
+    attachments?: File[];
+    conversationId?: string;
+    accountId?: string;
+  }
 ): Promise<ActionResult> {
   if (!input.subject.trim()) return { error: "Subject is required." };
   if (!input.bodyText.trim()) return { error: "Message body can't be empty." };

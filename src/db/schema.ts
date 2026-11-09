@@ -347,10 +347,20 @@ export const campaignContacts = pgTable("campaign_contacts", {
  * days), so a renewal job knows which rows are coming due — same
  * "scheduled renewal" shape as this app's other recurring Railway cron
  * jobs (see scripts/whapi-pending-trigger). */
+/** SMTP/IMAP connection fields below (companyEmailAccounts) are additive —
+ * nullable, only ever populated for provider = "SMTP_IMAP" rows, and never
+ * read by the Google Workspace code path at all. One shared username/
+ * password pair per mailbox (not separate SMTP vs IMAP credentials): this
+ * matches how virtually every real-world webmail provider actually issues
+ * credentials — the same login works for both protocols — and is the exact
+ * "host/port/username/password" shape every generic email client (Outlook,
+ * Thunderbird, Apple Mail's manual setup) already asks for, which is what
+ * makes this genuinely provider-agnostic rather than tied to any one
+ * webmail vendor's API. */
 export const companyEmailAccounts = pgTable("company_email_accounts", {
   id: id(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  // GOOGLE_WORKSPACE | (future) SMTP_IMAP
+  // GOOGLE_WORKSPACE | SMTP_IMAP
   provider: text("provider").notNull(),
   // Always stored normalized (trim().toLowerCase()) by the service layer —
   // same convention as contactsService's normalizeEmail — so the
@@ -377,6 +387,31 @@ export const companyEmailAccounts = pgTable("company_email_accounts", {
   grantedScopes: text("granted_scopes"),
   historyId: text("history_id"),
   watchExpiration: timestamp("watch_expiration", { withTimezone: true }),
+  // SMTP/IMAP-only fields — all null for GOOGLE_WORKSPACE rows.
+  smtpHost: text("smtp_host"),
+  smtpPort: integer("smtp_port"),
+  // SSL | STARTTLS | NONE
+  smtpSecurity: text("smtp_security"),
+  imapHost: text("imap_host"),
+  imapPort: integer("imap_port"),
+  // SSL | STARTTLS | NONE
+  imapSecurity: text("imap_security"),
+  // Usually the same as emailAddress, but not always (e.g. some providers'
+  // login name differs from the mailbox address) — kept as its own field
+  // rather than assuming emailAddress is always the login.
+  smtpImapUsername: text("smtp_imap_username"),
+  // Same AES-256-GCM scheme as encryptedRefreshToken above, via its own
+  // crypto/smtpSecretBox.ts module and SMTP_CREDENTIAL_ENCRYPTION_KEY — one
+  // password shared by both SMTP and IMAP, per this table's own doc comment.
+  encryptedPassword: text("encrypted_password"),
+  // IMAP's own incremental-sync cursor pair — the IMAP equivalent of
+  // historyId above. UIDVALIDITY changing means every previously-seen UID
+  // is no longer a valid reference (RFC 3501 §2.3.1.1); imapSync.ts treats
+  // that as a signal to re-baseline, same shape as Gmail's history-expired
+  // handling. lastSeenUid is the last UID actually processed — the next
+  // sync pass fetches only messages with a higher UID.
+  imapUidValidity: text("imap_uid_validity"),
+  imapLastSeenUid: text("imap_last_seen_uid"),
   lastError: text("last_error"),
   createdAt: createdAt(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

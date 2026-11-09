@@ -7,6 +7,8 @@ import * as usersService from "@/server/services/users";
 import * as metricoolOnboardingService from "@/server/services/metricoolOnboarding";
 import * as whapiOnboardingService from "@/server/services/whapiOnboarding";
 import * as emailOnboardingService from "@/server/services/emailOnboarding";
+import * as smtpOnboardingService from "@/server/services/smtpOnboarding";
+import type { SmtpImapInput } from "@/server/services/smtpOnboarding";
 import { UnauthorizedError } from "@/server/services/authorization";
 import type { RoleKey, ModuleKey } from "@/server/constants";
 
@@ -188,15 +190,22 @@ export type GoogleEmailAccountRow = {
 export async function getGoogleEmailAccountsForCompanyAction(companyId: string): Promise<{ accounts: GoogleEmailAccountRow[] }> {
   try {
     const accounts = await emailOnboardingService.listAccountsForCompany(companyId);
+    // Filter here, in the action, rather than touching listAccountsForCompany
+    // itself — that function now also returns SMTP_IMAP rows (same
+    // company_email_accounts table), and this specific action/UI section is
+    // Gmail-only; the new webmail section below has its own, separately
+    // filtered action instead of this one being made to serve both.
     return {
-      accounts: accounts.map((a) => ({
-        id: a.id,
-        emailAddress: a.emailAddress,
-        displayName: a.displayName,
-        status: a.status,
-        lastError: a.lastError,
-        createdAt: a.createdAt.toISOString(),
-      })),
+      accounts: accounts
+        .filter((a) => a.provider === "GOOGLE_WORKSPACE")
+        .map((a) => ({
+          id: a.id,
+          emailAddress: a.emailAddress,
+          displayName: a.displayName,
+          status: a.status,
+          lastError: a.lastError,
+          createdAt: a.createdAt.toISOString(),
+        })),
     };
   } catch {
     return { accounts: [] };
@@ -206,6 +215,77 @@ export async function getGoogleEmailAccountsForCompanyAction(companyId: string):
 export async function disconnectGoogleEmailAccountAction(accountId: string): Promise<ActionResult> {
   try {
     await emailOnboardingService.disconnectAccount(accountId);
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+/** "Test connection" button's action — runs both SMTP and IMAP login
+ * attempts for real, before anything is saved. Never persists anything
+ * itself; see connectWebmailAccountAction below for the actual save step
+ * (which re-verifies independently rather than trusting this call's
+ * result, per smtpOnboarding.ts's own doc comment). */
+export async function testWebmailConnectionAction(input: SmtpImapInput): Promise<ActionResult> {
+  const result = await smtpOnboardingService.testConnection(input);
+  if (result.ok) return { ok: true };
+  const parts = [result.smtpError && `SMTP: ${result.smtpError}`, result.imapError && `IMAP: ${result.imapError}`].filter(Boolean);
+  return { error: parts.join(" — ") || "Could not connect with the provided details." };
+}
+
+export async function connectWebmailAccountAction(companyId: string, input: SmtpImapInput): Promise<ActionResult> {
+  const result = await smtpOnboardingService.connectAccount(companyId, input).catch((e) => {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { ok: false as const, reason: "connection_failed" as const, message: e.message };
+    throw e;
+  });
+  if (!result.ok) return { error: result.message };
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+export type WebmailAccountRow = {
+  id: string;
+  emailAddress: string;
+  displayName: string | null;
+  status: string;
+  lastError: string | null;
+  smtpHost: string | null;
+  imapHost: string | null;
+  createdAt: string;
+};
+
+/** Same safe-DTO convention as getGoogleEmailAccountsForCompanyAction —
+ * deliberately excludes encryptedPassword, smtpImapUsername, and the raw
+ * ports/security settings the UI doesn't need to re-display after the
+ * fact; smtpHost/imapHost are included only as a "which server is this"
+ * label for the list, never enough on their own to reconnect. */
+export async function getWebmailAccountsForCompanyAction(companyId: string): Promise<{ accounts: WebmailAccountRow[] }> {
+  try {
+    const accounts = await smtpOnboardingService.listAccountsForCompany(companyId);
+    return {
+      accounts: accounts
+        .filter((a) => a.provider === "SMTP_IMAP")
+        .map((a) => ({
+          id: a.id,
+          emailAddress: a.emailAddress,
+          displayName: a.displayName,
+          status: a.status,
+          lastError: a.lastError,
+          smtpHost: a.smtpHost,
+          imapHost: a.imapHost,
+          createdAt: a.createdAt.toISOString(),
+        })),
+    };
+  } catch {
+    return { accounts: [] };
+  }
+}
+
+export async function disconnectWebmailAccountAction(accountId: string): Promise<ActionResult> {
+  try {
+    await smtpOnboardingService.disconnectAccount(accountId);
   } catch (e) {
     if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
     throw e;

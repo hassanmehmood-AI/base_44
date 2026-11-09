@@ -211,7 +211,16 @@ export async function syncAllActiveAccounts(): Promise<SyncSweepResult> {
       return { accountsChecked: 0, accountsFailed: 0, skippedConcurrent: true as const };
     }
 
-    const accounts = await companyEmailAccountsRepo.findAllActive();
+    // Universal webmail fix: findAllActive() returns every ACTIVE
+    // company_email_accounts row regardless of provider — before the
+    // SMTP/IMAP feature existed, every row WAS a Gmail account, so this
+    // filter was never needed. Without it, this Gmail-only sweep would
+    // also pick up SMTP_IMAP rows and call getValidAccessToken (a Google
+    // OAuth-specific function) on them, incorrectly marking a perfectly
+    // healthy SMTP mailbox NEEDS_REAUTH on the very next tick. This is the
+    // only line gmailSync.ts needed to stay correct once a second provider
+    // started sharing the same table — all other Gmail logic is unchanged.
+    const accounts = (await companyEmailAccountsRepo.findAllActive()).filter((a) => a.provider === "GOOGLE_WORKSPACE");
     let accountsFailed = 0;
 
     for (const account of accounts) {

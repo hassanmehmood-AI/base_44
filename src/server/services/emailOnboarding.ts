@@ -6,6 +6,12 @@ import { GoogleApiError } from "@/server/integrations/google";
 import { signGoogleOAuthState, verifyGoogleOAuthState } from "@/server/services/googleOAuthState";
 import { encryptSecret, decryptSecret, isEncryptionKeyConfigured } from "@/server/crypto/googleSecretBox";
 import { assertCompanyAccess, requireSession, UnauthorizedError } from "@/server/services/authorization";
+// Universal webmail addition — no module in smtpOnboarding.ts/integrations/
+// smtp.ts imports anything from THIS file, so this is not a circular
+// import; it only lets sendFromAccount's SMTP_IMAP branch (below) dispatch
+// to the non-Google sender.
+import { getPassword } from "@/server/services/smtpOnboarding";
+import * as smtpProvider from "@/server/integrations/smtp";
 
 /** Google Workspace / Gmail mailbox onboarding — the Google equivalent of
  * whapiOnboarding.ts. Superuser-only for the same reason Whapi channel
@@ -221,7 +227,13 @@ export async function getValidAccessToken(account: CompanyEmailAccount): Promise
  * provided, must already be sanitized (see lib/emailHtml.ts) — this
  * function has no opinion on sanitization, only on sending. attachments
  * bytes must already be validated/size-checked by the caller (see
- * lib/emailAttachments.ts) — same division of responsibility. */
+ * lib/emailAttachments.ts) — same division of responsibility.
+ *
+ * Branches on account.provider — the ONLY change this universal webmail
+ * feature makes to this file. The GOOGLE_WORKSPACE branch below is the
+ * exact, unmodified code that was here before; a SMTP_IMAP account never
+ * touches googleProvider/getValidAccessToken at all, so this addition
+ * cannot affect Gmail sending in any way. */
 export async function sendFromAccount(
   accountId: string,
   input: {
@@ -236,6 +248,22 @@ export async function sendFromAccount(
   if (!account) throw new Error("Email account not found.");
   await assertCompanyAccess(account.companyId);
   if (account.status !== "ACTIVE") throw new Error("This mailbox is not active — reconnect it before sending.");
+
+  if (account.provider === "SMTP_IMAP") {
+    if (!account.smtpHost || !account.smtpPort || !account.smtpSecurity || !account.smtpImapUsername) {
+      throw new Error("This mailbox's SMTP settings are incomplete — reconnect it.");
+    }
+    return smtpProvider.sendSmtpMessage(
+      {
+        host: account.smtpHost,
+        port: account.smtpPort,
+        security: account.smtpSecurity as "SSL" | "STARTTLS" | "NONE",
+        username: account.smtpImapUsername,
+        password: getPassword(account),
+      },
+      input
+    );
+  }
 
   const accessToken = await getValidAccessToken(account);
   return googleProvider.sendGmailMessage(accessToken, input);

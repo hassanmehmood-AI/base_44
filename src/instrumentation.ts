@@ -44,6 +44,13 @@ export async function register() {
   // support one.
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
+  // Universal webmail poller — called unconditionally, BEFORE the Gmail
+  // config check below, specifically so SMTP/IMAP polling starts
+  // correctly even in an environment where Gmail isn't configured at all
+  // (and vice versa). Every line of the Gmail setup from here down is
+  // exactly what it was before this feature existed.
+  await registerImapPoller();
+
   const { isGoogleOAuthConfigured } = await import("@/server/integrations/google");
   if (!isGoogleOAuthConfigured()) {
     // Expected in any environment without Gmail set up yet (a contributor's
@@ -75,5 +82,47 @@ export async function register() {
   setInterval(tick, POLL_INTERVAL_MS);
   // Also run once immediately on boot, rather than waiting a full interval
   // for the first check after every deploy/restart.
+  tick();
+}
+
+/** Universal webmail (SMTP/IMAP) inbound sync poller — a second, fully
+ * independent interval alongside the Gmail one above. Deliberately its own
+ * register-time branch rather than folded into the Gmail block: the two
+ * features have completely separate config checks, completely separate
+ * sync services (imapSync.ts, never gmailSync.ts), and either one can be
+ * absent/misconfigured without affecting the other at all. Same
+ * self-starting/crash-safe/multi-replica-safe reasoning as the Gmail
+ * poller above (same Railway deploy, same restart policy) — see that
+ * block's own doc comment for the full justification, not repeated here.
+ * A slightly longer interval (10s vs Gmail's 3s) since there is no fixed,
+ * generous per-second quota to reason about here the way Gmail's API
+ * gives — a real IMAP login/fetch happens every tick per connected
+ * mailbox, so this stays conservative by default. */
+async function registerImapPoller() {
+  if (process.env.NEXT_RUNTIME !== "nodejs") return;
+
+  const { isEncryptionKeyConfigured } = await import("@/server/crypto/smtpSecretBox");
+  if (!isEncryptionKeyConfigured()) {
+    // No key configured means no SMTP_IMAP account could ever have been
+    // connected (smtpOnboarding.ts's connectAccount requires it) — nothing
+    // to poll, same "expected and silent" reasoning as the Gmail gate.
+    return;
+  }
+
+  const { syncAllActiveImapAccounts } = await import("@/server/services/imapSync");
+  const IMAP_POLL_INTERVAL_MS = 10_000;
+
+  async function tick() {
+    try {
+      const result = await syncAllActiveImapAccounts();
+      if (!result.skippedConcurrent) {
+        console.log("[imap poll]", result);
+      }
+    } catch (e) {
+      console.error("[imap poll] sync tick failed:", e instanceof Error ? e.message : e);
+    }
+  }
+
+  setInterval(tick, IMAP_POLL_INTERVAL_MS);
   tick();
 }

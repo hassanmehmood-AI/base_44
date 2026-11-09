@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { conversations, contacts, companies, companySocialAccounts, pipelineStages } from "@/db/schema";
+import { conversations, contacts, companies, companySocialAccounts, pipelineStages, companyEmailAccounts } from "@/db/schema";
 
 export type Conversation = typeof conversations.$inferSelect;
 export type NewConversation = typeof conversations.$inferInsert;
@@ -25,6 +25,13 @@ export type ConversationWithJoins = Conversation & {
    * WhatsApp page's Pipeline View groups by this); irrelevant/ignored by the
    * SOCIAL and EMAIL pages. */
   contactStageKey: string | null;
+  /** The connected mailbox's provider for this conversation's
+   * companyEmailAccountId (null when the conversation has none — e.g. a
+   * Resend-sent EMAIL conversation, or any non-EMAIL channel). Powers
+   * Correo's unified All/Gmail/Webmail filter and per-row provider badges —
+   * purely additive, every other existing caller (WhatsApp, Social Media)
+   * already ignores fields it doesn't ask for. */
+  emailProvider: "GOOGLE_WORKSPACE" | "SMTP_IMAP" | null;
 };
 
 const INSTAGRAM_PLATFORMS = new Set(["META_INSTAGRAM", "METRICOOL_INSTAGRAM"]);
@@ -39,6 +46,7 @@ const baseSelect = {
   companyName: companies.name,
   socialPlatform: companySocialAccounts.platform,
   contactStageKey: pipelineStages.key,
+  emailProvider: companyEmailAccounts.provider,
 };
 
 function toJoined(row: {
@@ -47,6 +55,7 @@ function toJoined(row: {
   companyName: string;
   socialPlatform: string | null;
   contactStageKey: string | null;
+  emailProvider: string | null;
 }): ConversationWithJoins {
   return {
     ...row.conversation,
@@ -54,6 +63,7 @@ function toJoined(row: {
     companyName: row.companyName,
     platform: normalizeSocialPlatform(row.socialPlatform),
     contactStageKey: row.contactStageKey,
+    emailProvider: row.emailProvider === "SMTP_IMAP" ? "SMTP_IMAP" : row.emailProvider === "GOOGLE_WORKSPACE" ? "GOOGLE_WORKSPACE" : null,
   };
 }
 
@@ -64,7 +74,8 @@ function baseQuery() {
     .innerJoin(companies, eq(conversations.companyId, companies.id))
     .leftJoin(contacts, eq(conversations.contactId, contacts.id))
     .leftJoin(companySocialAccounts, eq(conversations.companySocialAccountId, companySocialAccounts.id))
-    .leftJoin(pipelineStages, eq(contacts.pipelineStageId, pipelineStages.id));
+    .leftJoin(pipelineStages, eq(contacts.pipelineStageId, pipelineStages.id))
+    .leftJoin(companyEmailAccounts, eq(conversations.companyEmailAccountId, companyEmailAccounts.id));
 }
 
 export async function findManyByCompanyIdsAndChannel(companyIds: string[], channel: string): Promise<ConversationWithJoins[]> {
@@ -89,6 +100,56 @@ export async function findByContactIdAndChannel(contactId: string, channel: stri
   return row;
 }
 
+/** All of a contact's conversations on one channel — the EMAIL-specific
+ * multi-mailbox case this exists for: a contact can now have more than one
+ * EMAIL conversation (one per connected company mailbox that's actually
+ * exchanged mail with them — see imapSync.ts's resolveConversation and
+ * email.ts's sendEmailToContact/linkConversationToContact), and the
+ * Contacts tab needs to show all of them, not just the first. Ordered
+ * newest-first like every other conversation list in this app. Uses
+ * baseQuery() (not the lightweight plain select findByContactIdAndChannel
+ * uses) specifically because the UI needs each thread's own emailProvider
+ * to label its tab. */
+export async function findAllByContactIdAndChannel(contactId: string, channel: string): Promise<ConversationWithJoins[]> {
+  const rows = await baseQuery()
+    .where(and(eq(conversations.contactId, contactId), eq(conversations.channel, channel)))
+    .orderBy(desc(conversations.lastMessageAt), desc(conversations.createdAt));
+  return rows.map(toJoined);
+}
+
+/** Account-aware variant of findByContactIdAndChannel — closes the
+ * cross-account conversation merge bug: without this, a contact who already
+ * has a conversation on one connected mailbox would have a new message from
+ * a DIFFERENT mailbox silently folded into that first conversation instead
+ * of starting its own thread. Deliberately a NEW function rather than a
+ * change to findByContactIdAndChannel itself — that function is also used
+ * by whatsapp.ts (channel="WHATSAPP") and gmailSync.ts, and must stay
+ * byte-for-byte unchanged for both. companyEmailAccountId: null matches
+ * only a legacy conversation that predates this column (the
+ * pre-unified-inbox Resend-only case) — never matches an account-bound
+ * conversation and vice versa, so a legacy thread and a newly-bound one are
+ * always treated as distinct rather than silently merged. */
+export async function findByContactIdChannelAndAccount(
+  contactId: string,
+  channel: string,
+  companyEmailAccountId: string | null
+): Promise<Conversation | undefined> {
+  const [row] = await getDb()
+    .select()
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.contactId, contactId),
+        eq(conversations.channel, channel),
+        companyEmailAccountId
+          ? eq(conversations.companyEmailAccountId, companyEmailAccountId)
+          : isNull(conversations.companyEmailAccountId)
+      )
+    )
+    .limit(1);
+  return row;
+}
+
 /** Used by the inbound webhook to find the existing thread for a given
  * external sender/thread id (e.g. a Meta PSID) before creating a new one. */
 export async function findByExternalThreadId(companyId: string, channel: string, externalThreadId: string): Promise<Conversation | undefined> {
@@ -104,6 +165,26 @@ export async function findByExternalThreadId(companyId: string, channel: string,
     )
     .limit(1);
   return row;
+}
+
+/** Lightweight lookup for the Correo Contacts tab's provider badges/filter:
+ * which mailbox (if any) each linked contact's EMAIL conversation uses.
+ * Deliberately a separate, minimal query rather than reusing baseQuery()'s
+ * full join set (contactName/companyName/platform/stage are all irrelevant
+ * here, and findManyByCompanyIdsAndChannel already returns the full contact
+ * LIST the Contacts tab doesn't even fetch — it fetches contacts, not
+ * conversations). Scoped by companyIds the same way every other list query
+ * in this app is (never trusts a client-supplied contactId list directly),
+ * and further requires a non-null contactId since an Unassigned
+ * conversation has nothing to key this map by. */
+export async function findEmailProvidersByCompanyIds(companyIds: string[]): Promise<{ contactId: string; provider: string | null }[]> {
+  if (companyIds.length === 0) return [];
+  const rows = await getDb()
+    .select({ contactId: conversations.contactId, provider: companyEmailAccounts.provider })
+    .from(conversations)
+    .leftJoin(companyEmailAccounts, eq(conversations.companyEmailAccountId, companyEmailAccounts.id))
+    .where(and(inArray(conversations.companyId, companyIds), eq(conversations.channel, "EMAIL"), isNotNull(conversations.contactId)));
+  return rows.filter((r): r is { contactId: string; provider: string | null } => r.contactId !== null);
 }
 
 /** The Unassigned Email Inbox (see services/email.ts and the Correo page's

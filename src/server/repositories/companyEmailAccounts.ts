@@ -105,6 +105,42 @@ export async function updateTokens(
     .where(eq(companyEmailAccounts.id, id));
 }
 
+/** SMTP/IMAP equivalent of create() above — inserted ACTIVE immediately
+ * since by the time this is called the "test connection" step (a real
+ * login attempt against both servers) has already succeeded, same
+ * "no ambiguous in-between state" reasoning as the Google path. */
+export async function createSmtp(data: {
+  companyId: string;
+  emailAddress: string;
+  displayName: string | null;
+  smtpHost: string;
+  smtpPort: number;
+  smtpSecurity: string;
+  imapHost: string;
+  imapPort: number;
+  imapSecurity: string;
+  smtpImapUsername: string;
+  encryptedPassword: string;
+}): Promise<CompanyEmailAccount> {
+  const [row] = await getDb()
+    .insert(companyEmailAccounts)
+    .values({ ...data, provider: "SMTP_IMAP", emailAddress: data.emailAddress.trim().toLowerCase(), status: "ACTIVE" })
+    .returning();
+  return row;
+}
+
+/** Advances the IMAP inbound-sync cursor — the IMAP equivalent of
+ * updateSyncState above. uidValidity is only passed when it's freshly
+ * (re-)established (first sync, or a re-baseline after the mailbox's own
+ * UIDVALIDITY changed — see schema.ts's doc comment); a plain incremental
+ * sync only moves lastSeenUid forward. */
+export async function updateImapSyncState(id: string, data: { imapUidValidity?: string; imapLastSeenUid: string }): Promise<void> {
+  await getDb()
+    .update(companyEmailAccounts)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(companyEmailAccounts.id, id));
+}
+
 /** Set when a refresh attempt itself fails with an auth error (token
  * revoked by the user, or by a Workspace admin) — distinct from a transient
  * network/API error, which should just be retried on the next send/sync
@@ -130,10 +166,13 @@ export async function updateSyncState(id: string, data: { historyId: string; wat
 
 /** Never deletes the row (see db/schema.ts's status comment — conversations.
  * companyEmailAccountId must keep resolving for historical messages).
- * Clears both encrypted token columns on disconnect: once a mailbox is
- * disconnected there is no remaining legitimate use for its tokens, so
- * there's no reason to keep them at rest — this shrinks the blast radius of
- * a future key compromise to only currently-active connections. */
+ * Clears every encrypted credential column on disconnect, for BOTH
+ * providers at once (whichever one this row actually is — the other
+ * provider's columns are already null, so clearing them too is a harmless
+ * no-op): once a mailbox is disconnected there is no remaining legitimate
+ * use for its secrets, so there's no reason to keep them at rest — this
+ * shrinks the blast radius of a future key compromise to only currently-
+ * active connections. */
 export async function markDisconnected(id: string): Promise<void> {
   await getDb()
     .update(companyEmailAccounts)
@@ -142,6 +181,7 @@ export async function markDisconnected(id: string): Promise<void> {
       encryptedRefreshToken: null,
       encryptedAccessToken: null,
       accessTokenExpiresAt: null,
+      encryptedPassword: null,
       updatedAt: new Date(),
     })
     .where(eq(companyEmailAccounts.id, id));

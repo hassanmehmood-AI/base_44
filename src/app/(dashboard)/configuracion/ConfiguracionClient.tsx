@@ -45,7 +45,13 @@ import {
   getGoogleEmailAccountsForCompanyAction,
   disconnectGoogleEmailAccountAction,
   type GoogleEmailAccountRow,
+  testWebmailConnectionAction,
+  connectWebmailAccountAction,
+  getWebmailAccountsForCompanyAction,
+  disconnectWebmailAccountAction,
+  type WebmailAccountRow,
 } from "./actions";
+import type { SmtpImapInput } from "@/server/services/smtpOnboarding";
 import type { CompanyProvisioningStatus, LinkableBrand } from "@/server/services/metricoolOnboarding";
 import type { CompanyChannelStatus as WhapiChannelStatus } from "@/server/services/whapiOnboarding";
 
@@ -670,6 +676,7 @@ export function ConfiguracionClient({
                 />
               )}
               {canManageAdmin && <CompanyGmailAccounts companyId={c.id} />}
+              {canManageAdmin && <CompanyWebmailAccounts companyId={c.id} />}
             </Card>
           ))}
           {realCompanies.length === 0 && (
@@ -1227,6 +1234,334 @@ function CompanyGmailAccounts({ companyId }: { companyId: string }) {
 
       {error && <p className="text-[12px] text-danger">{error}</p>}
     </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Universal SMTP/IMAP webmail onboarding — a second, independent connection
+// type alongside CompanyGmailAccounts above. Deliberately a separate
+// component/modal/action-set (never sharing state or a component with the
+// Gmail section) so this feature can never affect how Gmail connects,
+// displays, or disconnects. Any webmail provider the company's own IT/host
+// gives SMTP+IMAP credentials for — not tied to any specific vendor.
+// -----------------------------------------------------------------------------
+
+const WEBMAIL_STATUS_TONE: Record<string, "green" | "amber" | "red" | "gray"> = {
+  ACTIVE: "green",
+  PENDING: "amber",
+  NEEDS_REAUTH: "red",
+  FAILED: "red",
+  DISCONNECTED: "gray",
+};
+
+function CompanyWebmailAccounts({ companyId }: { companyId: string }) {
+  const { t } = useLanguage();
+  const [accounts, setAccounts] = useState<WebmailAccountRow[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | undefined>();
+
+  async function refresh() {
+    const result = await getWebmailAccountsForCompanyAction(companyId);
+    // Same reasoning as CompanyGmailAccounts: a DISCONNECTED row is kept
+    // for conversation history but has nothing actionable left to show —
+    // reconnecting the same address always creates a fresh row.
+    setAccounts(result.accounts.filter((a) => a.status !== "DISCONNECTED"));
+    setLoaded(true);
+  }
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch once per company card mount, same convention as CompanyGmailAccounts
+  }, [companyId]);
+
+  async function handleDisconnect(accountId: string) {
+    setDisconnectingId(accountId);
+    setError(undefined);
+    const result = await disconnectWebmailAccountAction(accountId);
+    setDisconnectingId(null);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    await refresh();
+  }
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-semibold tracking-wide text-text-tertiary">{t("WEBMAIL (SMTP/IMAP)", "WEBMAIL (SMTP/IMAP)")}</p>
+        <Button type="button" size="sm" variant="outline" onClick={() => setModalOpen(true)}>
+          <Mail className="h-3.5 w-3.5" />
+          {accounts.length > 0 ? t("Connect another mailbox", "Conectar otro buzón") : t("Connect webmail", "Conectar webmail")}
+        </Button>
+      </div>
+
+      {loaded && accounts.length === 0 && (
+        <p className="text-[12px] text-text-tertiary">{t("No webmail mailboxes connected yet.", "Aún no hay buzones webmail conectados.")}</p>
+      )}
+
+      {accounts.map((a) => (
+        <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg bg-surface-muted/60 px-2.5 py-1.5">
+          <div className="min-w-0">
+            <p className="truncate text-[12.5px] font-medium text-text-primary">{a.displayName || a.emailAddress}</p>
+            {a.displayName && <p className="truncate text-[11px] text-text-tertiary">{a.emailAddress}</p>}
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Badge tone={WEBMAIL_STATUS_TONE[a.status] ?? "gray"}>
+              {a.status === "ACTIVE"
+                ? t("Connected", "Conectado")
+                : a.status === "NEEDS_REAUTH"
+                  ? t("Needs reconnect", "Requiere reconexión")
+                  : a.status === "PENDING"
+                    ? t("Pending", "Pendiente")
+                    : a.status}
+            </Badge>
+            <button
+              type="button"
+              disabled={disconnectingId === a.id}
+              onClick={() => handleDisconnect(a.id)}
+              title={t("Disconnect", "Desconectar")}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-text-tertiary hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+            >
+              <Unlink className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {error && <p className="text-[12px] text-danger">{error}</p>}
+
+      <ConnectWebmailModal
+        open={modalOpen}
+        companyId={companyId}
+        onClose={() => setModalOpen(false)}
+        onConnected={async () => {
+          setModalOpen(false);
+          await refresh();
+        }}
+      />
+    </div>
+  );
+}
+
+const SECURITY_OPTIONS: { value: SmtpImapInput["smtpSecurity"]; label: string }[] = [
+  { value: "SSL", label: "SSL/TLS" },
+  { value: "STARTTLS", label: "STARTTLS" },
+  { value: "NONE", label: "None (not recommended)" },
+];
+
+/** Standard, provider-agnostic default ports per security mode — the exact
+ * same convention Thunderbird/Outlook/Apple Mail's own manual setup pickers
+ * use (IANA-registered: submission/587 for STARTTLS, smtps/465 for
+ * implicit TLS, imaps/993, imap/143). These are recommendations only, never
+ * enforced — a port typed by hand always wins (see the "only auto-fill an
+ * untouched field" logic in RECOMMENDED_PORT_FIELDS' call sites below), since
+ * a real minority of providers do use a non-standard port on an otherwise
+ * standard security mode. */
+const RECOMMENDED_SMTP_PORT: Record<SmtpImapInput["smtpSecurity"], number> = {
+  SSL: 465,
+  STARTTLS: 587,
+  NONE: 25,
+};
+const RECOMMENDED_IMAP_PORT: Record<SmtpImapInput["smtpSecurity"], number> = {
+  SSL: 993,
+  STARTTLS: 143,
+  NONE: 143,
+};
+
+/** The actual connect form — email address, one shared username/password,
+ * and host/port/security for SMTP and IMAP separately (most providers use
+ * different ports for each, e.g. 465/587 for SMTP vs 993 for IMAP, even
+ * when the hostname itself is the same). "Test connection" runs both
+ * checks before the form can be submitted at all — connectWebmailAccountAction
+ * re-verifies independently server-side regardless (see smtpOnboarding.ts),
+ * so this is purely to give the user fast, specific feedback on a typo
+ * before they commit. */
+function ConnectWebmailModal({
+  open,
+  companyId,
+  onClose,
+  onConnected,
+}: {
+  open: boolean;
+  companyId: string;
+  onClose: () => void;
+  onConnected: () => void;
+}) {
+  const { t } = useLanguage();
+  const emptyForm: SmtpImapInput = {
+    emailAddress: "",
+    displayName: "",
+    smtpHost: "",
+    smtpPort: 587,
+    smtpSecurity: "STARTTLS",
+    imapHost: "",
+    imapPort: 993,
+    imapSecurity: "SSL",
+    username: "",
+    password: "",
+  };
+  const [form, setForm] = useState<SmtpImapInput>(emptyForm);
+  // Tracks whether the user has EVER manually edited each port field —
+  // once true, the recommended-port auto-fill (see handleSecurityChange
+  // below) permanently stops touching that field, so a deliberately
+  // non-standard port is never silently overwritten just because the
+  // security dropdown changes afterward.
+  const [smtpPortTouched, setSmtpPortTouched] = useState(false);
+  const [imapPortTouched, setImapPortTouched] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message?: string } | undefined>();
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  function handleClose() {
+    setForm(emptyForm);
+    setSmtpPortTouched(false);
+    setImapPortTouched(false);
+    setTestResult(undefined);
+    setError(undefined);
+    onClose();
+  }
+
+  function update<K extends keyof SmtpImapInput>(key: K, value: SmtpImapInput[K]) {
+    setForm((prev) => ({ ...prev, [key]: value }));
+    setTestResult(undefined); // any change invalidates a prior successful test
+  }
+
+  /** Auto-fills the recommended port for the newly-selected security mode —
+   * only when the port hasn't been manually touched yet (a brand-new form,
+   * or one where the port was left at its still-untouched initial value).
+   * Runs for both SMTP and IMAP security changes via the `which` param,
+   * since the two servers' security modes are set independently. */
+  function handleSecurityChange(which: "smtp" | "imap", security: SmtpImapInput["smtpSecurity"]) {
+    if (which === "smtp") {
+      setForm((prev) => ({ ...prev, smtpSecurity: security, smtpPort: smtpPortTouched ? prev.smtpPort : RECOMMENDED_SMTP_PORT[security] }));
+    } else {
+      setForm((prev) => ({ ...prev, imapSecurity: security, imapPort: imapPortTouched ? prev.imapPort : RECOMMENDED_IMAP_PORT[security] }));
+    }
+    setTestResult(undefined);
+  }
+
+  function handlePortChange(which: "smtp" | "imap", value: number) {
+    if (which === "smtp") {
+      setSmtpPortTouched(true);
+      update("smtpPort", value);
+    } else {
+      setImapPortTouched(true);
+      update("imapPort", value);
+    }
+  }
+
+  async function handleTest() {
+    setTesting(true);
+    setError(undefined);
+    const result = await testWebmailConnectionAction(form);
+    setTesting(false);
+    setTestResult(result.ok ? { ok: true } : { ok: false, message: result.error });
+  }
+
+  async function handleConnect() {
+    setConnecting(true);
+    setError(undefined);
+    const result = await connectWebmailAccountAction(companyId, form);
+    setConnecting(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    setForm(emptyForm);
+    setTestResult(undefined);
+    onConnected();
+  }
+
+  return (
+    <Modal open={open} onClose={handleClose} title={t("Connect webmail", "Conectar webmail")}>
+      <div className="flex flex-col gap-4">
+        <p className="text-[12.5px] text-text-secondary">
+          {t(
+            "Works with any email provider that offers SMTP and IMAP access — ask your hosting provider for these settings if you don't already have them. Use an app-specific password if your provider offers one.",
+            "Funciona con cualquier proveedor de correo que ofrezca acceso SMTP e IMAP — pide estos datos a tu proveedor de hosting si no los tienes. Usa una contraseña de aplicación si tu proveedor la ofrece."
+          )}
+        </p>
+
+        <div>
+          <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("EMAIL ADDRESS", "DIRECCIÓN DE CORREO")}</label>
+          <Input type="email" required value={form.emailAddress} onChange={(e) => update("emailAddress", e.target.value)} />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("DISPLAY NAME (OPTIONAL)", "NOMBRE VISIBLE (OPCIONAL)")}</label>
+          <Input value={form.displayName ?? ""} onChange={(e) => update("displayName", e.target.value)} />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("USERNAME", "NOMBRE DE USUARIO")}</label>
+          <Input required value={form.username} onChange={(e) => update("username", e.target.value)} placeholder={t("Usually your email address", "Normalmente tu dirección de correo")} />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("PASSWORD", "CONTRASEÑA")}</label>
+          <Input type="password" required value={form.password} onChange={(e) => update("password", e.target.value)} />
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
+          <div className="col-span-2">
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("SMTP SERVER (OUTGOING)", "SERVIDOR SMTP (SALIENTE)")}</label>
+            <Input required value={form.smtpHost} onChange={(e) => update("smtpHost", e.target.value)} placeholder="smtp.example.com" />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("PORT", "PUERTO")}</label>
+            <Input type="number" required value={form.smtpPort} onChange={(e) => handlePortChange("smtp", Number(e.target.value))} />
+          </div>
+        </div>
+        <p className="-mt-2 text-[11.5px] text-text-tertiary">
+          {t("Port auto-fills based on the security option below — change it anytime.", "El puerto se completa automáticamente según la opción de seguridad de abajo — puedes cambiarlo en cualquier momento.")}
+        </p>
+        <Select value={form.smtpSecurity} onChange={(e) => handleSecurityChange("smtp", e.target.value as SmtpImapInput["smtpSecurity"])}>
+          {SECURITY_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </Select>
+
+        <div className="grid grid-cols-3 gap-2">
+          <div className="col-span-2">
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("IMAP SERVER (INCOMING)", "SERVIDOR IMAP (ENTRANTE)")}</label>
+            <Input required value={form.imapHost} onChange={(e) => update("imapHost", e.target.value)} placeholder="imap.example.com" />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("PORT", "PUERTO")}</label>
+            <Input type="number" required value={form.imapPort} onChange={(e) => handlePortChange("imap", Number(e.target.value))} />
+          </div>
+        </div>
+        <p className="-mt-2 text-[11.5px] text-text-tertiary">
+          {t("Port auto-fills based on the security option below — change it anytime.", "El puerto se completa automáticamente según la opción de seguridad de abajo — puedes cambiarlo en cualquier momento.")}
+        </p>
+        <Select value={form.imapSecurity} onChange={(e) => handleSecurityChange("imap", e.target.value as SmtpImapInput["smtpSecurity"])}>
+          {SECURITY_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </Select>
+
+        {testResult && (
+          <p className={cn("text-[12.5px]", testResult.ok ? "text-success" : "text-danger")}>
+            {testResult.ok ? t("Connection successful.", "Conexión exitosa.") : testResult.message}
+          </p>
+        )}
+        {error && <p className="text-[13px] text-danger">{error}</p>}
+
+        <div className="flex justify-end gap-3">
+          <Button type="button" variant="outline" disabled={testing} onClick={handleTest}>
+            {testing ? t("Testing...", "Probando...") : t("Test connection", "Probar conexión")}
+          </Button>
+          <Button type="button" disabled={!testResult?.ok || connecting} onClick={handleConnect}>
+            {connecting ? t("Connecting...", "Conectando...") : t("Connect", "Conectar")}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

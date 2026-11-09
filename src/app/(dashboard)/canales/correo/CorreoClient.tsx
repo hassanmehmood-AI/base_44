@@ -16,6 +16,8 @@ import {
   Paperclip,
   Send,
   Inbox,
+  Mail,
+  MailCheck,
   FileText,
   FileSpreadsheet,
   Image as ImageIcon,
@@ -42,7 +44,7 @@ import { contactSecondaryLine, disambiguationSuffixes } from "@/lib/contactIdent
 import type { ContactWithJoins } from "@/server/repositories/contacts";
 import type { Conversation, ConversationWithJoins } from "@/server/repositories/conversations";
 import type { Message } from "@/server/repositories/messages";
-import type { EmailSenderStatus } from "@/server/services/email";
+import type { EmailSenderStatus, EmailProviderByContact } from "@/server/services/email";
 import {
   getContactEmailDetailAction,
   sendEmailAction,
@@ -50,7 +52,10 @@ import {
   getUnassignedConversationDetailAction,
   linkEmailConversationToContactAction,
   createContactAndLinkEmailConversationAction,
+  getAvailableSenderAccountsAction,
+  getEmailProvidersByContactAction,
 } from "./actions";
+import type { AvailableSenderAccount } from "@/server/services/email";
 import { useEmailRealtime } from "./useEmailRealtime";
 
 /** New shape: bodyHtml, not body — see EmailPanel's draft-loading effect
@@ -157,6 +162,43 @@ function EmailMessageBody({ body, metadata }: { body: string; metadata: unknown 
   );
 }
 
+/** Color-coded generic mail glyph, never Google's actual Gmail logo — we
+ * have no license to render that trademark, and a color-coded icon reads
+ * just as clearly ("which mailbox") without that risk. Shared by the list
+ * badges below and the composer's own "From" line so the same visual
+ * language (red = Gmail, slate = Webmail) is used everywhere a provider is
+ * identified. */
+function ProviderIcon({ provider, className }: { provider: "GOOGLE_WORKSPACE" | "SMTP_IMAP"; className?: string }) {
+  const Icon = provider === "GOOGLE_WORKSPACE" ? MailCheck : Mail;
+  return <Icon className={cn(provider === "GOOGLE_WORKSPACE" ? "text-[#EA4335]" : "text-text-secondary", className)} aria-hidden />;
+}
+
+/** Small provider badge(s) for the Contacts/Unassigned row lists — renders
+ * nothing when there's no EMAIL conversation yet (null/undefined/empty
+ * array), same "no badge until there's something to show" rule as every
+ * other optional indicator in this list. Accepts either a single provider
+ * (the Unassigned tab — one conversation, one provider) or a list (the
+ * Contacts tab — a contact can now have one conversation per connected
+ * mailbox, so it needs one badge per distinct provider it actually has). */
+function ProviderBadge({
+  provider,
+}: {
+  provider: "GOOGLE_WORKSPACE" | "SMTP_IMAP" | ("GOOGLE_WORKSPACE" | "SMTP_IMAP")[] | null | undefined;
+}) {
+  const providers = provider == null ? [] : Array.isArray(provider) ? provider : [provider];
+  if (providers.length === 0) return null;
+  return (
+    <>
+      {providers.map((p) => (
+        <Badge key={p} tone={p === "GOOGLE_WORKSPACE" ? "blue" : "gray"} className="shrink-0 gap-1">
+          <ProviderIcon provider={p} className="h-3 w-3" />
+          {p === "GOOGLE_WORKSPACE" ? "Gmail" : "Webmail"}
+        </Badge>
+      ))}
+    </>
+  );
+}
+
 const ATTACHMENT_ICON: Record<string, typeof FileIcon> = {
   "application/pdf": FileText,
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": FileText,
@@ -251,10 +293,12 @@ export function CorreoClient({
   queue,
   allContacts,
   initialSelectedId,
+  initialConversations,
   initialConversation,
   initialMessages,
   senderStatus,
   initialUnassignedConversations,
+  initialEmailProviders,
 }: {
   queue: ContactWithJoins[];
   /** Unfiltered — includes contacts with no email on file too, since an
@@ -264,6 +308,12 @@ export function CorreoClient({
    * (which stays email-only, unchanged). */
   allContacts: ContactWithJoins[];
   initialSelectedId: string | null;
+  /** ALL of the initially-selected contact's EMAIL conversations — a
+   * contact can have more than one (one per connected mailbox that's
+   * actually exchanged mail with them, see email.ts's
+   * getConversationForContact). Powers the thread picker in EmailPanel;
+   * empty when the contact has none yet. */
+  initialConversations: ConversationWithJoins[];
   initialConversation: Conversation | null;
   initialMessages: Message[];
   /** Resolved for whichever contact is initially selected (see page.tsx's
@@ -273,23 +323,37 @@ export function CorreoClient({
    * alongside conversation/messages on every select/refresh below. */
   senderStatus: EmailSenderStatus;
   initialUnassignedConversations: ConversationWithJoins[];
+  /** contactId -> every mailbox provider that contact has an EMAIL
+   * conversation on (a contact can now have more than one — see above) —
+   * powers the Contacts tab's provider badges/filter. Unassigned rows need
+   * no separate map: ConversationWithJoins already carries emailProvider
+   * directly on each row. */
+  initialEmailProviders: EmailProviderByContact;
 }) {
   const { t } = useLanguage();
   const { activeCompany, setActiveCompany } = useCompany();
   const [tab, setTab] = useState<Tab>("contacts");
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
+  const [conversations, setConversations] = useState<ConversationWithJoins[]>(initialConversations);
   const [conversation, setConversation] = useState<Conversation | null>(initialConversation);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [emailSenderStatus, setEmailSenderStatus] = useState<EmailSenderStatus>(senderStatus);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [search, setSearch] = useState("");
+  // Unified-inbox filter — applies to both the Contacts and Unassigned
+  // tabs, independent of the existing company selector.
+  const [providerFilter, setProviderFilter] = useState<"ALL" | "GOOGLE_WORKSPACE" | "SMTP_IMAP">("ALL");
+  const [emailProviders, setEmailProviders] = useState<EmailProviderByContact>(initialEmailProviders);
 
   const [unassigned, setUnassigned] = useState<ConversationWithJoins[]>(initialUnassignedConversations);
   const [selectedUnassignedId, setSelectedUnassignedId] = useState<string | null>(null);
   const [unassignedDetail, setUnassignedDetail] = useState<{ conversation: Conversation; messages: Message[] } | null>(null);
   const [loadingUnassignedDetail, setLoadingUnassignedDetail] = useState(false);
 
-  const filteredQueue = queue.filter((c) => activeCompany === ALL_COMPANIES || c.companyName === activeCompany);
+  const companyScopedQueue = queue.filter((c) => activeCompany === ALL_COMPANIES || c.companyName === activeCompany);
+  const filteredQueue = companyScopedQueue.filter(
+    (c) => providerFilter === "ALL" || (emailProviders[c.id] ?? []).includes(providerFilter)
+  );
 
   const searchedQueue = (() => {
     const q = search.trim().toLowerCase();
@@ -313,30 +377,61 @@ export function CorreoClient({
   // of another, unrelated contact's conversation.
   const selected = searchedQueue.find((c) => c.id === selectedId);
 
-  const filteredUnassigned = unassigned.filter((c) => activeCompany === ALL_COMPANIES || c.companyName === activeCompany);
+  const filteredUnassigned = unassigned.filter(
+    (c) =>
+      (activeCompany === ALL_COMPANIES || c.companyName === activeCompany) &&
+      (providerFilter === "ALL" || c.emailProvider === providerFilter)
+  );
   const selectedUnassigned = filteredUnassigned.find((c) => c.id === selectedUnassignedId);
 
   async function selectContact(id: string) {
     setSelectedId(id);
     setLoadingDetail(true);
     const result = await getContactEmailDetailAction(id);
+    setConversations(result.conversations);
     setConversation(result.conversation);
     setMessages(result.messages);
     setEmailSenderStatus(result.senderStatus);
     setLoadingDetail(false);
   }
 
+  // Preserves whichever thread is currently open (conversation?.id) rather
+  // than letting a refresh silently default back to the most recent one —
+  // a contact can now have more than one EMAIL conversation, and a realtime
+  // nudge or post-send refresh must never switch you out of the thread
+  // you're actively viewing/replying to.
   async function refreshDetail() {
     if (!selectedId) return;
-    const result = await getContactEmailDetailAction(selectedId);
+    const result = await getContactEmailDetailAction(selectedId, conversation?.id);
+    setConversations(result.conversations);
     setConversation(result.conversation);
     setMessages(result.messages);
     setEmailSenderStatus(result.senderStatus);
   }
 
+  // Switches which of the contact's EMAIL conversations is being viewed —
+  // used by EmailPanel's thread picker. Deliberately a full detail re-fetch
+  // (not a local array lookup) so messages/senderStatus for the newly
+  // selected thread are always loaded.
+  async function selectConversationThread(conversationId: string) {
+    if (!selectedId) return;
+    setLoadingDetail(true);
+    const result = await getContactEmailDetailAction(selectedId, conversationId);
+    setConversations(result.conversations);
+    setConversation(result.conversation);
+    setMessages(result.messages);
+    setEmailSenderStatus(result.senderStatus);
+    setLoadingDetail(false);
+  }
+
   async function refreshUnassignedList() {
     const result = await listUnassignedEmailConversationsAction();
     setUnassigned(result);
+  }
+
+  async function refreshEmailProviders() {
+    const result = await getEmailProvidersByContactAction();
+    setEmailProviders(result);
   }
 
   async function selectUnassigned(id: string) {
@@ -377,6 +472,7 @@ export function CorreoClient({
   // detail panel is actually open only when its own conversation changed.
   useEmailRealtime((event) => {
     refreshUnassignedList().catch((e) => console.error("[realtime] failed to refresh unassigned emails:", e));
+    refreshEmailProviders().catch((e) => console.error("[realtime] failed to refresh email providers:", e));
     if ("reconnected" in event) {
       if (selectedIdRef.current) refreshDetail().catch((e) => console.error("[realtime] failed to refresh email detail:", e));
       if (selectedUnassignedIdRef.current) refreshUnassignedDetail().catch((e) => console.error("[realtime] failed to refresh unassigned email detail:", e));
@@ -431,15 +527,37 @@ export function CorreoClient({
           </button>
         </div>
 
-        <div className="w-[220px]">
-          <Select value={activeCompany} onChange={(e) => setActiveCompany(e.target.value)}>
-            <option value={ALL_COMPANIES}>{t("All companies", "Todas las empresas")}</option>
-            {[...new Set(queue.map((c) => c.companyName))].map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-lg border border-border bg-white p-1">
+            {(
+              [
+                { value: "ALL", en: "All", es: "Todos" },
+                { value: "GOOGLE_WORKSPACE", en: "Gmail", es: "Gmail" },
+                { value: "SMTP_IMAP", en: "Webmail", es: "Webmail" },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setProviderFilter(opt.value)}
+                className={cn(
+                  "rounded-md px-3 py-1 text-[12.5px] font-medium transition-colors",
+                  providerFilter === opt.value ? "bg-brand-50 text-brand" : "text-text-secondary hover:text-text-primary"
+                )}
+              >
+                {t(opt.en, opt.es)}
+              </button>
             ))}
-          </Select>
+          </div>
+          <div className="w-[220px]">
+            <Select value={activeCompany} onChange={(e) => setActiveCompany(e.target.value)}>
+              <option value={ALL_COMPANIES}>{t("All companies", "Todas las empresas")}</option>
+              {[...new Set(queue.map((c) => c.companyName))].map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </Select>
+          </div>
         </div>
       </div>
 
@@ -460,10 +578,13 @@ export function CorreoClient({
                     selectedId === c.id ? "bg-brand-50" : "hover:bg-surface-muted"
                   )}
                 >
-                  <p className="truncate text-[14px] font-semibold text-text-primary">
-                    {c.name}
-                    {dupeSuffixes.has(c.id) && <span className="text-text-tertiary"> {dupeSuffixes.get(c.id)}</span>}
-                  </p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-[14px] font-semibold text-text-primary">
+                      {c.name}
+                      {dupeSuffixes.has(c.id) && <span className="text-text-tertiary"> {dupeSuffixes.get(c.id)}</span>}
+                    </p>
+                    <ProviderBadge provider={emailProviders[c.id]} />
+                  </div>
                   <p className="mt-0.5 truncate text-[12px] text-text-secondary">
                     {contactSecondaryLine(c.companyName, c.businessName)}
                   </p>
@@ -484,10 +605,12 @@ export function CorreoClient({
             <EmailPanel
               key={selected.id}
               contact={selected}
+              conversations={conversations}
               conversation={conversation}
               messages={messages}
               loadingDetail={loadingDetail}
               onSent={refreshDetail}
+              onSelectThread={selectConversationThread}
               senderStatus={emailSenderStatus}
             />
           ) : (
@@ -513,9 +636,12 @@ export function CorreoClient({
                     selectedUnassignedId === c.id ? "bg-brand-50" : "hover:bg-surface-muted"
                   )}
                 >
-                  <p className="truncate text-[14px] font-semibold text-text-primary">
-                    {c.subject ?? t("(no subject)", "(sin asunto)")}
-                  </p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-[14px] font-semibold text-text-primary">
+                      {c.subject ?? t("(no subject)", "(sin asunto)")}
+                    </p>
+                    <ProviderBadge provider={c.emailProvider} />
+                  </div>
                   <p className="mt-0.5 truncate text-[12px] text-text-secondary">{c.companyName}</p>
                   {c.lastMessageAt && (
                     <p className="mt-0.5 truncate text-[12px] text-text-tertiary">{formatRelativeTime(c.lastMessageAt)}</p>
@@ -557,21 +683,30 @@ const SENDER_STATUS_LABEL: Record<EmailSenderStatus["status"], { en: string; es:
   NOT_CONFIGURED: { en: "Not configured", es: "No configurado", dot: "bg-text-tertiary" },
   NOT_VERIFIED: { en: "Not verified", es: "No verificado", dot: "bg-warning" },
   CONNECTED_GMAIL: { en: "Connected (Gmail)", es: "Conectado (Gmail)", dot: "bg-brand" },
+  CONNECTED_SMTP: { en: "Connected (Webmail)", es: "Conectado (Webmail)", dot: "bg-brand" },
+  CHOOSE_SENDER: { en: "Choose a sending mailbox below", es: "Elige un buzón de envío abajo", dot: "bg-warning" },
 };
 
 function EmailPanel({
   contact,
+  conversations,
   conversation,
   messages,
   loadingDetail,
   onSent,
+  onSelectThread,
   senderStatus,
 }: {
   contact: ContactWithJoins;
+  /** All of this contact's EMAIL conversations — one per connected mailbox
+   * that's actually exchanged mail with them. Powers the thread picker
+   * below, shown only when there's more than one. */
+  conversations: ConversationWithJoins[];
   conversation: Conversation | null;
   messages: Message[];
   loadingDetail: boolean;
   onSent: () => void;
+  onSelectThread: (conversationId: string) => void;
   senderStatus: EmailSenderStatus;
 }) {
   const { t, language } = useLanguage();
@@ -592,6 +727,28 @@ function EmailPanel({
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | undefined>();
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Only ever populated when senderStatus is CHOOSE_SENDER (a brand-new
+  // conversation, company has 2+ active mailboxes) — see
+  // getAvailableSenderAccountsAction's own doc comment. Empty in every
+  // other case, so the picker below simply never renders.
+  const [senderAccounts, setSenderAccounts] = useState<AvailableSenderAccount[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState("");
+  useEffect(() => {
+    if (senderStatus.status !== "CHOOSE_SENDER") {
+      setSenderAccounts([]);
+      setSelectedAccountId("");
+      return;
+    }
+    let cancelled = false;
+    getAvailableSenderAccountsAction(contact.id).then((result) => {
+      if (!cancelled) setSenderAccounts(result.accounts);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch only when the contact or its CHOOSE_SENDER-ness changes, not on every senderStatus object identity change
+  }, [contact.id, senderStatus.status]);
 
   function handleFilesSelected(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -676,16 +833,22 @@ function EmailPanel({
   const subjectValid = subject.trim().length > 0;
   const bodyValid = bodyText.trim().length > 0;
   const emailAvailable = senderStatus.status !== "NOT_CONFIGURED";
-  const canSend = emailAvailable && recipientValid && subjectValid && bodyValid;
+  // CHOOSE_SENDER means there's genuinely no single answer yet — sending
+  // must wait for an explicit pick from the list below, same "never guess
+  // the sender" principle as the server-side resolveAccountForNewConversation.
+  const needsSenderChoice = senderStatus.status === "CHOOSE_SENDER" && !selectedAccountId;
+  const canSend = emailAvailable && !needsSenderChoice && recipientValid && subjectValid && bodyValid;
   const validationMessage = !emailAvailable
     ? undefined // the "not configured" banner below already explains this
-    : !recipientValid
-      ? t("This contact doesn't have a valid email address.", "Este contacto no tiene una dirección de correo válida.")
-      : !subjectValid
-        ? t("Subject is required.", "El asunto es obligatorio.")
-        : !bodyValid
-          ? t("Message body can't be empty.", "El cuerpo del mensaje no puede estar vacío.")
-          : undefined;
+    : needsSenderChoice
+      ? t("Choose which mailbox to send from.", "Elige desde qué buzón enviar.")
+      : !recipientValid
+        ? t("This contact doesn't have a valid email address.", "Este contacto no tiene una dirección de correo válida.")
+        : !subjectValid
+          ? t("Subject is required.", "El asunto es obligatorio.")
+          : !bodyValid
+            ? t("Message body can't be empty.", "El cuerpo del mensaje no puede estar vacío.")
+            : undefined;
 
   // Keeps the draft in sync with every keystroke. Because this component is
   // remounted (not just re-rendered) whenever the selected contact changes,
@@ -719,7 +882,18 @@ function EmailPanel({
     if (!canSend || sending) return;
     setSending(true);
     setError(undefined);
-    const result = await sendEmailAction({ contactId: contact.id, subject, bodyText, bodyHtml, attachments: attachedFiles });
+    const result = await sendEmailAction({
+      contactId: contact.id,
+      subject,
+      bodyText,
+      bodyHtml,
+      attachments: attachedFiles,
+      // The exact thread currently open — never omitted when one exists,
+      // so a reply can never land on (or send from) a different one of
+      // this contact's conversations than the one actually being viewed.
+      conversationId: conversation?.id,
+      accountId: selectedAccountId || undefined,
+    });
     setSending(false);
     if (result.error) {
       // Send failed — keep the draft (and selected attachments) exactly
@@ -739,6 +913,28 @@ function EmailPanel({
     <Card className="flex flex-col gap-4 p-6">
       <div>
         <h2 className="text-[18px] font-semibold text-text-primary">{contact.name}</h2>
+        {conversations.length > 1 && (
+          <div className="mt-2 flex flex-wrap gap-1.5" role="tablist" aria-label={t("Email threads", "Hilos de correo")}>
+            {conversations.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                role="tab"
+                aria-selected={conversation?.id === c.id}
+                onClick={() => onSelectThread(c.id)}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[12.5px] font-medium transition-colors",
+                  conversation?.id === c.id
+                    ? "border-brand bg-brand-50 text-brand"
+                    : "border-border bg-white text-text-secondary hover:bg-surface-muted"
+                )}
+              >
+                {c.emailProvider && <ProviderIcon provider={c.emailProvider} className="h-3 w-3" />}
+                {c.emailProvider === "SMTP_IMAP" ? t("Webmail", "Webmail") : c.emailProvider === "GOOGLE_WORKSPACE" ? "Gmail" : t("Other", "Otro")}
+              </button>
+            ))}
+          </div>
+        )}
         <p className="mt-1 text-[13px] text-text-secondary">
           {t("Company:", "Empresa:")} {contact.companyName}
         </p>
@@ -750,7 +946,10 @@ function EmailPanel({
         <p className="mt-1 text-[13px] text-text-secondary">
           {t("To:", "Para:")} {contact.email || t("— (no email on file)", "— (sin correo registrado)")}
         </p>
-        <p className="text-[13px] text-text-secondary">
+        <p className="flex items-center gap-1.5 text-[13px] text-text-secondary">
+          {(senderStatus.status === "CONNECTED_GMAIL" || senderStatus.status === "CONNECTED_SMTP") && (
+            <ProviderIcon provider={senderStatus.status === "CONNECTED_GMAIL" ? "GOOGLE_WORKSPACE" : "SMTP_IMAP"} className="h-3.5 w-3.5" />
+          )}
           {t("From:", "De:")} {senderStatus.fromAddress ?? t("Not configured", "No configurado")}
         </p>
         <p className="mt-1 flex items-center gap-1.5 text-[12px] text-text-tertiary">
@@ -764,6 +963,21 @@ function EmailPanel({
               "El envío de correos aún no está disponible: no hay un proveedor configurado. Contacta a un administrador."
             )}
           </p>
+        )}
+        {senderStatus.status === "CHOOSE_SENDER" && senderAccounts.length > 0 && (
+          <div className="mt-2">
+            <label className="mb-1 block text-[11px] font-semibold tracking-wide text-text-secondary">
+              {t("SEND FROM", "ENVIAR DESDE")}
+            </label>
+            <Select value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)}>
+              <option value="">{t("Select a mailbox...", "Selecciona un buzón...")}</option>
+              {senderAccounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.emailAddress} {a.provider === "SMTP_IMAP" ? t("(Webmail)", "(Webmail)") : "(Gmail)"}
+                </option>
+              ))}
+            </Select>
+          </div>
         )}
       </div>
 
