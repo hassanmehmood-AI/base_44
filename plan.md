@@ -1,3 +1,4 @@
+
 # CRM Hierarchy Redesign — Audit + Phased Plan
 
 Status: **audit only, no code changed.** This document is the deliverable requested before any implementation starts.

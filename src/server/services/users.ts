@@ -280,6 +280,16 @@ export async function updateUserPermissions(input: UpdateUserPermissionsInput) {
     const validCompanyIds = input.companyIds.length
       ? (await companiesRepo.findByIds(input.companyIds)).map((c) => c.id)
       : [];
+    // "One Agent → One Company → One SIP Extension → Only Assigned Leads" —
+    // enforced here, not just in the Configuración UI, so a direct API call
+    // with a hand-crafted multi-company payload is rejected the same way a
+    // UI misuse would be. Rejecting (rather than silently truncating to the
+    // first id) matches this app's "never guess, never silently drop data"
+    // convention elsewhere (e.g. ambiguous Zadarma failures) — the caller
+    // gets a clear reason to fix the input, not a surprise partial result.
+    if (target.roleKey === "CALL_CENTER_AGENT" && validCompanyIds.length > 1) {
+      throw new Error("A Call Center Agent can only be assigned to one company. Remove the extra companies and try again.");
+    }
     await accessRepo.replaceCompanyAccess(input.userId, validCompanyIds);
   }
 }

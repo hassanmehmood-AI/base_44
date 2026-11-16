@@ -629,6 +629,105 @@ export const whapiInboundEvents = pgTable("whapi_inbound_events", {
   index("whapi_inbound_events_status_idx").on(t.status),
 ]);
 
+/** A Zadarma virtual number, purchased through Zadarma's own API and
+ * assigned to one company at a time — the Zadarma equivalent of
+ * company_social_accounts' per-brand mapping, but for a *paid, purchasable*
+ * resource rather than a free account link. One shared Zadarma account
+ * (ZADARMA_API_KEY/ZADARMA_API_SECRET, unchanged, see zadarma.ts) owns every
+ * row here; companyId is what routes a specific company's outbound calls to
+ * its own number (see services/calls.ts's initiateCall).
+ *
+ * status is a state machine, never re-created — identical shape to
+ * whapi_channels.status, reused deliberately for the same reason: ordering a
+ * number is a paid, non-idempotent external call, so the row is inserted as
+ * PENDING *before* that call is made. FAILED means Zadarma cleanly rejected
+ * the order (safe to retry); FAILED_NEEDS_MANUAL_CHECK means the call failed
+ * ambiguously (timeout/5xx — unknown whether Zadarma actually charged the
+ * account before the response was lost) and is never auto-retried; a
+ * Superuser must confirm via Zadarma's own dashboard first, exactly like
+ * Whapi's own FAILED_NEEDS_MANUAL_CHECK case.
+ *
+ * companyId is nullable and independent of status on purpose: a purchased
+ * (ACTIVE) number can sit unassigned, and reassigning it later to a
+ * different company is just updating this column — never a new purchase,
+ * never a Zadarma-side API call. */
+export const zadarmaNumbers = pgTable("zadarma_numbers", {
+  id: id(),
+  // Null until the order/ call confirms a real number — see the PENDING
+  // state above.
+  number: text("number"),
+  // Nullable: the real purchase flow (order/) always has both from the
+  // destination the Superuser picked before buying. A number added via
+  // "Add Existing Number" (linkExistingNumber) has neither — Zadarma's own
+  // GET /v1/direct_numbers/ response carries no direction_id field at all,
+  // and its `country` field isn't confirmed interchangeable with the
+  // destination-flow's ISO countryCode — so these stay genuinely unknown
+  // for that path rather than a fabricated value standing in for them.
+  directionId: text("direction_id"),
+  countryCode: text("country_code"),
+  companyId: uuid("company_id").references(() => companies.id, { onDelete: "set null" }),
+  // PENDING | ACTIVE | FAILED | FAILED_NEEDS_MANUAL_CHECK
+  status: text("status").notNull().default("PENDING"),
+  documentsGroupId: text("documents_group_id"),
+  // Snapshot of what was actually shown to the Superuser at purchase-confirm
+  // time — deliberately never re-fetched live later, so this stays an
+  // honest record of what was agreed to even if Zadarma's own pricing
+  // changes afterward.
+  monthlyFee: text("monthly_fee"),
+  connectFee: text("connect_fee"),
+  currency: text("currency"),
+  purchasedBy: uuid("purchased_by").references(() => users.id, { onDelete: "set null" }),
+  lastError: text("last_error"),
+  createdAt: createdAt(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("zadarma_numbers_company_idx").on(t.companyId),
+  uniqueIndex("zadarma_numbers_number_idx").on(t.number),
+  // The duplicate-paid-purchase guard (requirement: "handle duplicate
+  // purchases... safely") — a PARTIAL unique index, unlike whapi_channels'
+  // plain unique-on-companyId: a company legitimately ends up with more than
+  // one number over its lifetime (ACTIVE/FAILED rows must coexist), so only
+  // ONE PENDING purchase attempt per company is allowed at a time, not one
+  // row total. A double-click, a browser-retried slow request, or two
+  // Superusers buying for the same company at once can only ever have one
+  // attempt win this insert — see zadarmaNumbers repo's insertPending.
+  uniqueIndex("zadarma_numbers_company_pending_idx").on(t.companyId).where(sql`${t.status} = 'PENDING'`),
+]);
+
+export const zadarmaExtensions = pgTable("zadarma_extensions", {
+  id: id(),
+  // Null until the real POST /v1/pbx/internal/create/ call confirms a real
+  // SIP extension number — same PENDING-first pattern as zadarmaNumbers.
+  sipExtension: text("sip_extension"),
+  // AES-256-GCM ciphertext (see crypto/zadarmaSecretBox.ts) — Zadarma only
+  // ever returns the real password once, at creation (return_password=true);
+  // there is no documented re-fetch for it other than a time-limited
+  // password-viewing endpoint, so this is captured and encrypted immediately.
+  sipPasswordEncrypted: text("sip_password_encrypted"),
+  // The company's own zadarma_numbers.number this extension's outbound
+  // Caller ID is set to via PUT /v1/pbx/internal/<SIP>/callerid/.
+  callerIdNumber: text("caller_id_number"),
+  companyId: uuid("company_id").references(() => companies.id, { onDelete: "set null" }),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+  // PENDING | ACTIVE | FAILED | FAILED_NEEDS_MANUAL_CHECK | REVOKED
+  status: text("status").notNull().default("PENDING"),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  lastError: text("last_error"),
+  createdAt: createdAt(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("zadarma_extensions_company_idx").on(t.companyId),
+  index("zadarma_extensions_user_idx").on(t.userId),
+  // A real Zadarma extension number can never be represented by more than
+  // one row — same structural guarantee as zadarma_numbers_number_idx.
+  uniqueIndex("zadarma_extensions_sip_idx").on(t.sipExtension),
+  // Duplicate-creation guard: one agent can have at most one in-flight-or-
+  // active extension at a time — mirrors zadarma_numbers_company_pending_idx,
+  // but keyed on the AGENT here since extensions are per-agent, not per-
+  // company (a company can have many agents, each with their own extension).
+  uniqueIndex("zadarma_extensions_user_pending_active_idx").on(t.userId).where(sql`${t.status} in ('PENDING', 'ACTIVE')`),
+]);
+
 export const calls = pgTable("calls", {
   id: id(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "restrict" }),
@@ -645,8 +744,47 @@ export const calls = pgTable("calls", {
   calledBy: uuid("called_by").references(() => users.id, { onDelete: "set null" }),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
   endedAt: timestamp("ended_at", { withTimezone: true }),
+  // Zadarma's own call id (pbx_call_id), set only on calls auto-logged from a
+  // verified webhook (see zadarmaCallEvents.ts) — null for manually-logged
+  // calls. The dedup key that makes processing a redelivered NOTIFY_END/
+  // NOTIFY_OUT_END event idempotent: a second insert attempt for the same
+  // pbx_call_id hits the unique index below and is treated as "already
+  // logged," never a second row. A plain (non-partial) unique index still
+  // allows unlimited NULLs in Postgres, so manually-logged calls are
+  // unaffected.
+  pbxCallId: text("pbx_call_id"),
 }, (t) => [
   index("calls_contact_started_idx").on(t.contactId, t.startedAt),
+  uniqueIndex("calls_pbx_call_id_idx").on(t.pbxCallId),
+]);
+
+/** Durable staging for inbound Zadarma PBX webhook events (NOTIFY_START/
+ * NOTIFY_INTERNAL/NOTIFY_ANSWER/NOTIFY_END/NOTIFY_OUT_START/NOTIFY_OUT_END/
+ * NOTIFY_RECORD) — same role/shape as whapi_inbound_events: the webhook
+ * route's ONLY job is getting each event durably staged (signature already
+ * verified) before attempting anything else; turning a staged event into a
+ * real `calls` row happens separately (see zadarmaCallEvents.ts), so a crash
+ * mid-processing never loses the event, only delays it. */
+export const zadarmaCallEvents = pgTable("zadarma_call_events", {
+  id: id(),
+  // NOTIFY_START | NOTIFY_INTERNAL | NOTIFY_ANSWER | NOTIFY_END |
+  // NOTIFY_OUT_START | NOTIFY_OUT_END | NOTIFY_RECORD
+  eventType: text("event_type").notNull(),
+  // Zadarma's own call identifier for this event, when present in the
+  // payload — used both as a human-debuggable key and (via calls.pbxCallId)
+  // as the dedup key once a NOTIFY_END/NOTIFY_OUT_END is actually processed
+  // into a `calls` row.
+  pbxCallId: text("pbx_call_id"),
+  rawPayload: jsonb("raw_payload").notNull(),
+  // PENDING -> PROCESSED | ABANDONED
+  status: text("status").notNull().default("PENDING"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  receivedAt: createdAt(),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+}, (t) => [
+  index("zadarma_call_events_status_idx").on(t.status),
+  index("zadarma_call_events_pbx_call_id_idx").on(t.pbxCallId),
 ]);
 
 // ---------------------------------------------------------------------------

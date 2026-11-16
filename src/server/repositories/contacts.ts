@@ -303,6 +303,17 @@ export async function findEmailsAndPhonesByCompanyId(
   return getDb().select({ email: contacts.email, phone: contacts.phone }).from(contacts).where(eq(contacts.companyId, companyId));
 }
 
+/** Candidate set for matching an incoming Zadarma call event to an existing
+ * contact (see zadarmaCallEvents.ts) — same reasoning as
+ * findEmailsAndPhonesByCompanyId just above: phone numbers aren't stored
+ * normalized, so the caller normalizes (strips formatting) and compares in
+ * JS against this full per-company set, rather than an exact-match SQL
+ * query silently missing a real match that only differs by a `+`, spaces,
+ * or a leading country code. */
+export async function findIdsAndPhonesByCompanyId(companyId: string): Promise<{ id: string; phone: string | null }[]> {
+  return getDb().select({ id: contacts.id, phone: contacts.phone }).from(contacts).where(eq(contacts.companyId, companyId));
+}
+
 export async function create(data: NewContact, db: ReturnType<typeof getDb> = getDb()): Promise<Contact> {
   const [row] = await db.insert(contacts).values(data).returning();
   return row;

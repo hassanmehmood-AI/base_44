@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "zadarma_numbers_company_pending_idx" ON "zadarma_numbers" USING btree ("company_id") WHERE "zadarma_numbers"."status" = 'PENDING';

@@ -1,4 +1,4 @@
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { calls, contacts } from "@/db/schema";
 
@@ -22,6 +22,22 @@ export async function findManyByCompanyIds(companyIds: string[]): Promise<CallWi
     .from(calls)
     .innerJoin(contacts, eq(calls.contactId, contacts.id))
     .where(inArray(calls.companyId, companyIds))
+    .orderBy(desc(calls.startedAt));
+  return rows.map(toJoined);
+}
+
+/** Same company-wide query as findManyByCompanyIds, narrowed to calls on
+ * contacts actually assigned to this agent — the call-history counterpart
+ * to contactsRepo.findManyByAssignedUserId, closing the gap where an agent's
+ * "recent call history" previously showed every call in their company,
+ * not just calls tied to their own assigned leads. */
+export async function findManyByCompanyIdsAndAssignedUser(companyIds: string[], assignedUserId: string): Promise<CallWithContact[]> {
+  if (companyIds.length === 0) return [];
+  const rows = await getDb()
+    .select(baseSelect)
+    .from(calls)
+    .innerJoin(contacts, eq(calls.contactId, contacts.id))
+    .where(and(inArray(calls.companyId, companyIds), eq(contacts.assignedUserId, assignedUserId)))
     .orderBy(desc(calls.startedAt));
   return rows.map(toJoined);
 }

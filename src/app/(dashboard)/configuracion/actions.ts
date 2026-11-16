@@ -9,6 +9,8 @@ import * as whapiOnboardingService from "@/server/services/whapiOnboarding";
 import * as emailOnboardingService from "@/server/services/emailOnboarding";
 import * as smtpOnboardingService from "@/server/services/smtpOnboarding";
 import type { SmtpImapInput } from "@/server/services/smtpOnboarding";
+import * as zadarmaNumberOnboardingService from "@/server/services/zadarmaNumberOnboarding";
+import * as zadarmaExtensionOnboardingService from "@/server/services/zadarmaExtensionOnboarding";
 import { UnauthorizedError } from "@/server/services/authorization";
 import type { RoleKey, ModuleKey } from "@/server/constants";
 
@@ -446,6 +448,336 @@ export async function setAgentManagerAction(input: {
 }): Promise<ActionResult> {
   try {
     await usersService.setAgentManager(input);
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+// -----------------------------------------------------------------------------
+// Zadarma number purchasing — one shared Zadarma account, numbers bought and
+// assigned per company directly from this page. See
+// server/services/zadarmaNumberOnboarding.ts for the full safe-purchase
+// design (PENDING-first inserts, FAILED vs FAILED_NEEDS_MANUAL_CHECK).
+// -----------------------------------------------------------------------------
+
+export type { CompanyZadarmaStatus as ZadarmaNumberStatus } from "@/server/services/zadarmaNumberOnboarding";
+
+/** DB-only (no Zadarma call) status per company — safe on every
+ * Configuración page load, same role as getWhapiProvisioningStatusAction. */
+export async function getZadarmaNumberStatusAction(companyIds: string[]) {
+  try {
+    return { statuses: await zadarmaNumberOnboardingService.getProvisioningStatusForCompanies(companyIds) };
+  } catch {
+    return { statuses: [] as Awaited<ReturnType<typeof zadarmaNumberOnboardingService.getProvisioningStatusForCompanies>> };
+  }
+}
+
+export type { ZadarmaErrorReason } from "@/server/services/zadarmaNumberOnboarding";
+
+export async function getZadarmaCountriesAction() {
+  try {
+    return { countries: await zadarmaNumberOnboardingService.getCountries() };
+  } catch (e) {
+    const { reason, message } = zadarmaNumberOnboardingService.classifyError(e);
+    return { countries: [], error: message, reason };
+  }
+}
+
+export async function getZadarmaDestinationsAction(countryCodeIso: string) {
+  try {
+    return { destinations: await zadarmaNumberOnboardingService.getDestinations(countryCodeIso) };
+  } catch (e) {
+    const { reason, message } = zadarmaNumberOnboardingService.classifyError(e);
+    return { destinations: [], error: message, reason };
+  }
+}
+
+export async function getZadarmaAvailableNumbersAction(directionId: string, mask?: string) {
+  try {
+    return { numbers: await zadarmaNumberOnboardingService.searchAvailableNumbers(directionId, mask) };
+  } catch (e) {
+    const { reason, message } = zadarmaNumberOnboardingService.classifyError(e);
+    return { numbers: [], error: message, reason };
+  }
+}
+
+export async function checkZadarmaBalanceAction(destination: { connect_fee: string; monthly_fee: string; currency: string }) {
+  return zadarmaNumberOnboardingService.checkSufficientBalance(destination);
+}
+
+export async function getZadarmaDocumentGroupsAction() {
+  try {
+    return { groups: await zadarmaNumberOnboardingService.getDocumentGroups() };
+  } catch (e) {
+    const { reason, message } = zadarmaNumberOnboardingService.classifyError(e);
+    return { groups: [], error: message, reason };
+  }
+}
+
+export async function createZadarmaDocumentGroupAction(fields: Record<string, string>): Promise<ActionResult & { groupId?: string }> {
+  try {
+    const result = await zadarmaNumberOnboardingService.createDocumentGroup(fields);
+    return { ok: true, groupId: result.id };
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
+    throw e;
+  }
+}
+
+/** The one paid action in this file — submits the actual order/ call after
+ * the Superuser has seen pricing/terms and explicitly confirmed in the UI.
+ * See zadarmaNumberOnboarding.ts's purchaseNumber for the duplicate-click
+ * guard and ambiguous-failure handling this wraps. */
+export async function purchaseZadarmaNumberAction(input: {
+  companyId: string;
+  countryCode: string;
+  directionId: string;
+  documentsGroupId: string;
+  numberId?: string;
+  monthlyFee: string | null;
+  connectFee: string | null;
+  currency: string | null;
+}): Promise<ActionResult & { number?: string }> {
+  const result = await zadarmaNumberOnboardingService.purchaseNumber(input).catch((e) => {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { ok: false as const, reason: "error" as const, message: e.message };
+    throw e;
+  });
+  if (!result.ok) return { error: result.message };
+  revalidatePath("/configuracion");
+  return { ok: true, number: result.number };
+}
+
+export async function retryZadarmaPurchaseAction(
+  numberRowId: string,
+  input: { documentsGroupId: string; numberId?: string; monthlyFee: string | null; connectFee: string | null; currency: string | null }
+): Promise<ActionResult & { number?: string }> {
+  const result = await zadarmaNumberOnboardingService.retryPurchase(numberRowId, input).catch((e) => {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { ok: false as const, reason: "error" as const, message: e.message };
+    throw e;
+  });
+  if (!result.ok) return { error: result.message };
+  revalidatePath("/configuracion");
+  return { ok: true, number: result.number };
+}
+
+/** The explicit "I checked the Zadarma dashboard, no unexpected charge
+ * occurred" confirmation — the only way out of FAILED_NEEDS_MANUAL_CHECK.
+ * Never triggered automatically. */
+export async function confirmNoZadarmaChargeOccurredAction(numberRowId: string): Promise<ActionResult> {
+  const result = await zadarmaNumberOnboardingService.confirmNoChargeOccurred(numberRowId).catch((e) => {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { ok: false, message: e.message };
+    throw e;
+  });
+  if (!result.ok) return { error: result.message };
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+export type ZadarmaNumberRow = {
+  id: string;
+  number: string | null;
+  companyId: string | null;
+  status: string;
+  monthlyFee: string | null;
+  currency: string | null;
+  lastError: string | null;
+  createdAt: string;
+};
+
+/** Every number this CRM has ever attempted to purchase, for the "existing
+ * numbers" management view (requirement #8) — including unassigned and
+ * failed ones. Company names are resolved client-side from the companies
+ * list the page already has, so this action stays a plain list fetch. */
+export async function getZadarmaNumbersListAction(): Promise<{ numbers: ZadarmaNumberRow[] }> {
+  try {
+    const rows = await zadarmaNumberOnboardingService.listNumbers();
+    return {
+      numbers: rows.map((r) => ({
+        id: r.id,
+        number: r.number,
+        companyId: r.companyId,
+        status: r.status,
+        monthlyFee: r.monthlyFee,
+        currency: r.currency,
+        lastError: r.lastError,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    };
+  } catch {
+    return { numbers: [] };
+  }
+}
+
+/** Pure CRM-side routing change — no Zadarma API call, safe anytime. Pass
+ * companyId: null to unassign a number entirely. */
+export async function reassignZadarmaNumberAction(numberRowId: string, companyId: string | null): Promise<ActionResult> {
+  try {
+    await zadarmaNumberOnboardingService.reassignNumber(numberRowId, companyId);
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+/** "Add Existing Number" — Feature 2. Verifies ownership via Zadarma's
+ * real, read-only owned-numbers API before linking; never purchases
+ * anything. See zadarmaNumberOnboarding.ts's linkExistingNumber. */
+export async function linkExistingZadarmaNumberAction(number: string, companyId: string): Promise<zadarmaNumberOnboardingService.LinkExistingNumberResult> {
+  try {
+    const result = await zadarmaNumberOnboardingService.linkExistingNumber({ number, companyId });
+    if (result.ok) revalidatePath("/configuracion");
+    return result;
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { ok: false, reason: "unauthorized", message: "Only Superusers can manage Zadarma numbers." };
+    const message = e instanceof Error ? e.message : "Unknown error.";
+    return { ok: false, reason: "error", message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Zadarma SIP/PBX extension management — real integration, gated behind
+// ZADARMA_LIVE_PBX_PROVISIONING server-side (see zadarma.ts). No action here
+// has a "mock" variant; createZadarmaExtensionAction calls the exact same
+// real code path either way, and simply surfaces a clear
+// "provisioning_disabled" result while the gate is off, instead of silently
+// doing nothing or faking a success.
+// ---------------------------------------------------------------------------
+
+export type ZadarmaExtensionRow = {
+  id: string;
+  sipExtension: string | null;
+  callerIdNumber: string | null;
+  companyId: string | null;
+  userId: string | null;
+  status: string;
+  lastError: string | null;
+  createdAt: string;
+};
+
+export type ZadarmaExtensionErrorReason = zadarmaExtensionOnboardingService.ZadarmaExtensionErrorReason;
+
+export async function getZadarmaExtensionLimitCheckAction() {
+  try {
+    const check = await zadarmaExtensionOnboardingService.checkExtensionLimits();
+    return { ...check, error: undefined, reason: undefined as ZadarmaExtensionErrorReason | undefined };
+  } catch (e) {
+    const { reason, message } = zadarmaExtensionOnboardingService.classifyError(e);
+    return { liveProvisioningEnabled: false, existingExtensionCount: 0, existingExtensionNumbers: [] as number[], error: message, reason };
+  }
+}
+
+export async function getZadarmaExtensionsListAction(): Promise<{ extensions: ZadarmaExtensionRow[] }> {
+  try {
+    const rows = await zadarmaExtensionOnboardingService.listExtensions();
+    return {
+      extensions: rows.map((r) => ({
+        id: r.id,
+        sipExtension: r.sipExtension,
+        callerIdNumber: r.callerIdNumber,
+        companyId: r.companyId,
+        userId: r.userId,
+        status: r.status,
+        lastError: r.lastError,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    };
+  } catch {
+    return { extensions: [] };
+  }
+}
+
+export async function getZadarmaAssignableAgentsAction(companyId: string) {
+  try {
+    const agents = await zadarmaExtensionOnboardingService.getAssignableAgents(companyId);
+    return { agents: agents.map((a) => ({ id: a.id, fullName: a.fullName })), error: undefined };
+  } catch (e) {
+    const { message } = zadarmaExtensionOnboardingService.classifyError(e);
+    return { agents: [] as { id: string; fullName: string }[], error: message };
+  }
+}
+
+export type CreateZadarmaExtensionResult =
+  | { ok: true; sipExtension: string }
+  | { ok: false; reason: ZadarmaExtensionErrorReason | "already_exists" | "no_number" | "needs_manual_check"; message: string };
+
+export async function createZadarmaExtensionAction(companyId: string, userId: string): Promise<CreateZadarmaExtensionResult> {
+  try {
+    const result = await zadarmaExtensionOnboardingService.createExtensionForAgent({ companyId, userId });
+    if (result.ok) {
+      revalidatePath("/configuracion");
+      return result;
+    }
+    return result;
+  } catch (e) {
+    const { reason, message } = zadarmaExtensionOnboardingService.classifyError(e);
+    return { ok: false, reason, message };
+  }
+}
+
+/** "Add Existing SIP" — Feature 1. Verifies the extension exists on the
+ * real, connected Zadarma account (read-only) before linking; never
+ * creates anything, never changes its Caller ID or password on Zadarma's
+ * side. See zadarmaExtensionOnboarding.ts's connectExistingExtension. */
+export async function connectExistingZadarmaExtensionAction(
+  companyId: string,
+  userId: string,
+  sipExtension: string,
+  sipPassword: string
+): Promise<zadarmaExtensionOnboardingService.ConnectExistingExtensionResult> {
+  try {
+    const result = await zadarmaExtensionOnboardingService.connectExistingExtension({ companyId, userId, sipExtension, sipPassword });
+    if (result.ok) revalidatePath("/configuracion");
+    return result;
+  } catch (e) {
+    const { reason, message } = zadarmaExtensionOnboardingService.classifyError(e);
+    return { ok: false, reason, message };
+  }
+}
+
+export async function retryZadarmaExtensionAction(extensionRowId: string): Promise<CreateZadarmaExtensionResult> {
+  try {
+    const result = await zadarmaExtensionOnboardingService.retryCreateExtension(extensionRowId);
+    if (result.ok) revalidatePath("/configuracion");
+    return result;
+  } catch (e) {
+    const { reason, message } = zadarmaExtensionOnboardingService.classifyError(e);
+    return { ok: false, reason, message };
+  }
+}
+
+export async function confirmNoZadarmaExtensionChargeAction(extensionRowId: string): Promise<ActionResult> {
+  try {
+    const result = await zadarmaExtensionOnboardingService.confirmNoExtensionChargeOccurred(extensionRowId);
+    if (!result.ok) return { error: result.message };
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+export async function reassignZadarmaExtensionAction(extensionRowId: string, newCompanyId: string, newUserId: string): Promise<ActionResult> {
+  try {
+    const result = await zadarmaExtensionOnboardingService.reassignExtension(extensionRowId, newCompanyId, newUserId);
+    if (!result.ok) return { error: result.message };
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+export async function revokeZadarmaExtensionAction(extensionRowId: string): Promise<ActionResult> {
+  try {
+    const result = await zadarmaExtensionOnboardingService.revokeExtension(extensionRowId);
+    if (!result.ok) return { error: result.message };
   } catch (e) {
     if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
     throw e;

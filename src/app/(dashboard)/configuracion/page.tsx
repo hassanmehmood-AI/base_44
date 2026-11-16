@@ -4,6 +4,7 @@ import * as companiesRepo from "@/server/repositories/companies";
 import * as usersService from "@/server/services/users";
 import * as metricoolOnboardingService from "@/server/services/metricoolOnboarding";
 import * as whapiOnboardingService from "@/server/services/whapiOnboarding";
+import * as zadarmaNumberOnboardingService from "@/server/services/zadarmaNumberOnboarding";
 import type { RoleKey } from "@/server/constants";
 import { ConfiguracionClient, type UserRow } from "./ConfiguracionClient";
 
@@ -24,6 +25,11 @@ export default async function ConfiguracionPage() {
   // whapiOnboardingService.getProvisioningStatusForCompanies.
   const whapiStatuses = isSuperuser
     ? await whapiOnboardingService.getProvisioningStatusForCompanies(companies.map((c) => c.id))
+    : [];
+  // Same DB-only, Superuser-only pattern as metricoolStatuses/whapiStatuses
+  // above — see zadarmaNumberOnboardingService.getProvisioningStatusForCompanies.
+  const zadarmaStatuses = isSuperuser
+    ? await zadarmaNumberOnboardingService.getProvisioningStatusForCompanies(companies.map((c) => c.id))
     : [];
   const isDirector = session?.user.roleKey === "DIRECTOR";
   const isManager = session?.user.roleKey === "CALL_CENTER_LEAD";
@@ -98,6 +104,7 @@ export default async function ConfiguracionPage() {
       companies={companies}
       metricoolStatuses={metricoolStatuses}
       whapiStatuses={whapiStatuses}
+      zadarmaStatuses={zadarmaStatuses}
       canManageAdmin={isSuperuser}
       canAddUsers={canAddUsers}
       canManagePermissions={canManagePermissions}

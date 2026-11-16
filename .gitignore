@@ -47,3 +47,6 @@ dev-seed-credentials.local.txt
 *.tsbuildinfo
 next-env.d.ts
 .mirror_pg_password.local
+
+# self-service local password reset tool (never committed — run locally only)
+reset-my-password-SELF-SERVICE.cjs

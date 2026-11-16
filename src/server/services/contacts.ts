@@ -73,6 +73,13 @@ export async function getContact(id: string) {
     const owned = await contactsRepo.isInManagerScope(id, session.user.id);
     if (!owned) throw new UnauthorizedError("You don't have access to that contact.");
   }
+  // Closes the same bypass the list views (listContactsForCurrentUser)
+  // already prevent: company access alone let an agent fetch a lead's full
+  // detail/activity history by guessing/knowing its id directly, even if it
+  // wasn't assigned to them and so never appeared in their own queue.
+  if (session.user.roleKey === "CALL_CENTER_AGENT" && contact.assignedUserId !== session.user.id) {
+    throw new UnauthorizedError("You don't have access to that contact.");
+  }
   const recentActivities = await activitiesRepo.findRecentByContactId(id);
   return { contact, activities: recentActivities };
 }

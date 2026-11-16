@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Plus, CheckCircle2, Trash2, RotateCcw, ArrowUp, ArrowDown, Power, Building2, Mail, Unlink } from "lucide-react";
+import { Plus, CheckCircle2, Trash2, RotateCcw, ArrowUp, ArrowDown, Power, Building2, Mail, Unlink, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -50,10 +50,37 @@ import {
   getWebmailAccountsForCompanyAction,
   disconnectWebmailAccountAction,
   type WebmailAccountRow,
+  getZadarmaCountriesAction,
+  getZadarmaDestinationsAction,
+  getZadarmaAvailableNumbersAction,
+  checkZadarmaBalanceAction,
+  getZadarmaDocumentGroupsAction,
+  createZadarmaDocumentGroupAction,
+  purchaseZadarmaNumberAction,
+  retryZadarmaPurchaseAction,
+  confirmNoZadarmaChargeOccurredAction,
+  getZadarmaNumbersListAction,
+  reassignZadarmaNumberAction,
+  linkExistingZadarmaNumberAction,
+  type ZadarmaNumberStatus,
+  type ZadarmaNumberRow,
+  type ZadarmaErrorReason,
+  getZadarmaExtensionLimitCheckAction,
+  getZadarmaExtensionsListAction,
+  getZadarmaAssignableAgentsAction,
+  createZadarmaExtensionAction,
+  connectExistingZadarmaExtensionAction,
+  retryZadarmaExtensionAction,
+  confirmNoZadarmaExtensionChargeAction,
+  reassignZadarmaExtensionAction,
+  revokeZadarmaExtensionAction,
+  type ZadarmaExtensionRow,
+  type ZadarmaExtensionErrorReason,
 } from "./actions";
 import type { SmtpImapInput } from "@/server/services/smtpOnboarding";
 import type { CompanyProvisioningStatus, LinkableBrand } from "@/server/services/metricoolOnboarding";
 import type { CompanyChannelStatus as WhapiChannelStatus } from "@/server/services/whapiOnboarding";
+import type { ZadarmaCountry, ZadarmaDestination, ZadarmaAvailableNumber, ZadarmaDocumentGroup } from "@/server/integrations/zadarma";
 
 export type UserRow = {
   id: string;
@@ -107,6 +134,7 @@ export function ConfiguracionClient({
   companies: realCompanies,
   metricoolStatuses,
   whapiStatuses,
+  zadarmaStatuses,
   canManageAdmin,
   canAddUsers,
   canManagePermissions,
@@ -124,6 +152,9 @@ export function ConfiguracionClient({
   /** Same DB-only pattern as metricoolStatuses, for each company's Whapi
    * (WhatsApp) channel — see whapiOnboardingService.getProvisioningStatusForCompanies. */
   whapiStatuses: WhapiChannelStatus[];
+  /** Same DB-only pattern, for each company's Zadarma calling number — see
+   * zadarmaNumberOnboardingService.getProvisioningStatusForCompanies. */
+  zadarmaStatuses: ZadarmaNumberStatus[];
   canManageAdmin: boolean;
   canAddUsers: boolean;
   /** Superuser (any user) or Director (their own company's Managers/Agents
@@ -525,17 +556,50 @@ export function ConfiguracionClient({
                           {t("Only a Superuser can change company access.", "Solo un superusuario puede cambiar el acceso a empresas.")}
                         </p>
                       )}
-                      <div className="mt-4 flex flex-col gap-2.5">
-                        {realCompanies.map((c) => (
-                          <PermissionPill
-                            key={c.id}
-                            label={c.name}
-                            active={companyIds.has(c.id)}
-                            disabled={loadingAccess || !isSuperuser}
-                            onClick={() => toggle(companyIds, setCompanyIds, c.id)}
-                          />
-                        ))}
-                      </div>
+                      {/* Call Center Agents are restricted to exactly one
+                       * company — "One Agent → One Company → One SIP
+                       * Extension → Only Assigned Leads" — so this is a
+                       * single-select here (clicking a different company
+                       * REPLACES the selection, never adds to it), while
+                       * every other role keeps the normal multi-select
+                       * checkbox list. The real enforcement is server-side
+                       * (usersService.updateUserPermissions rejects more
+                       * than one company for this role regardless of what
+                       * the client sends) — this UI is just the honest
+                       * reflection of that rule, not a substitute for it. */}
+                      {selected.roleKey === "CALL_CENTER_AGENT" ? (
+                        <>
+                          <p className="mt-1 text-[12px] text-text-tertiary">
+                            {t(
+                              "Call Center Agents belong to exactly one company.",
+                              "Los agentes de centro de llamadas pertenecen a exactamente una empresa."
+                            )}
+                          </p>
+                          <div className="mt-4 flex flex-col gap-2.5">
+                            {realCompanies.map((c) => (
+                              <PermissionPill
+                                key={c.id}
+                                label={c.name}
+                                active={companyIds.has(c.id)}
+                                disabled={loadingAccess || !isSuperuser}
+                                onClick={() => setCompanyIds(new Set([c.id]))}
+                              />
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="mt-4 flex flex-col gap-2.5">
+                          {realCompanies.map((c) => (
+                            <PermissionPill
+                              key={c.id}
+                              label={c.name}
+                              active={companyIds.has(c.id)}
+                              disabled={loadingAccess || !isSuperuser}
+                              onClick={() => toggle(companyIds, setCompanyIds, c.id)}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </Card>
                     <Card className="p-6">
                       <CardTitle>{t("Allowed modules", "Módulos permitidos")}</CardTitle>
@@ -677,11 +741,20 @@ export function ConfiguracionClient({
               )}
               {canManageAdmin && <CompanyGmailAccounts companyId={c.id} />}
               {canManageAdmin && <CompanyWebmailAccounts companyId={c.id} />}
+              {canManageAdmin && (
+                <CompanyZadarmaNumber
+                  companyId={c.id}
+                  companyName={c.name}
+                  initialStatus={zadarmaStatuses.find((s) => s.companyId === c.id) ?? { companyId: c.id, status: "NONE", number: null, numberRowId: null }}
+                />
+              )}
             </Card>
           ))}
           {realCompanies.length === 0 && (
             <p className="text-[13.5px] text-text-secondary">{t("No companies yet.", "Todavía no hay empresas.")}</p>
           )}
+          {canManageAdmin && <ZadarmaNumbersPanel companies={realCompanies} />}
+          {canManageAdmin && <ZadarmaExtensionsPanel companies={realCompanies} />}
         </div>
       )}
 
@@ -1343,6 +1416,1396 @@ function CompanyWebmailAccounts({ companyId }: { companyId: string }) {
         }}
       />
     </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Zadarma number purchasing — per-company card status + the buy wizard +
+// the cross-company "existing numbers" management panel. One shared Zadarma
+// account (server-side, unchanged) owns every number; this UI is what lets
+// a Superuser buy one through Zadarma's own API and assign it to a company,
+// instead of provisioning numbers manually in Zadarma's dashboard. See
+// server/services/zadarmaNumberOnboarding.ts for the safe-purchase design
+// this wraps (PENDING-first inserts, FAILED vs FAILED_NEEDS_MANUAL_CHECK).
+// -----------------------------------------------------------------------------
+
+function CompanyZadarmaNumber({ companyId, companyName, initialStatus }: { companyId: string; companyName: string; initialStatus: ZadarmaNumberStatus }) {
+  const { t } = useLanguage();
+  const [status, setStatus] = useState(initialStatus);
+  const [buyOpen, setBuyOpen] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  async function handleRetry() {
+    if (!status.numberRowId) return;
+    setRetrying(true);
+    setError(undefined);
+    // A retry re-uses whatever the failed attempt's own direction was —
+    // the wizard already collected a fresh documents group id/number choice
+    // is not re-askable here without re-opening the wizard, so retry only
+    // covers the simplest case (same destination, let Zadarma pick a number
+    // again); anything more specific, just buy again via the wizard instead.
+    const result = await retryZadarmaPurchaseAction(status.numberRowId, {
+      documentsGroupId: "",
+      monthlyFee: null,
+      connectFee: null,
+      currency: null,
+    });
+    setRetrying(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    setStatus((prev) => ({ ...prev, status: "ACTIVE", number: result.number ?? prev.number }));
+  }
+
+  async function handleConfirmNoCharge() {
+    if (!status.numberRowId) return;
+    setConfirming(true);
+    setError(undefined);
+    const result = await confirmNoZadarmaChargeOccurredAction(status.numberRowId);
+    setConfirming(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    setStatus((prev) => ({ ...prev, status: "FAILED" }));
+  }
+
+  const badgeTone = status.status === "ACTIVE" ? "green" : status.status === "NONE" ? "gray" : status.status === "PENDING" ? "amber" : "red";
+  const badgeLabel =
+    status.status === "ACTIVE"
+      ? status.number ?? t("Active", "Activo")
+      : status.status === "PENDING"
+        ? t("Purchasing...", "Comprando...")
+        : status.status === "FAILED_NEEDS_MANUAL_CHECK"
+          ? t("Needs manual check", "Requiere verificación manual")
+          : status.status === "FAILED"
+            ? t("Purchase failed", "Compra fallida")
+            : t("No number", "Sin número");
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-semibold tracking-wide text-text-tertiary">{t("ZADARMA CALLING", "LLAMADAS (ZADARMA)")}</p>
+        <Badge tone={badgeTone}>{badgeLabel}</Badge>
+      </div>
+
+      {status.status === "NONE" && (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" onClick={() => setBuyOpen(true)}>
+            {t("Buy Zadarma number", "Comprar número Zadarma")}
+          </Button>
+        </div>
+      )}
+
+      {status.status === "FAILED" && (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={retrying} onClick={handleRetry}>
+            {retrying ? t("Retrying...", "Reintentando...") : t("Retry", "Reintentar")}
+          </Button>
+          <Button type="button" size="sm" variant="outline" onClick={() => setBuyOpen(true)}>
+            {t("Buy a different number", "Comprar otro número")}
+          </Button>
+        </div>
+      )}
+
+      {status.status === "FAILED_NEEDS_MANUAL_CHECK" && (
+        <div className="flex flex-col gap-2">
+          <p className="text-[12px] text-text-secondary">
+            {t(
+              "Zadarma's response was inconclusive — check the Zadarma dashboard for an unexpected charge before retrying, to avoid purchasing a second number.",
+              "La respuesta de Zadarma fue inconclusa — revisa el panel de Zadarma por un cargo inesperado antes de reintentar, para evitar comprar un segundo número."
+            )}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" disabled={confirming} onClick={handleConfirmNoCharge}>
+              {confirming ? t("Confirming...", "Confirmando...") : t("I checked — no charge occurred", "Verifiqué — no hubo cargo")}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {status.status === "ACTIVE" && (
+        <p className="text-[12px] text-text-secondary">
+          {t("Reassign or release this number from the Zadarma Numbers panel below.", "Reasigna o libera este número desde el panel de Números Zadarma más abajo.")}
+        </p>
+      )}
+
+      {error && <p className="text-[12px] text-danger">{error}</p>}
+
+      <BuyZadarmaNumberModal
+        open={buyOpen}
+        companyId={companyId}
+        companyName={companyName}
+        onClose={() => setBuyOpen(false)}
+        onPurchased={(number, numberRowId) => {
+          setBuyOpen(false);
+          setStatus({ companyId, status: "ACTIVE", number, numberRowId });
+        }}
+      />
+    </div>
+  );
+}
+
+type BuyStep = "destination" | "number" | "documents" | "confirm";
+
+/** The actual purchase wizard — country → destination (pricing shown here) →
+ * number → documents → an explicit confirm screen before the one paid call.
+ * Every step is read-only/free except the final submit (requirement:
+ * "require explicit confirmation before submitting a paid order"). */
+/** The four distinguishable failure modes the wizard's data-fetch steps can
+ * hit (see zadarma.ts's error classes + zadarmaNumberOnboarding.ts's
+ * classifyError) — not_configured/unauthorized are account-level problems a
+ * retry can never fix, so those two never show a Retry button; the other
+ * three (auth/rate_limit/network) are all transient-or-fixable, so they do. */
+function zadarmaErrorIcon(reason: ZadarmaErrorReason | undefined) {
+  return reason === "not_configured" || reason === "unauthorized" ? "🔒" : reason === "rate_limit" ? "⏳" : reason === "network" ? "📡" : "⚠️";
+}
+
+function canRetryZadarmaError(reason: ZadarmaErrorReason | undefined): boolean {
+  return reason !== "not_configured" && reason !== "unauthorized";
+}
+
+/** Inline error banner used at every fetch step — shows a reason-specific
+ * icon and, only when the failure is actually retryable (see
+ * canRetryZadarmaError above), a Retry button that re-runs whatever fetch
+ * just failed. `onRetry` is the exact same handler the step already calls
+ * on its own trigger (country change, destination pick, ...), never a
+ * separate code path, so "Retry" can never behave differently from a fresh
+ * attempt. */
+function ZadarmaFetchError({
+  message,
+  reason,
+  onRetry,
+}: {
+  message: string;
+  reason: ZadarmaErrorReason | undefined;
+  onRetry?: () => void;
+}) {
+  const { t } = useLanguage();
+  return (
+    <div className="flex items-start gap-2 rounded-lg bg-danger-50 px-3 py-2.5">
+      <span aria-hidden>{zadarmaErrorIcon(reason)}</span>
+      <div className="flex flex-1 flex-col gap-1.5">
+        <p className="text-[12.5px] text-danger">{message}</p>
+        {onRetry && canRetryZadarmaError(reason) && (
+          <Button type="button" size="sm" variant="outline" onClick={onRetry} className="w-fit">
+            {t("Retry", "Reintentar")}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BuyZadarmaNumberModal({
+  open,
+  companyId,
+  companyName,
+  onClose,
+  onPurchased,
+}: {
+  open: boolean;
+  companyId: string;
+  companyName: string;
+  onClose: () => void;
+  onPurchased: (number: string, numberRowId: string) => void;
+}) {
+  const { t } = useLanguage();
+  const [step, setStep] = useState<BuyStep>("destination");
+
+  const [countries, setCountries] = useState<ZadarmaCountry[]>([]);
+  const [loadingCountries, setLoadingCountries] = useState(false);
+  const [countryCode, setCountryCode] = useState("");
+
+  const [destinations, setDestinations] = useState<ZadarmaDestination[]>([]);
+  const [loadingDestinations, setLoadingDestinations] = useState(false);
+  const [destination, setDestination] = useState<ZadarmaDestination | null>(null);
+  // Client-side only — Zadarma's own API has no server-side city/state
+  // search parameter (confirmed against its published docs), so filtering
+  // an already-fetched destination list is the only option, not a gap in
+  // how this calls the API.
+  const [destinationFilter, setDestinationFilter] = useState("");
+  // Which state groups are expanded — only meaningful when grouping is
+  // active (see groupedDestinations below); multiple can be open at once.
+  const [expandedStates, setExpandedStates] = useState<Set<string>>(new Set());
+
+  const [numbers, setNumbers] = useState<ZadarmaAvailableNumber[]>([]);
+  const [loadingNumbers, setLoadingNumbers] = useState(false);
+  const [numberMask, setNumberMask] = useState("");
+  const [selectedNumber, setSelectedNumber] = useState<ZadarmaAvailableNumber | null>(null);
+
+  const [groups, setGroups] = useState<ZadarmaDocumentGroup[]>([]);
+  const [loadingGroups, setLoadingGroups] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState("");
+  const [newGroupFields, setNewGroupFields] = useState({ first_name: "", last_name: "", email: "", organization: "", country: "", city: "", address: "", phone: "" });
+  const [creatingGroup, setCreatingGroup] = useState(false);
+
+  const [balanceMessage, setBalanceMessage] = useState<{ ok: boolean; text: string } | undefined>();
+  const [agreed, setAgreed] = useState(false);
+  const [purchasing, setPurchasing] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [errorReason, setErrorReason] = useState<ZadarmaErrorReason | undefined>();
+  // The exact fetch that just failed, so a single generic Retry button can
+  // re-run whichever step's request actually broke — never a separate,
+  // possibly-diverging "retry" code path from the original attempt.
+  const [retryFn, setRetryFn] = useState<(() => void) | null>(null);
+
+  function resetAll() {
+    setStep("destination");
+    setCountryCode("");
+    setDestinations([]);
+    setDestination(null);
+    setDestinationFilter("");
+    setExpandedStates(new Set());
+    setNumbers([]);
+    setNumberMask("");
+    setSelectedNumber(null);
+    setGroups([]);
+    setSelectedGroupId("");
+    setNewGroupFields({ first_name: "", last_name: "", email: "", organization: "", country: "", city: "", address: "", phone: "" });
+    setBalanceMessage(undefined);
+    setAgreed(false);
+    setError(undefined);
+    setErrorReason(undefined);
+    setRetryFn(null);
+  }
+
+  function handleClose() {
+    resetAll();
+    onClose();
+  }
+
+  const loadCountries = useCallback(async () => {
+    setLoadingCountries(true);
+    setError(undefined);
+    setErrorReason(undefined);
+    const r = await getZadarmaCountriesAction();
+    setLoadingCountries(false);
+    setCountries(r.countries);
+    if (r.error) {
+      setError(r.error);
+      setErrorReason(r.reason);
+      setRetryFn(() => loadCountries);
+    } else {
+      setRetryFn(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    loadCountries();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch once per modal open
+  }, [open]);
+
+  const loadDestinations = useCallback(async (code: string) => {
+    setLoadingDestinations(true);
+    setError(undefined);
+    setErrorReason(undefined);
+    const r = await getZadarmaDestinationsAction(code);
+    setLoadingDestinations(false);
+    if (r.error) {
+      setError(r.error);
+      setErrorReason(r.reason);
+      setRetryFn(() => () => loadDestinations(code));
+      return;
+    }
+    setRetryFn(null);
+    setDestinations(r.destinations);
+  }, []);
+
+  function handleCountryChange(code: string) {
+    setCountryCode(code);
+    setDestination(null);
+    setDestinations([]);
+    setDestinationFilter("");
+    setExpandedStates(new Set());
+    if (!code) return;
+    loadDestinations(code);
+  }
+
+  const loadNumbers = useCallback(async (directionId: number, mask?: string) => {
+    setLoadingNumbers(true);
+    setError(undefined);
+    setErrorReason(undefined);
+    const r = await getZadarmaAvailableNumbersAction(String(directionId), mask || undefined);
+    setLoadingNumbers(false);
+    if (r.error) {
+      setError(r.error);
+      setErrorReason(r.reason);
+      setRetryFn(() => () => loadNumbers(directionId, mask));
+      return;
+    }
+    setRetryFn(null);
+    setNumbers(r.numbers);
+  }, []);
+
+  function handlePickDestination(d: ZadarmaDestination) {
+    setDestination(d);
+    setSelectedNumber(null);
+    setNumbers([]);
+    setNumberMask("");
+    setStep("number");
+    loadNumbers(d.id);
+  }
+
+  function handleSearchNumbers() {
+    if (!destination) return;
+    loadNumbers(destination.id, numberMask);
+  }
+
+  const loadDocumentGroups = useCallback(async () => {
+    setLoadingGroups(true);
+    setError(undefined);
+    setErrorReason(undefined);
+    const r = await getZadarmaDocumentGroupsAction();
+    setLoadingGroups(false);
+    if (r.error) {
+      setError(r.error);
+      setErrorReason(r.reason);
+      setRetryFn(() => loadDocumentGroups);
+      return;
+    }
+    setRetryFn(null);
+    setGroups(r.groups);
+  }, []);
+
+  function handleGoToDocuments() {
+    setStep("documents");
+    loadDocumentGroups();
+  }
+
+  async function handleCreateGroup() {
+    setCreatingGroup(true);
+    setError(undefined);
+    const result = await createZadarmaDocumentGroupAction(newGroupFields);
+    setCreatingGroup(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    if (result.groupId) setSelectedGroupId(result.groupId);
+  }
+
+  async function handleGoToConfirm() {
+    setStep("confirm");
+    if (!destination) return;
+    const check = await checkZadarmaBalanceAction({ connect_fee: String(destination.connect_fee), monthly_fee: String(destination.monthly_fee), currency: destination.currency });
+    if (check.ok) {
+      setBalanceMessage({ ok: true, text: t(`Balance: ${check.balance} ${check.currency} — sufficient.`, `Saldo: ${check.balance} ${check.currency} — suficiente.`) });
+    } else {
+      setBalanceMessage({ ok: false, text: check.message });
+    }
+  }
+
+  async function handlePurchase() {
+    if (!destination || !agreed) return;
+    setPurchasing(true);
+    setError(undefined);
+    const result = await purchaseZadarmaNumberAction({
+      companyId,
+      countryCode,
+      directionId: String(destination.id),
+      documentsGroupId: selectedGroupId,
+      numberId: selectedNumber ? String(selectedNumber.id) : undefined,
+      monthlyFee: String(destination.monthly_fee),
+      connectFee: String(destination.connect_fee),
+      currency: destination.currency,
+    });
+    setPurchasing(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    if (result.number) {
+      // numberRowId isn't returned by the action (only the activated
+      // number itself) — the parent just needs to know a purchase
+      // succeeded; it re-derives numberRowId from the next status refresh
+      // if needed. Passing the number string is enough to update the badge
+      // immediately without waiting on a page reload.
+      onPurchased(result.number, "");
+    }
+  }
+
+  // Filtered (by city/state name) view of the raw fetch — applied BEFORE
+  // grouping so a search narrows both the flat list and the grouped one
+  // identically, and so a state's displayed city count always reflects
+  // what's actually visible, never the unfiltered total.
+  const filteredDestinations = useMemo(() => {
+    const q = destinationFilter.trim().toLowerCase();
+    if (!q) return destinations;
+    return destinations.filter((d) => d.name.toLowerCase().includes(q) || (d.stateCode ?? "").toLowerCase().includes(q));
+  }, [destinations, destinationFilter]);
+
+  // null means "this country has no reliable state/region data at all" —
+  // confirmed live per-country (US: ~99% of destinations carry stateCode;
+  // UK/Pakistan: none do), so grouping is only ever offered when the data
+  // genuinely supports it, never invented for a country that doesn't have
+  // it. A small minority of destinations missing stateCode even within a
+  // country that mostly has it fall into a "(unspecified)" catch-all group
+  // rather than being silently dropped.
+  const groupedDestinations = useMemo(() => {
+    const anyHaveState = destinations.some((d) => d.stateCode);
+    if (!anyHaveState) return null;
+    const byState = new Map<string, ZadarmaDestination[]>();
+    for (const d of filteredDestinations) {
+      const key = d.stateCode || "—";
+      const list = byState.get(key) ?? [];
+      list.push(d);
+      byState.set(key, list);
+    }
+    return [...byState.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [destinations, filteredDestinations]);
+
+  function toggleState(stateCode: string) {
+    setExpandedStates((prev) => {
+      const next = new Set(prev);
+      if (next.has(stateCode)) next.delete(stateCode);
+      else next.add(stateCode);
+      return next;
+    });
+  }
+
+  function renderDestinationButton(d: ZadarmaDestination) {
+    return (
+      <button
+        key={d.id}
+        type="button"
+        onClick={() => handlePickDestination(d)}
+        className="flex w-full flex-col gap-0.5 rounded-xl border border-border p-3 text-left hover:bg-surface-muted"
+      >
+        <p className="text-[13.5px] font-medium text-text-primary">
+          {d.name} {d.areaCode ? `(${d.areaCode})` : ""}
+        </p>
+        <p className="text-[12px] text-text-secondary">
+          {t("Setup:", "Instalación:")} {d.connect_fee} {d.currency} · {t("Monthly:", "Mensual:")} {d.monthly_fee} {d.currency}
+          {d.receive_sms === "true" ? ` · ${t("SMS capable", "Compatible con SMS")}` : ""}
+        </p>
+        {d.restrictions && (d.restrictions.upload || d.restrictions.specify) && (
+          <p className="text-[11.5px] text-warning-700">
+            {t("Identity documents required for this destination.", "Se requieren documentos de identidad para este destino.")}
+          </p>
+        )}
+      </button>
+    );
+  }
+
+  return (
+    <Modal open={open} onClose={purchasing ? () => undefined : handleClose} title={t(`Buy Zadarma number — ${companyName}`, `Comprar número Zadarma — ${companyName}`)}>
+      <div className="flex flex-col gap-4">
+        {step === "destination" && (
+          <>
+            <div>
+              <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("COUNTRY", "PAÍS")}</label>
+              <Select value={countryCode} onChange={(e) => handleCountryChange(e.target.value)} disabled={loadingCountries}>
+                <option value="">{loadingCountries ? t("Loading...", "Cargando...") : t("Select a country...", "Selecciona un país...")}</option>
+                {countries.map((c) => (
+                  <option key={c.countryCodeIso} value={c.countryCodeIso}>
+                    {c.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+
+            {error && step === "destination" && !countryCode && (
+              <ZadarmaFetchError message={error} reason={errorReason} onRetry={retryFn ?? undefined} />
+            )}
+
+            {loadingDestinations && <p className="text-[12.5px] text-text-tertiary">{t("Loading destinations...", "Cargando destinos...")}</p>}
+
+            {error && countryCode && !loadingDestinations && destinations.length === 0 && (
+              <ZadarmaFetchError message={error} reason={errorReason} onRetry={retryFn ?? undefined} />
+            )}
+
+            {destinations.length > 0 && (
+              <>
+                <Input
+                  placeholder={t("Filter by state or city...", "Filtrar por estado o ciudad...")}
+                  value={destinationFilter}
+                  onChange={(e) => setDestinationFilter(e.target.value)}
+                />
+
+                {groupedDestinations ? (
+                  <div className="flex max-h-80 flex-col gap-2 overflow-y-auto">
+                    {groupedDestinations.map(([stateCode, cities]) => (
+                      <div key={stateCode} className="rounded-xl border border-border">
+                        <button
+                          type="button"
+                          onClick={() => toggleState(stateCode)}
+                          className="flex w-full items-center justify-between px-3 py-2.5 text-left"
+                        >
+                          <span className="text-[13px] font-semibold text-text-primary">
+                            {stateCode === "—" ? t("Other", "Otro") : stateCode}
+                          </span>
+                          <span className="flex items-center gap-2 text-[12px] text-text-tertiary">
+                            {cities.length} {t("cities", "ciudades")}
+                            <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", expandedStates.has(stateCode) && "rotate-180")} />
+                          </span>
+                        </button>
+                        {expandedStates.has(stateCode) && (
+                          <div className="flex flex-col gap-2 border-t border-border p-2">{cities.map(renderDestinationButton)}</div>
+                        )}
+                      </div>
+                    ))}
+                    {groupedDestinations.length === 0 && (
+                      <p className="py-4 text-center text-[12.5px] text-text-tertiary">{t("No destinations match your filter.", "Ningún destino coincide con tu filtro.")}</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex max-h-80 flex-col gap-2 overflow-y-auto">
+                    {filteredDestinations.map(renderDestinationButton)}
+                    {filteredDestinations.length === 0 && (
+                      <p className="py-4 text-center text-[12.5px] text-text-tertiary">{t("No destinations match your filter.", "Ningún destino coincide con tu filtro.")}</p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {step === "number" && destination && (
+          <>
+            <p className="text-[12.5px] text-text-secondary">
+              {destination.name} — {t("Setup:", "Instalación:")} {destination.connect_fee} {destination.currency} · {t("Monthly:", "Mensual:")} {destination.monthly_fee} {destination.currency}
+            </p>
+            <div className="flex gap-2">
+              <Input placeholder={t("Filter by digits (optional)", "Filtrar por dígitos (opcional)")} value={numberMask} onChange={(e) => setNumberMask(e.target.value)} />
+              <Button type="button" variant="outline" onClick={handleSearchNumbers} disabled={loadingNumbers}>
+                {t("Search", "Buscar")}
+              </Button>
+            </div>
+            {loadingNumbers && <p className="text-[12.5px] text-text-tertiary">{t("Loading numbers...", "Cargando números...")}</p>}
+            {error && !loadingNumbers && <ZadarmaFetchError message={error} reason={errorReason} onRetry={retryFn ?? undefined} />}
+            {!loadingNumbers && !error && numbers.length === 0 && (
+              <div className="flex flex-col items-start gap-2">
+                <p className="text-[12.5px] text-text-tertiary">{t("No numbers currently available for this destination.", "No hay números disponibles actualmente para este destino.")}</p>
+                <Button type="button" size="sm" variant="outline" onClick={() => setStep("destination")}>
+                  {t("Choose a different destination", "Elegir otro destino")}
+                </Button>
+              </div>
+            )}
+            <div className="flex max-h-60 flex-col gap-2 overflow-y-auto">
+              {numbers.map((n) => (
+                <button
+                  key={n.id}
+                  type="button"
+                  onClick={() => setSelectedNumber(n)}
+                  className={cn(
+                    "rounded-xl border p-3 text-left text-[13.5px]",
+                    selectedNumber?.id === n.id ? "border-brand bg-brand-50 text-brand" : "border-border text-text-primary hover:bg-surface-muted"
+                  )}
+                >
+                  {n.number}
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-between gap-3">
+              <Button type="button" variant="outline" onClick={() => setStep("destination")}>
+                {t("Back", "Atrás")}
+              </Button>
+              <Button type="button" disabled={!selectedNumber} onClick={handleGoToDocuments}>
+                {t("Next", "Siguiente")}
+              </Button>
+            </div>
+          </>
+        )}
+
+        {step === "documents" && (
+          <>
+            <p className="text-[12.5px] text-text-secondary">
+              {t(
+                "Most destinations require identity documents to activate a number. Pick an existing document group or create a new one.",
+                "La mayoría de los destinos requieren documentos de identidad para activar un número. Elige un grupo de documentos existente o crea uno nuevo."
+              )}
+            </p>
+            {loadingGroups && <p className="text-[12.5px] text-text-tertiary">{t("Loading document groups...", "Cargando grupos de documentos...")}</p>}
+            {groups.length > 0 && (
+              <div>
+                <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("EXISTING GROUP", "GRUPO EXISTENTE")}</label>
+                <Select value={selectedGroupId} onChange={(e) => setSelectedGroupId(e.target.value)}>
+                  <option value="">{t("None selected", "Ninguno seleccionado")}</option>
+                  {groups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {[g.first_name, g.last_name, g.organization].filter(Boolean).join(" ") || g.id}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
+
+            <p className="text-[11px] font-semibold tracking-wide text-text-secondary">{t("OR CREATE A NEW GROUP", "O CREAR UN GRUPO NUEVO")}</p>
+            <div className="grid grid-cols-2 gap-2">
+              <Input placeholder={t("First name", "Nombre")} value={newGroupFields.first_name} onChange={(e) => setNewGroupFields((p) => ({ ...p, first_name: e.target.value }))} />
+              <Input placeholder={t("Last name", "Apellido")} value={newGroupFields.last_name} onChange={(e) => setNewGroupFields((p) => ({ ...p, last_name: e.target.value }))} />
+              <Input placeholder={t("Email", "Correo")} value={newGroupFields.email} onChange={(e) => setNewGroupFields((p) => ({ ...p, email: e.target.value }))} />
+              <Input placeholder={t("Organization (optional)", "Organización (opcional)")} value={newGroupFields.organization} onChange={(e) => setNewGroupFields((p) => ({ ...p, organization: e.target.value }))} />
+              <Input placeholder={t("Country", "País")} value={newGroupFields.country} onChange={(e) => setNewGroupFields((p) => ({ ...p, country: e.target.value }))} />
+              <Input placeholder={t("City", "Ciudad")} value={newGroupFields.city} onChange={(e) => setNewGroupFields((p) => ({ ...p, city: e.target.value }))} />
+              <Input placeholder={t("Address", "Dirección")} value={newGroupFields.address} onChange={(e) => setNewGroupFields((p) => ({ ...p, address: e.target.value }))} />
+              <Input placeholder={t("Phone", "Teléfono")} value={newGroupFields.phone} onChange={(e) => setNewGroupFields((p) => ({ ...p, phone: e.target.value }))} />
+            </div>
+            <Button type="button" variant="outline" size="sm" disabled={creatingGroup} onClick={handleCreateGroup} className="w-fit">
+              {creatingGroup ? t("Creating group...", "Creando grupo...") : t("Create document group", "Crear grupo de documentos")}
+            </Button>
+
+            <div className="flex justify-between gap-3">
+              <Button type="button" variant="outline" onClick={() => setStep("number")}>
+                {t("Back", "Atrás")}
+              </Button>
+              <Button type="button" disabled={!selectedGroupId} onClick={handleGoToConfirm}>
+                {t("Next", "Siguiente")}
+              </Button>
+            </div>
+          </>
+        )}
+
+        {step === "confirm" && destination && (
+          <>
+            <div className="rounded-xl border border-border p-4">
+              <p className="text-[14px] font-semibold text-text-primary">{companyName}</p>
+              <p className="mt-2 text-[13px] text-text-secondary">{t("Number:", "Número:")} {selectedNumber?.number ?? t("(assigned automatically)", "(asignado automáticamente)")}</p>
+              <p className="text-[13px] text-text-secondary">{t("Destination:", "Destino:")} {destination.name}</p>
+              <p className="text-[13px] text-text-secondary">{t("Setup fee:", "Costo de instalación:")} {destination.connect_fee} {destination.currency}</p>
+              <p className="text-[13px] text-text-secondary">{t("Recurring monthly fee:", "Cargo mensual recurrente:")} {destination.monthly_fee} {destination.currency}</p>
+              <p className="text-[13px] text-text-secondary">{t("Renewal:", "Renovación:")} {t("Automatic unless cancelled — same terms as any other Zadarma number.", "Automática a menos que se cancele — mismos términos que cualquier otro número de Zadarma.")}</p>
+            </div>
+
+            {balanceMessage && (
+              <p className={cn("text-[12.5px]", balanceMessage.ok ? "text-text-secondary" : "text-danger")}>{balanceMessage.text}</p>
+            )}
+
+            <label className="flex items-start gap-2 text-[12.5px] text-text-secondary">
+              <input type="checkbox" className="mt-0.5" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
+              {t(
+                `I understand this will charge the Zadarma account's balance and assign this number to ${companyName}.`,
+                `Entiendo que esto generará un cargo al saldo de la cuenta de Zadarma y asignará este número a ${companyName}.`
+              )}
+            </label>
+
+            {error && <p className="text-[13px] text-danger">{error}</p>}
+
+            <div className="flex justify-between gap-3">
+              <Button type="button" variant="outline" disabled={purchasing} onClick={() => setStep("documents")}>
+                {t("Back", "Atrás")}
+              </Button>
+              <Button type="button" disabled={!agreed || purchasing} onClick={handlePurchase}>
+                {purchasing ? t("Purchasing...", "Comprando...") : t("Confirm purchase", "Confirmar compra")}
+              </Button>
+            </div>
+          </>
+        )}
+
+        {error && step !== "confirm" && <p className="text-[13px] text-danger">{error}</p>}
+      </div>
+    </Modal>
+  );
+}
+
+/** Cross-company view of every number this CRM has ever purchased
+ * (requirement #8: view existing numbers, assign/reassign safely).
+ * Reassignment is a pure DB update — no Zadarma API call — but moving a
+ * number away from a company immediately removes that company's calling
+ * capability, so it's deliberately gated behind an explicit confirmation
+ * dialog rather than firing the instant the dropdown changes — same
+ * "optional, Superuser-controlled, with proper warnings" requirement as a
+ * role-reset or permission change elsewhere on this page. The dropdown
+ * itself only stages the intended change; nothing is sent to the server
+ * until the Superuser confirms in the dialog below. */
+function ZadarmaNumbersPanel({ companies }: { companies: Company[] }) {
+  const { t } = useLanguage();
+  const [numbers, setNumbers] = useState<ZadarmaNumberRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [reassigning, setReassigning] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  // The staged, not-yet-confirmed reassignment — null means no dialog open.
+  // Keeping the full "from" context here (not just the target id) is what
+  // lets the confirmation copy name both companies explicitly, rather than
+  // a generic "are you sure?" that doesn't say what's actually changing.
+  const [pendingReassign, setPendingReassign] = useState<{ numberRowId: string; number: string | null; fromCompanyId: string | null; toCompanyId: string | null } | null>(null);
+
+  const [addExistingOpen, setAddExistingOpen] = useState(false);
+  const [existingNumberInput, setExistingNumberInput] = useState("");
+  const [existingNumberCompanyId, setExistingNumberCompanyId] = useState("");
+  const [linkingExisting, setLinkingExisting] = useState(false);
+  const [linkExistingError, setLinkExistingError] = useState<string | undefined>();
+
+  async function refreshNumbers() {
+    setLoading(true);
+    const r = await getZadarmaNumbersListAction();
+    setLoading(false);
+    setNumbers(r.numbers);
+  }
+
+  useEffect(() => {
+    refreshNumbers();
+  }, []);
+
+  function companyName(id: string | null): string {
+    if (!id) return t("Unassigned", "Sin asignar");
+    return companies.find((c) => c.id === id)?.name ?? t("Unknown company", "Empresa desconocida");
+  }
+
+  async function handleConfirmReassign() {
+    if (!pendingReassign) return;
+    setReassigning(true);
+    setError(undefined);
+    const result = await reassignZadarmaNumberAction(pendingReassign.numberRowId, pendingReassign.toCompanyId);
+    setReassigning(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    setNumbers((prev) => prev.map((n) => (n.id === pendingReassign.numberRowId ? { ...n, companyId: pendingReassign.toCompanyId } : n)));
+    setPendingReassign(null);
+  }
+
+  /** Feature 2 — "Add Existing Number." Verifies ownership against the
+   * real, connected Zadarma account (read-only) before linking; never
+   * purchases anything, never touches Zadarma's own number configuration. */
+  async function handleLinkExisting() {
+    setLinkingExisting(true);
+    setLinkExistingError(undefined);
+    const result = await linkExistingZadarmaNumberAction(existingNumberInput.trim(), existingNumberCompanyId);
+    setLinkingExisting(false);
+    if (!result.ok) {
+      setLinkExistingError(result.message);
+      return;
+    }
+    setAddExistingOpen(false);
+    setExistingNumberInput("");
+    setExistingNumberCompanyId("");
+    await refreshNumbers();
+  }
+
+  if (loading) return null;
+
+  return (
+    <Card className="col-span-full flex flex-col gap-3 p-5">
+      <div className="flex items-center justify-between">
+        <CardTitle>{t("Zadarma Numbers", "Números de Zadarma")}</CardTitle>
+        <Button size="sm" variant="outline" onClick={() => setAddExistingOpen(true)}>
+          {t("Add Existing Number", "Agregar número existente")}
+        </Button>
+      </div>
+      {error && <p className="text-[12.5px] text-danger">{error}</p>}
+      {numbers.length === 0 && <p className="text-[13.5px] text-text-secondary">{t("No Zadarma numbers yet.", "Todavía no hay números de Zadarma.")}</p>}
+      <div className="flex flex-col gap-2">
+        {numbers.map((n) => (
+          <div key={n.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border p-3">
+            <div className="min-w-0">
+              <p className="text-[13.5px] font-medium text-text-primary">{n.number ?? t("(not yet activated)", "(aún no activado)")}</p>
+              <p className="text-[12px] text-text-secondary">
+                {n.status} {n.monthlyFee ? `· ${n.monthlyFee} ${n.currency ?? ""}/mo` : ""} {n.lastError ? `· ${n.lastError}` : ""}
+              </p>
+            </div>
+            {n.status === "ACTIVE" && (
+              <Select
+                className="w-56"
+                value={n.companyId ?? ""}
+                disabled={reassigning}
+                onChange={(e) =>
+                  setPendingReassign({ numberRowId: n.id, number: n.number, fromCompanyId: n.companyId, toCompanyId: e.target.value || null })
+                }
+              >
+                <option value="">{t("Unassigned", "Sin asignar")}</option>
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <Modal
+        open={!!pendingReassign}
+        onClose={() => (reassigning ? undefined : setPendingReassign(null))}
+        title={t("Reassign Zadarma number?", "¿Reasignar número de Zadarma?")}
+      >
+        {pendingReassign && (
+          <div className="flex flex-col gap-4">
+            <p className="text-[13.5px] leading-6 text-text-secondary">
+              {t(
+                `This moves ${pendingReassign.number ?? "this number"} from ${companyName(pendingReassign.fromCompanyId)} to ${companyName(pendingReassign.toCompanyId)}.`,
+                `Esto mueve ${pendingReassign.number ?? "este número"} de ${companyName(pendingReassign.fromCompanyId)} a ${companyName(pendingReassign.toCompanyId)}.`
+              )}
+            </p>
+            <p className="rounded-lg bg-warning-50 px-3 py-2 text-[12.5px] text-warning-700">
+              {t(
+                `${companyName(pendingReassign.fromCompanyId)} will immediately lose the ability to make calls from this number — it will have no assigned number until a new one is purchased or reassigned to it.`,
+                `${companyName(pendingReassign.fromCompanyId)} perderá inmediatamente la capacidad de llamar desde este número — no tendrá número asignado hasta que se compre uno nuevo o se le reasigne otro.`
+              )}
+            </p>
+            {error && <p className="text-[13px] text-danger">{error}</p>}
+            <div className="flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setPendingReassign(null)} disabled={reassigning}>
+                {t("Cancel", "Cancelar")}
+              </Button>
+              <Button onClick={handleConfirmReassign} disabled={reassigning}>
+                {reassigning ? t("Reassigning...", "Reasignando...") : t("Confirm reassignment", "Confirmar reasignación")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={addExistingOpen}
+        onClose={() => (linkingExisting ? undefined : setAddExistingOpen(false))}
+        title={t("Add Existing Number", "Agregar número existente")}
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-[13.5px] leading-6 text-text-secondary">
+            {t(
+              "For a number already purchased in this central Zadarma account, outside this CRM. It's verified against the real account before being linked — nothing is purchased.",
+              "Para un número ya comprado en esta cuenta central de Zadarma, fuera de este CRM. Se verifica contra la cuenta real antes de vincularse — no se compra nada."
+            )}
+          </p>
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("PHONE NUMBER", "NÚMERO DE TELÉFONO")}</label>
+            <Input
+              placeholder={t("Exactly as shown in Zadarma, e.g. +15551234567", "Exactamente como aparece en Zadarma, ej. +15551234567")}
+              value={existingNumberInput}
+              onChange={(e) => setExistingNumberInput(e.target.value)}
+              disabled={linkingExisting}
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("ASSIGN TO COMPANY", "ASIGNAR A EMPRESA")}</label>
+            <Select value={existingNumberCompanyId} onChange={(e) => setExistingNumberCompanyId(e.target.value)} disabled={linkingExisting}>
+              <option value="">{t("Select a company...", "Selecciona una empresa...")}</option>
+              {companies.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          {linkExistingError && <p className="text-[13px] text-danger">{linkExistingError}</p>}
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={() => setAddExistingOpen(false)} disabled={linkingExisting}>
+              {t("Cancel", "Cancelar")}
+            </Button>
+            <Button onClick={handleLinkExisting} disabled={linkingExisting || !existingNumberInput.trim() || !existingNumberCompanyId}>
+              {linkingExisting ? t("Verifying...", "Verificando...") : t("Verify and link", "Verificar y vincular")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </Card>
+  );
+}
+
+const EXTENSION_STATUS_LABEL: Record<string, { en: string; es: string }> = {
+  PENDING: { en: "Creating…", es: "Creando…" },
+  ACTIVE: { en: "Active", es: "Activa" },
+  FAILED: { en: "Failed", es: "Fallida" },
+  FAILED_NEEDS_MANUAL_CHECK: { en: "Needs manual check", es: "Requiere revisión manual" },
+  REVOKED: { en: "Revoked", es: "Revocada" },
+};
+
+/** Superuser-only SIP/PBX extension management — create/assign/reassign/
+ * revoke, entirely from Configuración, backed by the REAL Zadarma API
+ * (gated server-side by ZADARMA_LIVE_PBX_PROVISIONING — see
+ * zadarmaExtensionOnboarding.ts). This panel never simulates a result: a
+ * "provisioning_disabled" reason is a real, honest outcome of the real code
+ * path, surfaced as-is, not a fake success. */
+function ZadarmaExtensionsPanel({ companies }: { companies: Company[] }) {
+  const { t } = useLanguage();
+  const [extensions, setExtensions] = useState<ZadarmaExtensionRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [limitCheck, setLimitCheck] = useState<{ liveProvisioningEnabled: boolean; existingExtensionCount: number; existingExtensionNumbers: number[]; error?: string } | null>(null);
+  const [agentNameCache, setAgentNameCache] = useState<Record<string, string>>({});
+
+  const [createCompanyId, setCreateCompanyId] = useState("");
+  const [createAgentOptions, setCreateAgentOptions] = useState<{ id: string; fullName: string }[]>([]);
+  const [createUserId, setCreateUserId] = useState("");
+  const [loadingAgents, setLoadingAgents] = useState(false);
+  const [pendingCreate, setPendingCreate] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | undefined>();
+  const [createNotice, setCreateNotice] = useState<string | undefined>();
+
+  const [busyRowId, setBusyRowId] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | undefined>();
+  const [pendingRevoke, setPendingRevoke] = useState<ZadarmaExtensionRow | null>(null);
+  const [pendingReassign, setPendingReassign] = useState<ZadarmaExtensionRow | null>(null);
+  const [reassignCompanyId, setReassignCompanyId] = useState("");
+  const [reassignAgentOptions, setReassignAgentOptions] = useState<{ id: string; fullName: string }[]>([]);
+  const [reassignUserId, setReassignUserId] = useState("");
+
+  // "Add Existing SIP" (Feature 1) — deliberately its own state, separate
+  // from the "Create new" picker above, so the two flows never cross-talk
+  // when both entry points are visible at once.
+  const [addExistingOpen, setAddExistingOpen] = useState(false);
+  const [existingCompanyId, setExistingCompanyId] = useState("");
+  const [existingAgentOptions, setExistingAgentOptions] = useState<{ id: string; fullName: string }[]>([]);
+  const [existingUserId, setExistingUserId] = useState("");
+  const [loadingExistingAgents, setLoadingExistingAgents] = useState(false);
+  const [existingSip, setExistingSip] = useState("");
+  const [existingSipPassword, setExistingSipPassword] = useState("");
+  const [connectingExisting, setConnectingExisting] = useState(false);
+  const [connectExistingError, setConnectExistingError] = useState<string | undefined>();
+
+  function companyName(id: string | null): string {
+    if (!id) return t("Unassigned", "Sin asignar");
+    return companies.find((c) => c.id === id)?.name ?? t("Unknown company", "Empresa desconocida");
+  }
+
+  function cacheAgents(agents: { id: string; fullName: string }[]) {
+    setAgentNameCache((prev) => {
+      const next = { ...prev };
+      for (const a of agents) next[a.id] = a.fullName;
+      return next;
+    });
+  }
+
+  async function refreshExtensions() {
+    setLoading(true);
+    const r = await getZadarmaExtensionsListAction();
+    setLoading(false);
+    setExtensions(r.extensions);
+    const companyIds = [...new Set(r.extensions.map((e) => e.companyId).filter((id): id is string => !!id))];
+    for (const companyId of companyIds) {
+      getZadarmaAssignableAgentsAction(companyId).then((res) => cacheAgents(res.agents));
+    }
+  }
+
+  useEffect(() => {
+    refreshExtensions();
+    getZadarmaExtensionLimitCheckAction().then(setLimitCheck);
+  }, []);
+
+  async function handleCreateCompanyChange(companyId: string) {
+    setCreateCompanyId(companyId);
+    setCreateUserId("");
+    setCreateAgentOptions([]);
+    if (!companyId) return;
+    setLoadingAgents(true);
+    const r = await getZadarmaAssignableAgentsAction(companyId);
+    setLoadingAgents(false);
+    setCreateAgentOptions(r.agents);
+    cacheAgents(r.agents);
+  }
+
+  async function handleConfirmCreate() {
+    setCreating(true);
+    setCreateError(undefined);
+    setCreateNotice(undefined);
+    const result = await createZadarmaExtensionAction(createCompanyId, createUserId);
+    setCreating(false);
+    setPendingCreate(false);
+    if (!result.ok) {
+      if (result.reason === "provisioning_disabled") {
+        setCreateNotice(result.message);
+      } else {
+        setCreateError(result.message);
+      }
+      await refreshExtensions();
+      return;
+    }
+    setCreateCompanyId("");
+    setCreateUserId("");
+    setCreateAgentOptions([]);
+    await refreshExtensions();
+  }
+
+  async function handleExistingCompanyChange(companyId: string) {
+    setExistingCompanyId(companyId);
+    setExistingUserId("");
+    setExistingAgentOptions([]);
+    if (!companyId) return;
+    setLoadingExistingAgents(true);
+    const r = await getZadarmaAssignableAgentsAction(companyId);
+    setLoadingExistingAgents(false);
+    setExistingAgentOptions(r.agents);
+    cacheAgents(r.agents);
+  }
+
+  /** Feature 1 — "Add Existing SIP." Verifies the extension exists on the
+   * real, connected Zadarma account before linking; never creates, never
+   * changes its Caller ID or password on Zadarma's side. A Caller ID
+   * mismatch is shown as a warning, never auto-corrected. */
+  async function handleConnectExisting() {
+    setConnectingExisting(true);
+    setConnectExistingError(undefined);
+    const result = await connectExistingZadarmaExtensionAction(existingCompanyId, existingUserId, existingSip.trim(), existingSipPassword);
+    setConnectingExisting(false);
+    if (!result.ok) {
+      setConnectExistingError(result.message);
+      return;
+    }
+    setAddExistingOpen(false);
+    setExistingCompanyId("");
+    setExistingUserId("");
+    setExistingAgentOptions([]);
+    setExistingSip("");
+    setExistingSipPassword("");
+    await refreshExtensions();
+    if (result.callerIdMismatch) {
+      setRowError(
+        t(
+          `Linked extension ${result.sipExtension}, but its Caller ID (${result.callerIdNumber ?? "unknown"}) does NOT match ${companyName(existingCompanyId)}'s assigned number. Browser calling is disabled for it until this is resolved.`,
+          `Extensión ${result.sipExtension} vinculada, pero su identificador de llamada (${result.callerIdNumber ?? "desconocido"}) NO coincide con el número asignado a ${companyName(existingCompanyId)}. Las llamadas por navegador están deshabilitadas para ella hasta que se resuelva esto.`
+        )
+      );
+    }
+  }
+
+  async function handleRetry(row: ZadarmaExtensionRow) {
+    setBusyRowId(row.id);
+    setRowError(undefined);
+    const result = await retryZadarmaExtensionAction(row.id);
+    setBusyRowId(null);
+    if (!result.ok && result.reason !== "provisioning_disabled") setRowError(result.message);
+    await refreshExtensions();
+  }
+
+  async function handleConfirmNoCharge(row: ZadarmaExtensionRow) {
+    setBusyRowId(row.id);
+    setRowError(undefined);
+    const result = await confirmNoZadarmaExtensionChargeAction(row.id);
+    setBusyRowId(null);
+    if (result.error) setRowError(result.error);
+    await refreshExtensions();
+  }
+
+  async function handleConfirmRevoke() {
+    if (!pendingRevoke) return;
+    setBusyRowId(pendingRevoke.id);
+    setRowError(undefined);
+    const result = await revokeZadarmaExtensionAction(pendingRevoke.id);
+    setBusyRowId(null);
+    setPendingRevoke(null);
+    if (result.error) setRowError(result.error);
+    await refreshExtensions();
+  }
+
+  function openReassign(row: ZadarmaExtensionRow) {
+    setPendingReassign(row);
+    setReassignCompanyId(row.companyId ?? "");
+    setReassignUserId(row.userId ?? "");
+    setReassignAgentOptions(row.companyId && agentNameCache ? [] : []);
+    if (row.companyId) {
+      getZadarmaAssignableAgentsAction(row.companyId).then((r) => {
+        setReassignAgentOptions(r.agents);
+        cacheAgents(r.agents);
+      });
+    }
+  }
+
+  async function handleReassignCompanyChange(companyId: string) {
+    setReassignCompanyId(companyId);
+    setReassignUserId("");
+    setReassignAgentOptions([]);
+    if (!companyId) return;
+    const r = await getZadarmaAssignableAgentsAction(companyId);
+    setReassignAgentOptions(r.agents);
+    cacheAgents(r.agents);
+  }
+
+  async function handleConfirmReassign() {
+    if (!pendingReassign) return;
+    setBusyRowId(pendingReassign.id);
+    setRowError(undefined);
+    const result = await reassignZadarmaExtensionAction(pendingReassign.id, reassignCompanyId, reassignUserId);
+    setBusyRowId(null);
+    if (result.error) {
+      setRowError(result.error);
+      return;
+    }
+    setPendingReassign(null);
+    await refreshExtensions();
+  }
+
+  if (loading) return null;
+
+  return (
+    <Card className="col-span-full flex flex-col gap-4 p-5">
+      <div className="flex items-center justify-between">
+        <CardTitle>{t("Zadarma SIP Extensions", "Extensiones SIP de Zadarma")}</CardTitle>
+        <Button size="sm" variant="outline" onClick={() => setAddExistingOpen(true)}>
+          {t("Add Existing SIP", "Agregar SIP existente")}
+        </Button>
+      </div>
+
+      {limitCheck && (
+        <div className="rounded-lg bg-surface-muted px-3 py-2.5 text-[12.5px] text-text-secondary">
+          {limitCheck.error ? (
+            <span className="text-danger">{limitCheck.error}</span>
+          ) : (
+            <>
+              {t(
+                `This Zadarma account currently has ${limitCheck.existingExtensionCount} extension(s): ${limitCheck.existingExtensionNumbers.join(", ") || "—"}.`,
+                `Esta cuenta de Zadarma tiene actualmente ${limitCheck.existingExtensionCount} extensión(es): ${limitCheck.existingExtensionNumbers.join(", ") || "—"}.`
+              )}{" "}
+              {limitCheck.existingExtensionCount >= 5 &&
+                t(
+                  "Zadarma's common free-tier allowance is 5 — creating another extension may incur a recurring charge (confirm on Zadarma's dashboard/plan).",
+                  "La asignación gratuita habitual de Zadarma es de 5 — crear otra extensión puede generar un cargo recurrente (confírmalo en el panel/plan de Zadarma)."
+                )}
+              <br />
+              {limitCheck.liveProvisioningEnabled
+                ? t("Live provisioning is ENABLED — creating an extension here will make a real, billable Zadarma API call.", "El aprovisionamiento en vivo está HABILITADO — crear una extensión aquí hará una llamada real y facturable a la API de Zadarma.")
+                : t("Live provisioning is currently DISABLED — creation attempts will be safely refused before reaching Zadarma.", "El aprovisionamiento en vivo está actualmente DESHABILITADO — los intentos de creación serán rechazados de forma segura antes de llegar a Zadarma.")}
+            </>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("COMPANY", "EMPRESA")}</label>
+          <Select className="w-56" value={createCompanyId} onChange={(e) => handleCreateCompanyChange(e.target.value)}>
+            <option value="">{t("Select a company...", "Selecciona una empresa...")}</option>
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div>
+          <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("AGENT", "AGENTE")}</label>
+          <Select className="w-56" value={createUserId} onChange={(e) => setCreateUserId(e.target.value)} disabled={!createCompanyId || loadingAgents}>
+            <option value="">{loadingAgents ? t("Loading...", "Cargando...") : t("Select an agent...", "Selecciona un agente...")}</option>
+            {createAgentOptions.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.fullName}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <Button disabled={!createCompanyId || !createUserId} onClick={() => setPendingCreate(true)}>
+          {t("Create extension", "Crear extensión")}
+        </Button>
+      </div>
+      {createError && <p className="text-[12.5px] text-danger">{createError}</p>}
+      {createNotice && <p className="rounded-lg bg-warning-50 px-3 py-2 text-[12.5px] text-warning-700">{createNotice}</p>}
+
+      <div className="flex flex-col gap-2">
+        {extensions.map((ext) => {
+          const label = EXTENSION_STATUS_LABEL[ext.status];
+          return (
+            <div key={ext.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border p-3">
+              <div className="min-w-0">
+                <p className="text-[13.5px] font-medium text-text-primary">
+                  {ext.sipExtension ?? t("(not yet created)", "(aún no creada)")} — {companyName(ext.companyId)} — {ext.userId ? agentNameCache[ext.userId] ?? ext.userId : t("Unassigned", "Sin asignar")}
+                </p>
+                <p className="text-[12px] text-text-secondary">
+                  {label ? t(label.en, label.es) : ext.status}
+                  {ext.callerIdNumber ? ` · ${t("Caller ID", "Identificador de llamada")}: ${ext.callerIdNumber}` : ""}
+                  {ext.lastError ? ` · ${ext.lastError}` : ""}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                {ext.status === "FAILED" && (
+                  <Button size="sm" variant="outline" disabled={busyRowId === ext.id} onClick={() => handleRetry(ext)}>
+                    {t("Retry", "Reintentar")}
+                  </Button>
+                )}
+                {ext.status === "FAILED_NEEDS_MANUAL_CHECK" && (
+                  <Button size="sm" variant="outline" disabled={busyRowId === ext.id} onClick={() => handleConfirmNoCharge(ext)}>
+                    {t("Confirm no charge occurred", "Confirmar que no hubo cargo")}
+                  </Button>
+                )}
+                {ext.status === "ACTIVE" && (
+                  <>
+                    <Button size="sm" variant="outline" disabled={busyRowId === ext.id} onClick={() => openReassign(ext)}>
+                      {t("Reassign", "Reasignar")}
+                    </Button>
+                    <Button size="sm" variant="outline" disabled={busyRowId === ext.id} onClick={() => setPendingRevoke(ext)}>
+                      {t("Revoke", "Revocar")}
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {extensions.length === 0 && <p className="text-[13.5px] text-text-secondary">{t("No SIP extensions created yet.", "Todavía no se han creado extensiones SIP.")}</p>}
+      </div>
+      {rowError && <p className="text-[12.5px] text-danger">{rowError}</p>}
+
+      <Modal open={pendingCreate} onClose={() => (creating ? undefined : setPendingCreate(false))} title={t("Create this SIP extension?", "¿Crear esta extensión SIP?")}>
+        <div className="flex flex-col gap-4">
+          <p className="text-[13.5px] leading-6 text-text-secondary">
+            {t(
+              `This creates a real Zadarma PBX extension for ${createAgentOptions.find((a) => a.id === createUserId)?.fullName ?? "this agent"} under ${companyName(createCompanyId)}, and sets its Caller ID to this company's own Zadarma number.`,
+              `Esto crea una extensión PBX real de Zadarma para ${createAgentOptions.find((a) => a.id === createUserId)?.fullName ?? "este agente"} en ${companyName(createCompanyId)}, y configura su identificador de llamada con el número de Zadarma de esta empresa.`
+            )}
+          </p>
+          {limitCheck && limitCheck.existingExtensionCount >= 5 && (
+            <p className="rounded-lg bg-warning-50 px-3 py-2 text-[12.5px] text-warning-700">
+              {t(
+                "This account is already at or above Zadarma's common free-tier extension allowance — this may incur a recurring monthly charge.",
+                "Esta cuenta ya está en o por encima de la asignación gratuita habitual de extensiones de Zadarma — esto puede generar un cargo mensual recurrente."
+              )}
+            </p>
+          )}
+          {!limitCheck?.liveProvisioningEnabled && (
+            <p className="rounded-lg bg-surface-muted px-3 py-2 text-[12.5px] text-text-secondary">
+              {t(
+                "Live provisioning is currently disabled, so this attempt will be safely refused before reaching Zadarma — useful to verify the flow end-to-end without any real account change.",
+                "El aprovisionamiento en vivo está actualmente deshabilitado, así que este intento será rechazado de forma segura antes de llegar a Zadarma — útil para verificar el flujo sin ningún cambio real en la cuenta."
+              )}
+            </p>
+          )}
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={() => setPendingCreate(false)} disabled={creating}>
+              {t("Cancel", "Cancelar")}
+            </Button>
+            <Button onClick={handleConfirmCreate} disabled={creating}>
+              {creating ? t("Creating...", "Creando...") : t("Confirm create", "Confirmar creación")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={!!pendingRevoke} onClose={() => (busyRowId ? undefined : setPendingRevoke(null))} title={t("Revoke this extension?", "¿Revocar esta extensión?")}>
+        {pendingRevoke && (
+          <div className="flex flex-col gap-4">
+            <p className="text-[13.5px] leading-6 text-text-secondary">
+              {t(
+                `This clears extension ${pendingRevoke.sipExtension}'s Caller ID and marks it revoked — it stops being usable from this CRM. Note: Zadarma's API has no way to delete the extension itself, so it will still exist on the Zadarma account, just unused by GrowthOn.`,
+                `Esto elimina el identificador de llamada de la extensión ${pendingRevoke.sipExtension} y la marca como revocada — deja de ser utilizable desde este CRM. Nota: la API de Zadarma no permite eliminar la extensión en sí, por lo que seguirá existiendo en la cuenta de Zadarma, solo sin uso por GrowthOn.`
+              )}
+            </p>
+            {rowError && <p className="text-[13px] text-danger">{rowError}</p>}
+            <div className="flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setPendingRevoke(null)} disabled={!!busyRowId}>
+                {t("Cancel", "Cancelar")}
+              </Button>
+              <Button onClick={handleConfirmRevoke} disabled={!!busyRowId}>
+                {busyRowId ? t("Revoking...", "Revocando...") : t("Confirm revoke", "Confirmar revocación")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal open={!!pendingReassign} onClose={() => (busyRowId ? undefined : setPendingReassign(null))} title={t("Reassign this extension?", "¿Reasignar esta extensión?")}>
+        {pendingReassign && (
+          <div className="flex flex-col gap-4">
+            <p className="text-[13.5px] leading-6 text-text-secondary">
+              {t(
+                `This moves extension ${pendingReassign.sipExtension} to a different company/agent and updates its real Caller ID.`,
+                `Esto mueve la extensión ${pendingReassign.sipExtension} a otra empresa/agente y actualiza su identificador de llamada real.`
+              )}
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <div>
+                <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("NEW COMPANY", "NUEVA EMPRESA")}</label>
+                <Select className="w-56" value={reassignCompanyId} onChange={(e) => handleReassignCompanyChange(e.target.value)}>
+                  <option value="">{t("Select a company...", "Selecciona una empresa...")}</option>
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("NEW AGENT", "NUEVO AGENTE")}</label>
+                <Select className="w-56" value={reassignUserId} onChange={(e) => setReassignUserId(e.target.value)} disabled={!reassignCompanyId}>
+                  <option value="">{t("Select an agent...", "Selecciona un agente...")}</option>
+                  {reassignAgentOptions.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.fullName}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            </div>
+            {rowError && <p className="text-[13px] text-danger">{rowError}</p>}
+            <div className="flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setPendingReassign(null)} disabled={!!busyRowId}>
+                {t("Cancel", "Cancelar")}
+              </Button>
+              <Button onClick={handleConfirmReassign} disabled={!!busyRowId || !reassignCompanyId || !reassignUserId}>
+                {busyRowId ? t("Reassigning...", "Reasignando...") : t("Confirm reassignment", "Confirmar reasignación")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={addExistingOpen}
+        onClose={() => (connectingExisting ? undefined : setAddExistingOpen(false))}
+        title={t("Add Existing SIP Extension", "Agregar extensión SIP existente")}
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-[13.5px] leading-6 text-text-secondary">
+            {t(
+              "For an extension already created in Zadarma, outside this CRM. It's verified against the real account before being linked — nothing is created, and its password/Caller ID on Zadarma's side is never changed.",
+              "Para una extensión ya creada en Zadarma, fuera de este CRM. Se verifica contra la cuenta real antes de vincularse — no se crea nada, y su contraseña/identificador de llamada en Zadarma nunca se modifica."
+            )}
+          </p>
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("COMPANY", "EMPRESA")}</label>
+            <Select className="w-full" value={existingCompanyId} onChange={(e) => handleExistingCompanyChange(e.target.value)} disabled={connectingExisting}>
+              <option value="">{t("Select a company...", "Selecciona una empresa...")}</option>
+              {companies.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("AGENT", "AGENTE")}</label>
+            <Select className="w-full" value={existingUserId} onChange={(e) => setExistingUserId(e.target.value)} disabled={!existingCompanyId || loadingExistingAgents || connectingExisting}>
+              <option value="">{loadingExistingAgents ? t("Loading...", "Cargando...") : t("Select an agent...", "Selecciona un agente...")}</option>
+              {existingAgentOptions.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.fullName}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("SIP EXTENSION / LOGIN", "EXTENSIÓN SIP / LOGIN")}</label>
+            <Input
+              placeholder={t("e.g. 105", "ej. 105")}
+              value={existingSip}
+              onChange={(e) => setExistingSip(e.target.value)}
+              disabled={connectingExisting}
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[11px] font-semibold tracking-wide text-text-secondary">{t("SIP PASSWORD", "CONTRASEÑA SIP")}</label>
+            <Input
+              type="password"
+              placeholder={t("As set in Zadarma", "Como está configurada en Zadarma")}
+              value={existingSipPassword}
+              onChange={(e) => setExistingSipPassword(e.target.value)}
+              disabled={connectingExisting}
+            />
+            <p className="mt-1 text-[11px] text-text-tertiary">
+              {t("Encrypted immediately on save — never shown again after this.", "Se cifra inmediatamente al guardar — nunca se vuelve a mostrar después de esto.")}
+            </p>
+          </div>
+          {connectExistingError && <p className="text-[13px] text-danger">{connectExistingError}</p>}
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={() => setAddExistingOpen(false)} disabled={connectingExisting}>
+              {t("Cancel", "Cancelar")}
+            </Button>
+            <Button
+              onClick={handleConnectExisting}
+              disabled={connectingExisting || !existingCompanyId || !existingUserId || !existingSip.trim() || !existingSipPassword}
+            >
+              {connectingExisting ? t("Verifying...", "Verificando...") : t("Verify and link", "Verificar y vincular")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </Card>
   );
 }
 
