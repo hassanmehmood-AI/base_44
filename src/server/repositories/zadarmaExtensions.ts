@@ -168,6 +168,24 @@ export async function reassign(id: string, companyId: string, userId: string, ca
   return row;
 }
 
+/** Restores a REVOKED row to ACTIVE in place — same id, same sipExtension/
+ * sipPasswordEncrypted/createdAt/createdBy, nothing about its history
+ * touched or deleted. Guarded on `status = 'REVOKED'` in the WHERE clause,
+ * same race-closer as claimForRetry above: a double-click, or two
+ * Superusers reactivating the same row at once, can only ever have one
+ * succeed — the loser gets `undefined` back, never a corrupted state.
+ * `callerIdNumber` is always the service layer's freshly re-verified value
+ * (confirmed to match the company's current active number before this is
+ * ever called) — never the old, possibly-stale stored value. */
+export async function reactivate(id: string, callerIdNumber: string): Promise<ZadarmaExtension | undefined> {
+  const [row] = await getDb()
+    .update(zadarmaExtensions)
+    .set({ status: "ACTIVE", callerIdNumber, lastError: null, updatedAt: new Date() })
+    .where(and(eq(zadarmaExtensions.id, id), eq(zadarmaExtensions.status, "REVOKED")))
+    .returning();
+  return row;
+}
+
 export async function markRevoked(id: string): Promise<ZadarmaExtension | undefined> {
   const [row] = await getDb()
     .update(zadarmaExtensions)

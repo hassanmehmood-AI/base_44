@@ -785,3 +785,18 @@ export async function revokeZadarmaExtensionAction(extensionRowId: string): Prom
   revalidatePath("/configuracion");
   return { ok: true };
 }
+
+/** See zadarmaExtensionOnboarding.ts's reactivateExtension doc comment for
+ * what this can and can't do — restores a REVOKED row in place, never
+ * creates a new one, never writes anything to the real Zadarma account. */
+export async function reactivateZadarmaExtensionAction(extensionRowId: string): Promise<ActionResult> {
+  try {
+    const result = await zadarmaExtensionOnboardingService.reactivateExtension(extensionRowId);
+    if (!result.ok) return { error: result.message };
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof Error) return { error: e.message };
+    throw e;
+  }
+  revalidatePath("/configuracion");
+  return { ok: true };
+}

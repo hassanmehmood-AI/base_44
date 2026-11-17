@@ -7,6 +7,7 @@ import * as zadarmaProvider from "@/server/integrations/zadarma";
 import { requireSession, UnauthorizedError } from "@/server/services/authorization";
 import { ProviderNotConfiguredError } from "@/server/integrations/errors";
 import * as zadarmaSecretBox from "@/server/crypto/zadarmaSecretBox";
+import { phonesMatch } from "@/server/services/zadarmaCallEvents";
 
 /** SIP/PBX extension management — the in-CRM replacement for manually
  * creating/assigning extensions in Zadarma's own dashboard. Structurally
@@ -400,6 +401,201 @@ export async function reassignExtension(extensionRowId: string, newCompanyId: st
   const row = await zadarmaExtensionsRepo.reassign(extensionRowId, newCompanyId, newUserId, activeNumber.number);
   if (!row) return { ok: false, reason: "error", message: "Reassignment failed to save." };
   return { ok: true };
+}
+
+export type ReactivateExtensionReason =
+  | "not_revoked"
+  | "company_not_found"
+  | "not_assignable"
+  | "already_has_extension"
+  | "not_found_on_account"
+  | "caller_id_mismatch"
+  | "caller_id_ambiguous"
+  | "no_number"
+  | ZadarmaExtensionErrorReason;
+
+export type ReactivateExtensionResult =
+  | { ok: true; sipExtension: string; callerIdNumber: string }
+  | { ok: false; reason: ReactivateExtensionReason; message: string };
+
+const AMBIGUOUS_CALLER_ID_VALUES = new Set(["external line", "unknown", "n/a", "none", ""]);
+
+/** Requirement: Zadarma can report a Caller ID value that isn't a real,
+ * comparable phone number at all — "External line" (observed terminology
+ * for a non-DID-routed extension), "Unknown", or simply absent — and none
+ * of those may ever be silently treated as "it matches," since that would
+ * quietly re-enable browser calling under an unverified Caller ID. Exported
+ * for direct testing, same idiom as extractCallerId above. */
+export function isAmbiguousCallerId(value: string): boolean {
+  return AMBIGUOUS_CALLER_ID_VALUES.has(value.trim().toLowerCase());
+}
+
+/** Pure decision for reactivateExtension below — given every fact already
+ * resolved (the row's current status, whether the target agent already
+ * holds a DIFFERENT active/pending extension, whether Zadarma's account
+ * still lists this exact number, and what Caller ID Zadarma reports for it
+ * right now versus the target company's own active number), decides
+ * whether reactivation may proceed. Exported so every branch — including
+ * the ambiguous-Caller-ID case — is directly unit-testable without a real
+ * database or network call, same idiom as extractCallerId/classifyError
+ * above. Never mutates anything; reactivateExtension is solely responsible
+ * for the actual DB write once this returns `ok: true`. Order matters:
+ * status is checked first so a non-revoked row is refused before any
+ * Caller ID reasoning even runs. */
+export function evaluateReactivation(input: {
+  currentStatus: ZadarmaExtension["status"] | undefined;
+  agentAlreadyHasExtension: boolean;
+  existsOnZadarmaAccount: boolean;
+  reportedCallerId: string | null;
+  companyActiveNumber: string | null;
+}): { ok: true } | { ok: false; reason: ReactivateExtensionReason; message: string } {
+  if (input.currentStatus !== "REVOKED") {
+    return { ok: false, reason: "not_revoked", message: "This extension isn't currently revoked — only a revoked extension can be reactivated." };
+  }
+  if (input.agentAlreadyHasExtension) {
+    return { ok: false, reason: "already_has_extension", message: "This agent already has a different extension in progress or active — one agent can only hold one." };
+  }
+  if (!input.existsOnZadarmaAccount) {
+    return {
+      ok: false,
+      reason: "not_found_on_account",
+      message: "This extension was not found among this Zadarma account's real extensions — it may have been removed on Zadarma's side.",
+    };
+  }
+  if (!input.companyActiveNumber) {
+    return { ok: false, reason: "no_number", message: "This company has no active Zadarma number to verify the Caller ID against." };
+  }
+  // Ambiguous/absent BEFORE exact-match — an unclear value must never fall
+  // through to the mismatch branch (which would at least name two real
+  // numbers); it gets its own distinct, more honest reason instead.
+  if (!input.reportedCallerId || isAmbiguousCallerId(input.reportedCallerId)) {
+    return {
+      ok: false,
+      reason: "caller_id_ambiguous",
+      message: `Zadarma reported an unclear Caller ID ("${input.reportedCallerId ?? "none"}") for this extension — reactivation requires a confirmed, unambiguous match with ${input.companyActiveNumber}. Verify manually in the Zadarma dashboard before retrying.`,
+    };
+  }
+  // phonesMatch (not strict equality) — Zadarma reports a Caller ID with a
+  // leading "+" while zadarma_numbers.number is stored without one (both
+  // are the same real number); a naive !== comparison treats that as a
+  // mismatch and refuses a reactivation that should actually succeed. This
+  // is the same "may differ only by a leading +/spacing" normalization
+  // zadarmaCallEvents.ts already uses for the identical problem elsewhere.
+  if (!phonesMatch(input.reportedCallerId, input.companyActiveNumber)) {
+    return {
+      ok: false,
+      reason: "caller_id_mismatch",
+      message: `This extension's current Caller ID (${input.reportedCallerId}) doesn't match this company's active Zadarma number (${input.companyActiveNumber}) — reactivation refused rather than silently relinking under a different Caller ID.`,
+    };
+  }
+  return { ok: true };
+}
+
+/** "Reactivate" — restores a previously REVOKED extension (one whose real
+ * SIP number this CRM confirms still exists on the connected Zadarma
+ * account) back to ACTIVE, reusing the exact same database row rather than
+ * creating a new one. The SIP number's global unique index (see
+ * schema.ts's zadarma_extensions_sip_idx) would reject a second row for the
+ * same number regardless, by design — this is the supported path for "I
+ * revoked this by mistake" or "this agent is back," never a workaround for
+ * that index.
+ *
+ * Like connectExistingExtension, this NEVER calls a real write endpoint on
+ * Zadarma — no create, no setExtensionCallerId, no deleteExtensionCallerId,
+ * no password change. Only the confirmed read-only, free, never-gated
+ * listPbxExtensions()/getPbxExtensionInfo() calls, plus this CRM's own
+ * database. The row's stored sipPasswordEncrypted (from its original
+ * creation) is left completely untouched — browser calling (getWebrtcKey)
+ * never needs it, only the SIP login string.
+ *
+ * Unlike connectExistingExtension's best-effort Caller ID check (a mismatch
+ * there is merely surfaced, never blocking), reactivation treats the
+ * Caller ID check as a hard gate — see evaluateReactivation above. Browser
+ * calling must never be silently re-enabled under an unverified Caller ID. */
+export async function reactivateExtension(extensionRowId: string): Promise<ReactivateExtensionResult> {
+  await assertSuperuser();
+
+  const current = await zadarmaExtensionsRepo.findById(extensionRowId);
+  if (!current) {
+    return { ok: false, reason: "not_revoked", message: "Extension not found." };
+  }
+  if (!zadarmaProvider.isZadarmaConfigured()) {
+    return { ok: false, reason: "not_configured", message: "Zadarma is not configured yet (missing ZADARMA_API_KEY/ZADARMA_API_SECRET)." };
+  }
+
+  // Cheap, local checks first — never spend a real Zadarma API call on a
+  // row that's refused for a reason already known from this CRM's own
+  // database (same "cheap before expensive" discipline as
+  // connectExistingExtension above). The exact same status check runs
+  // again inside evaluateReactivation below for the real path, so it's
+  // never bypassed — this is purely a short-circuit, not a second source
+  // of truth for the decision itself.
+  if (current.status !== "REVOKED" || !current.sipExtension || !current.companyId || !current.userId) {
+    return {
+      ok: false,
+      reason: "not_revoked",
+      message: "This extension isn't currently revoked, or it's missing required data — only a revoked extension with its original SIP number, company, and agent can be reactivated.",
+    };
+  }
+
+  const company = await companiesRepo.findById(current.companyId);
+  if (!company) {
+    return { ok: false, reason: "company_not_found", message: "This extension's company no longer exists — reactivation refused." };
+  }
+  const assignable = await usersRepo.findAssignableForCompany(current.companyId);
+  if (!assignable.some((u) => u.id === current.userId)) {
+    return { ok: false, reason: "not_assignable", message: "The agent this extension was assigned to is no longer assignable to its company." };
+  }
+
+  // current.status is REVOKED (just confirmed above), so this can only
+  // ever match a DIFFERENT row belonging to the same agent — never this one.
+  const agentExisting = await zadarmaExtensionsRepo.findActiveOrPendingByUserId(current.userId);
+
+  let verified: { numbers: number[] };
+  try {
+    verified = await zadarmaProvider.listPbxExtensions();
+  } catch (e) {
+    const { reason, message } = classifyError(e);
+    return { ok: false, reason, message };
+  }
+  const existsOnZadarmaAccount = verified.numbers.some((n) => String(n) === current.sipExtension);
+
+  let reportedCallerId: string | null = null;
+  if (existsOnZadarmaAccount) {
+    try {
+      const info = await zadarmaProvider.getPbxExtensionInfo(current.sipExtension);
+      reportedCallerId = extractCallerId(info);
+    } catch (e) {
+      const { reason, message } = classifyError(e);
+      return { ok: false, reason, message };
+    }
+  }
+
+  const activeNumber = await zadarmaNumbersRepo.findActiveByCompanyId(current.companyId);
+
+  const decision = evaluateReactivation({
+    currentStatus: current.status,
+    agentAlreadyHasExtension: Boolean(agentExisting),
+    existsOnZadarmaAccount,
+    reportedCallerId,
+    companyActiveNumber: activeNumber?.number ?? null,
+  });
+  if (!decision.ok) return decision;
+
+  // decision.ok guarantees reportedCallerId is a real, non-ambiguous string
+  // equal to companyActiveNumber — safe to persist as-is.
+  try {
+    const row = await zadarmaExtensionsRepo.reactivate(extensionRowId, reportedCallerId as string);
+    if (!row) {
+      return { ok: false, reason: "error", message: "Reactivation failed to save — the extension may no longer be revoked." };
+    }
+    return { ok: true, sipExtension: row.sipExtension as string, callerIdNumber: reportedCallerId as string };
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return { ok: false, reason: "already_has_extension", message: "This agent was given another extension by a different request just now — reactivation was not applied." };
+    }
+    throw e;
+  }
 }
 
 export type RevokeResult = { ok: true } | { ok: false; reason: ZadarmaExtensionErrorReason; message: string };

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isAmbiguousFailure, classifyError, extractCallerId } from "./zadarmaExtensionOnboarding";
+import { isAmbiguousFailure, classifyError, extractCallerId, evaluateReactivation, isAmbiguousCallerId } from "./zadarmaExtensionOnboarding";
 import { ZadarmaAuthError, ZadarmaRateLimitError, ZadarmaApiError, ZadarmaNetworkError, ZadarmaProvisioningDisabledError } from "@/server/integrations/zadarma";
 import { UnauthorizedError } from "@/server/services/authorization";
 import { ProviderNotConfiguredError } from "@/server/integrations/errors";
@@ -64,4 +64,134 @@ test("extractCallerId returns null rather than guessing when none of the known f
 test("extractCallerId ignores a non-string value under a known field name rather than returning garbage", () => {
   assert.equal(extractCallerId({ sip: "105", caller_id: 12345 }), null);
   assert.equal(extractCallerId({ sip: "105", caller_id: null }), null);
+});
+
+// evaluateReactivation / isAmbiguousCallerId — the "Reactivate a REVOKED
+// SIP extension" feature's pure decision logic. No database or network
+// call is made by this suite; every fact the decision needs is passed in
+// directly, same approach as the suites above.
+
+test("isAmbiguousCallerId recognizes every known non-comparable value, case/whitespace-insensitively", () => {
+  assert.equal(isAmbiguousCallerId("External line"), true);
+  assert.equal(isAmbiguousCallerId("  UNKNOWN  "), true);
+  assert.equal(isAmbiguousCallerId(""), true);
+  assert.equal(isAmbiguousCallerId("+15551234567"), false);
+});
+
+test("evaluateReactivation: a real, active extension whose Caller ID genuinely matches the company's active number succeeds", () => {
+  const result = evaluateReactivation({
+    currentStatus: "REVOKED",
+    agentAlreadyHasExtension: false,
+    existsOnZadarmaAccount: true,
+    reportedCallerId: "+15551234567",
+    companyActiveNumber: "+15551234567",
+  });
+  assert.deepEqual(result, { ok: true });
+});
+
+test("evaluateReactivation: a Caller ID differing only by a leading '+' is the SAME number, and must succeed, not be refused as a mismatch", () => {
+  // Real-world case: Zadarma's getPbxExtensionInfo reported "+34865443004"
+  // while this company's stored zadarma_numbers.number is "34865443004" —
+  // identical real number, different formatting. A naive !== comparison
+  // wrongly refused reactivation here; phonesMatch (used elsewhere in this
+  // codebase for the exact same problem) is what evaluateReactivation must
+  // use instead.
+  const result = evaluateReactivation({
+    currentStatus: "REVOKED",
+    agentAlreadyHasExtension: false,
+    existsOnZadarmaAccount: true,
+    reportedCallerId: "+34865443004",
+    companyActiveNumber: "34865443004",
+  });
+  assert.deepEqual(result, { ok: true });
+});
+
+test("evaluateReactivation: a genuine Caller ID mismatch is refused with a distinct reason, never silently relinked", () => {
+  const result = evaluateReactivation({
+    currentStatus: "REVOKED",
+    agentAlreadyHasExtension: false,
+    existsOnZadarmaAccount: true,
+    reportedCallerId: "+15551234567",
+    companyActiveNumber: "+19998887777",
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "caller_id_mismatch");
+    assert.match(result.message, /\+15551234567/);
+    assert.match(result.message, /\+19998887777/);
+  }
+});
+
+test("evaluateReactivation: an ambiguous Caller ID (e.g. Zadarma's 'External line') is refused, never treated as a match", () => {
+  const result = evaluateReactivation({
+    currentStatus: "REVOKED",
+    agentAlreadyHasExtension: false,
+    existsOnZadarmaAccount: true,
+    reportedCallerId: "External line",
+    companyActiveNumber: "+15551234567",
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "caller_id_ambiguous");
+});
+
+test("evaluateReactivation: a null/absent Caller ID is treated the same as ambiguous, never silently approved", () => {
+  const result = evaluateReactivation({
+    currentStatus: "REVOKED",
+    agentAlreadyHasExtension: false,
+    existsOnZadarmaAccount: true,
+    reportedCallerId: null,
+    companyActiveNumber: "+15551234567",
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "caller_id_ambiguous");
+});
+
+test("evaluateReactivation: a non-REVOKED extension (e.g. already ACTIVE, or PENDING) is refused before any Caller ID reasoning", () => {
+  for (const status of ["ACTIVE", "PENDING", "FAILED", "FAILED_NEEDS_MANUAL_CHECK"] as const) {
+    const result = evaluateReactivation({
+      currentStatus: status,
+      agentAlreadyHasExtension: false,
+      existsOnZadarmaAccount: true,
+      reportedCallerId: "+15551234567",
+      companyActiveNumber: "+15551234567",
+    });
+    assert.equal(result.ok, false, `status ${status} must be refused`);
+    if (!result.ok) assert.equal(result.reason, "not_revoked");
+  }
+});
+
+test("evaluateReactivation: an agent who already holds a different active/pending extension is refused — one agent, one extension", () => {
+  const result = evaluateReactivation({
+    currentStatus: "REVOKED",
+    agentAlreadyHasExtension: true,
+    existsOnZadarmaAccount: true,
+    reportedCallerId: "+15551234567",
+    companyActiveNumber: "+15551234567",
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "already_has_extension");
+});
+
+test("evaluateReactivation: an extension no longer found on the real Zadarma account is refused, never reactivated against a phantom number", () => {
+  const result = evaluateReactivation({
+    currentStatus: "REVOKED",
+    agentAlreadyHasExtension: false,
+    existsOnZadarmaAccount: false,
+    reportedCallerId: "+15551234567",
+    companyActiveNumber: "+15551234567",
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "not_found_on_account");
+});
+
+test("evaluateReactivation: a company with no active Zadarma number at all is refused — nothing to verify the Caller ID against", () => {
+  const result = evaluateReactivation({
+    currentStatus: "REVOKED",
+    agentAlreadyHasExtension: false,
+    existsOnZadarmaAccount: true,
+    reportedCallerId: "+15551234567",
+    companyActiveNumber: null,
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "no_number");
 });

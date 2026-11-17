@@ -74,6 +74,7 @@ import {
   confirmNoZadarmaExtensionChargeAction,
   reassignZadarmaExtensionAction,
   revokeZadarmaExtensionAction,
+  reactivateZadarmaExtensionAction,
   type ZadarmaExtensionRow,
   type ZadarmaExtensionErrorReason,
 } from "./actions";
@@ -2334,6 +2335,7 @@ function ZadarmaExtensionsPanel({ companies }: { companies: Company[] }) {
   const [busyRowId, setBusyRowId] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | undefined>();
   const [pendingRevoke, setPendingRevoke] = useState<ZadarmaExtensionRow | null>(null);
+  const [pendingReactivate, setPendingReactivate] = useState<ZadarmaExtensionRow | null>(null);
   const [pendingReassign, setPendingReassign] = useState<ZadarmaExtensionRow | null>(null);
   const [reassignCompanyId, setReassignCompanyId] = useState("");
   const [reassignAgentOptions, setReassignAgentOptions] = useState<{ id: string; fullName: string }[]>([]);
@@ -2509,6 +2511,32 @@ function ZadarmaExtensionsPanel({ companies }: { companies: Company[] }) {
     cacheAgents(r.agents);
   }
 
+  /** Restores a REVOKED row to ACTIVE in place — see
+   * zadarmaExtensionOnboarding.ts's reactivateExtension doc comment for the
+   * full guarantee (same row reused, no Zadarma write calls, Caller ID
+   * re-verified as a hard gate). Kept open on failure (never dismissed) so
+   * the Superuser sees the specific reason — mismatch/ambiguous Caller ID/
+   * not found on account/already has an extension — rather than a toast
+   * that might be missed. */
+  function closeReactivateModal() {
+    setPendingReactivate(null);
+    setRowError(undefined);
+  }
+
+  async function handleConfirmReactivate() {
+    if (!pendingReactivate) return;
+    setBusyRowId(pendingReactivate.id);
+    setRowError(undefined);
+    const result = await reactivateZadarmaExtensionAction(pendingReactivate.id);
+    setBusyRowId(null);
+    if (result.error) {
+      setRowError(result.error);
+      return;
+    }
+    setPendingReactivate(null);
+    await refreshExtensions();
+  }
+
   async function handleConfirmReassign() {
     if (!pendingReassign) return;
     setBusyRowId(pendingReassign.id);
@@ -2624,6 +2652,11 @@ function ZadarmaExtensionsPanel({ companies }: { companies: Company[] }) {
                     </Button>
                   </>
                 )}
+                {ext.status === "REVOKED" && (
+                  <Button size="sm" variant="outline" disabled={busyRowId === ext.id} onClick={() => setPendingReactivate(ext)}>
+                    {t("Reactivate", "Reactivar")}
+                  </Button>
+                )}
               </div>
             </div>
           );
@@ -2683,6 +2716,32 @@ function ZadarmaExtensionsPanel({ companies }: { companies: Company[] }) {
               </Button>
               <Button onClick={handleConfirmRevoke} disabled={!!busyRowId}>
                 {busyRowId ? t("Revoking...", "Revocando...") : t("Confirm revoke", "Confirmar revocación")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!pendingReactivate}
+        onClose={() => (busyRowId ? undefined : closeReactivateModal())}
+        title={t("Reactivate this extension?", "¿Reactivar esta extensión?")}
+      >
+        {pendingReactivate && (
+          <div className="flex flex-col gap-4">
+            <p className="text-[13.5px] leading-6 text-text-secondary">
+              {t(
+                `This re-links the EXACT same extension ${pendingReactivate.sipExtension} record instead of creating a new one. It only reads from Zadarma to verify the extension still exists there and that its current Caller ID still matches ${companyName(pendingReactivate.companyId)}'s active number — nothing is written to Zadarma, and the stored SIP password is left untouched. If the Caller ID doesn't match (or Zadarma reports an unclear value), reactivation is refused rather than silently enabling browser calling.`,
+                `Esto vuelve a vincular el MISMO registro de la extensión ${pendingReactivate.sipExtension} en lugar de crear uno nuevo. Solo lee de Zadarma para verificar que la extensión siga existiendo allí y que su identificador de llamada actual coincida con el número activo de ${companyName(pendingReactivate.companyId)} — no se escribe nada en Zadarma, y la contraseña SIP almacenada no se modifica. Si el identificador de llamada no coincide (o Zadarma reporta un valor poco claro), la reactivación se rechaza en lugar de habilitar silenciosamente las llamadas por navegador.`
+              )}
+            </p>
+            {rowError && <p className="text-[13px] text-danger">{rowError}</p>}
+            <div className="flex justify-end gap-3">
+              <Button variant="outline" onClick={closeReactivateModal} disabled={!!busyRowId}>
+                {t("Cancel", "Cancelar")}
+              </Button>
+              <Button onClick={handleConfirmReactivate} disabled={!!busyRowId}>
+                {busyRowId ? t("Reactivating...", "Reactivando...") : t("Confirm reactivate", "Confirmar reactivación")}
               </Button>
             </div>
           </div>
