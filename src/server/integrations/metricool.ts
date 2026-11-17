@@ -116,6 +116,26 @@ function isRetryableStatus(status: number): boolean {
   return status === 429 || (status >= 500 && status < 600);
 }
 
+/** Metricool's error bodies aren't consistently shaped `{ message: string }`
+ * across every endpoint — some use `error`/`errorMessage`/`detail` instead,
+ * and some non-JSON failures leave `data` null with `res.statusText` also
+ * blank (common over HTTP/2, where the status line's reason phrase is often
+ * omitted). The previous `data?.message ?? res.statusText` silently produced
+ * an empty, undiagnosable error message whenever neither of those two exact
+ * shapes matched — this checks every commonly-used key before falling back
+ * to the raw body, so the real reason Metricool gave is never swallowed. */
+function extractMetricoolErrorReason(data: unknown, statusText: string): string {
+  if (data && typeof data === "object") {
+    const record = data as Record<string, unknown>;
+    for (const key of ["message", "error", "errorMessage", "detail"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim().length > 0) return value;
+    }
+  }
+  if (statusText.trim().length > 0) return statusText;
+  return data === null ? "no response body" : JSON.stringify(data);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -155,7 +175,7 @@ async function metricoolFetch<T>(
     }
 
     if (!isRetryableStatus(res.status) || attempt >= MAX_RETRY_ATTEMPTS) {
-      throw new Error(`Metricool API error (${res.status}): ${data?.message ?? res.statusText}`);
+      throw new Error(`Metricool API error (${res.status}): ${extractMetricoolErrorReason(data, res.statusText)}`);
     }
 
     // Honor Metricool's own Retry-After if it sends one (standard for 429s),
