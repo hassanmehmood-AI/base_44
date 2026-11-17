@@ -950,7 +950,11 @@ function EmailPanel({
           {(senderStatus.status === "CONNECTED_GMAIL" || senderStatus.status === "CONNECTED_SMTP") && (
             <ProviderIcon provider={senderStatus.status === "CONNECTED_GMAIL" ? "GOOGLE_WORKSPACE" : "SMTP_IMAP"} className="h-3.5 w-3.5" />
           )}
-          {t("From:", "De:")} {senderStatus.fromAddress ?? t("Not configured", "No configurado")}
+          {t("From:", "De:")}{" "}
+          {senderStatus.fromAddress ??
+            (senderStatus.status === "CHOOSE_SENDER"
+              ? t("Choose a mailbox below", "Elige un buzón abajo")
+              : t("Not configured", "No configurado"))}
         </p>
         <p className="mt-1 flex items-center gap-1.5 text-[12px] text-text-tertiary">
           <span className={cn("h-1.5 w-1.5 rounded-full", SENDER_STATUS_LABEL[senderStatus.status].dot)} aria-hidden />

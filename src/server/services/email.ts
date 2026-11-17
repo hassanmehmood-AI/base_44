@@ -57,22 +57,24 @@ export type EmailSenderStatus = {
  * unified-inbox audit's core finding: a new conversation never looked at
  * the company's connected mailboxes at all before this. */
 async function resolveSenderStatus(conversation: Conversation | null, companyId: string): Promise<EmailSenderStatus> {
+  // Covers two cases with the same fallback: a brand-new conversation (ask
+  // the company's own active mailboxes), and an existing conversation whose
+  // stored mailbox has gone stale — e.g. it was reconnected since, which
+  // creates a new company_email_accounts row rather than reviving the old
+  // one, leaving the conversation pointed at a row that's no longer ACTIVE.
+  // Previously that second case fell through all the way to NOT_CONFIGURED,
+  // disabling Send reply even though a perfectly good mailbox was active —
+  // this makes both cases ask "what can this company actually send from
+  // right now" the same way, instead of trusting a stored id that may be dead.
+  let needsCompanyFallback = !conversation;
   if (conversation?.companyEmailAccountId) {
     const account = await companyEmailAccountsRepo.findById(conversation.companyEmailAccountId);
     if (account && account.status === "ACTIVE") {
       return { fromAddress: account.emailAddress, status: account.provider === "SMTP_IMAP" ? "CONNECTED_SMTP" : "CONNECTED_GMAIL" };
     }
-    // A conversation that already HAS a connected mailbox, but that mailbox
-    // is no longer ACTIVE (NEEDS_REAUTH/disconnected): deliberately does
-    // NOT fall through to the Resend status below — that would silently
-    // misrepresent what a send will actually do. sendEmailToContact already
-    // throws a clear "reconnect this mailbox" error for exactly this case;
-    // this status falls through to NOT_VERIFIED/NOT_CONFIGURED only for a
-    // conversation that genuinely has no mailbox at all, never one with a
-    // broken one.
-  } else if (!conversation) {
-    // Brand-new conversation — ask the company's own active mailboxes,
-    // never a company-wide setting. Exactly one of 0/1/2+.
+    needsCompanyFallback = true;
+  }
+  if (needsCompanyFallback) {
     const accounts = (await companyEmailAccountsRepo.findByCompanyId(companyId)).filter((a) => a.status === "ACTIVE");
     if (accounts.length === 1) {
       const account = accounts[0];
@@ -305,11 +307,15 @@ export async function sendEmailToContact(input: {
    * ignored (never trusted over the conversation's own stored account)
    * once resolved — see the conversation-resolution block below. */
   conversationId?: string;
-  /** Only consulted for a BRAND-NEW conversation whose company has 2+
-   * active mailboxes (see resolveAccountForNewConversation) — ignored
-   * entirely once a conversation already exists, since that conversation's
-   * own companyEmailAccountId is always the one source of truth from then
-   * on (requirement: never silently switch an existing thread's sender). */
+  /** Consulted whenever there's no single unambiguous active mailbox to use:
+   * a brand-new conversation whose company has 2+ active mailboxes, OR an
+   * existing conversation whose own stored mailbox has gone stale (e.g.
+   * reconnected under a new account row) and the company now has 2+ active
+   * ones to choose from (see resolveAccountForNewConversation). Still fully
+   * ignored whenever the existing conversation's own companyEmailAccountId
+   * is itself still ACTIVE — that remains the one source of truth then,
+   * never silently overridden (requirement: never silently switch an
+   * existing thread's sender away from a mailbox that still works). */
   accountId?: string;
 }) {
   const session = await requireSession();
@@ -362,23 +368,31 @@ export async function sendEmailToContact(input: {
     conversation = existingConversations[0];
   }
 
-  // Unified-inbox fix: for an EXISTING conversation, its own
-  // companyEmailAccountId remains the one and only source of truth (never
-  // re-resolved, never influenced by input.accountId) — this is what makes
-  // "replies always use the same connected mailbox" true. For a BRAND-NEW
-  // conversation, resolveAccountForNewConversation picks (or requires a
-  // choice for) the company's own active mailbox; `null` means the
+  // Unified-inbox fix: for an EXISTING conversation whose own
+  // companyEmailAccountId is still ACTIVE, that remains the one and only
+  // source of truth (never re-resolved, never influenced by
+  // input.accountId) — this is what makes "replies always use the same
+  // connected mailbox" true. If that stored mailbox has since gone
+  // stale (disconnected/reconnected under a new account row), fall back to
+  // the company's current active mailbox(es) exactly like a brand-new
+  // conversation, rather than hard-failing — this mirrors resolveSenderStatus's
+  // own fallback so the UI's "From" address is never a lie about what a send
+  // actually does. `null` from resolveAccountForNewConversation means the
   // existing Resend fallback, completely unchanged.
-  const resolvedAccount = conversation?.companyEmailAccountId
-    ? null // existing conversation already has its own account below
+  let existingActiveAccount: { id: string; provider: string } | null = null;
+  if (conversation?.companyEmailAccountId) {
+    const account = await companyEmailAccountsRepo.findById(conversation.companyEmailAccountId);
+    if (account && account.status === "ACTIVE") {
+      existingActiveAccount = { id: account.id, provider: account.provider };
+    }
+  }
+  const resolvedAccount = existingActiveAccount
+    ? null // existing conversation already has its own active account below
     : await resolveAccountForNewConversation(contact.companyId, input.accountId);
 
   let externalId: string | null;
-  if (conversation?.companyEmailAccountId) {
-    const account = await companyEmailAccountsRepo.findById(conversation.companyEmailAccountId);
-    if (!account) throw new Error("The connected mailbox for this conversation no longer exists.");
-    if (account.status !== "ACTIVE") throw new Error("This mailbox needs to be reconnected before you can reply — go to Configuración.");
-    const result = await emailOnboardingService.sendFromAccount(account.id, {
+  if (existingActiveAccount) {
+    const result = await emailOnboardingService.sendFromAccount(existingActiveAccount.id, {
       to: contact.email,
       subject: input.subject,
       bodyText: input.bodyText,
